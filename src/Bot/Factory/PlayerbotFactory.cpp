@@ -1164,6 +1164,8 @@ void PlayerbotFactory::InitPetTalents()
             continue;
 
         TalentTabEntry const* talentTabInfo = sTalentTabStore.LookupEntry(talentInfo->TalentTab);
+        if (!talentTabInfo)
+            continue;
 
         // prevent learn talent for different family (cheating)
         if (!((1 << pet_family->petTalentType) & talentTabInfo->petTalentMask))

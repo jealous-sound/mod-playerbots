@@ -109,7 +109,14 @@ void PlayerbotHolder::AddPlayerBot(ObjectGuid playerGuid, uint32 masterAccountId
     std::ostringstream out;
     std::string botName;
     sCharacterCache->GetCharacterNameByGuid(playerGuid, botName);
-    if (!isRndbot && !sameAccount && !sameGuild && !addClassBot && !linkedAccount)
+    CharacterCacheEntry const* botCache = sCharacterCache->GetCharacterCacheByGuid(playerGuid);
+    // Ascension: bot AI only supports the original classes, never custom-class characters
+    if (!botCache || !IsLegacyClass(botCache->Class))
+    {
+        allowed = false;
+        out << "Failure: " << botName << " is not an original class and cannot be a bot";
+    }
+    else if (!isRndbot && !sameAccount && !sameGuild && !addClassBot && !linkedAccount)
     {
         allowed = false;
         out << "Failure: You are not allowed to control bot " << botName.c_str();
@@ -1059,6 +1066,8 @@ std::vector<std::string> PlayerbotHolder::HandlePlayerbotCommand(char const* arg
             messages.push_back("Self-bot is disabled");
         else if (sPlayerbotAIConfig.selfBotLevel == 1 && !master->CanBeGameMaster())
             messages.push_back("You do not have permission to enable player botAI");
+        else if (!IsLegacyClass(master->getClass()))
+            messages.push_back("Player botAI only supports the original classes");
         else
         {
             messages.push_back("Enable player botAI");

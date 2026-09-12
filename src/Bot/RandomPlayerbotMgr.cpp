@@ -739,6 +739,7 @@ uint32 RandomPlayerbotMgr::AddRandomBots()
                 GetEventValue(charInfo.guid, "logout") ||
                 GetPlayerBot(charInfo.guid) ||
                 currentBots.contains(charInfo.guid) ||
+                !IsLegacyClass(charInfo.rClass) ||
                 (sPlayerbotAIConfig.disableDeathKnightLogin && charInfo.rClass == CLASS_DEATH_KNIGHT))
             {
                 return false;

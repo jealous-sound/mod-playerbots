@@ -65,6 +65,12 @@ Player* RandomPlayerbotFactory::CreateRandomBot(WorldSession* session, uint8 cls
 {
     LOG_DEBUG("playerbots", "Creating a new random bot for class: {}", cls);
 
+    if (!IsLegacyClass(cls))
+    {
+        LOG_ERROR("playerbots", "Refusing to create a random bot for non-original class: {}", cls);
+        return nullptr;
+    }
+
     const bool alliance = static_cast<bool>(urand(0, 1));
 
     std::vector<uint8> raceOptions;
@@ -709,10 +715,12 @@ void RandomPlayerbotFactory::CreateRandomBots()
                                                 time_t(0), LOCALE_enUS, 0, false, false, 0, true);
         sessionBots.push_back(session);
 
-        for (uint8 cls = CLASS_WARRIOR; cls < MAX_CLASSES - count; ++cls)
+        // Ascension: bot AI only supports the original classes, so custom classes are never generated.
+        for (uint8 cls = CLASS_WARRIOR; cls <= CLASS_DRUID - count; ++cls)
         {
             // skip nonexistent classes
-            if (!((1 << (cls - 1)) & CLASSMASK_ALL_PLAYABLE) || !sChrClassesStore.LookupEntry(cls))
+            if (!IsLegacyClass(cls) || !((1 << (cls - 1)) & CLASSMASK_ALL_PLAYABLE) ||
+                !sChrClassesStore.LookupEntry(cls))
                 continue;
 
             // skip disabled with config classes
