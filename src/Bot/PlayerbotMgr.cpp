@@ -638,37 +638,33 @@ void PlayerbotHolder::OnBotLogin(Player* const bot)
             if (!channel)
                 continue;
 
+            char const* channelPattern = channel->pattern[locale];
+            if (!channelPattern || !*channelPattern)
+                continue;
+
             Channel* new_channel = nullptr;
-            switch (channel->ChannelID)
+            if (IsPlayerbotChatChannel(channel, ChatChannelId::GENERAL) ||
+                IsPlayerbotChatChannel(channel, ChatChannelId::LOCAL_DEFENSE))
             {
-                case ChatChannelId::GENERAL:
-                case ChatChannelId::LOCAL_DEFENSE:
-                {
-                    char new_channel_name_buf[100];
-                    snprintf(new_channel_name_buf, 100, channel->pattern[locale], current_zone_name.c_str());
-                    new_channel = cMgr->GetJoinChannel(new_channel_name_buf, channel->ChannelID);
-                    break;
-                }
-                case ChatChannelId::TRADE:
-                case ChatChannelId::GUILD_RECRUITMENT:
-                {
-                    char new_channel_name_buf[100];
-                    //3459 is ID for a zone named "City" (only exists for the sake of using its name)
-                    //Currently in magons TBC, if you switch zones, then you join "Trade - <zone>" and "GuildRecruitment - <zone>"
-                    //which is a core bug, should be "Trade - City" and "GuildRecruitment - City" in both 1.12 and TBC
-                    //but if you (actual player) logout in a city and log back in - you join "City" versions
-                    snprintf(new_channel_name_buf, 100, channel->pattern[locale], GET_PLAYERBOT_AI(bot)->GetLocalizedAreaName(GetAreaEntryByAreaID(3459)).c_str());
-                    new_channel = cMgr->GetJoinChannel(new_channel_name_buf, channel->ChannelID);
-                    break;
-                }
-                case ChatChannelId::LOOKING_FOR_GROUP:
-                case ChatChannelId::WORLD_DEFENSE:
-                {
-                    new_channel = cMgr->GetJoinChannel(channel->pattern[locale], channel->ChannelID);
-                    break;
-                }
-                default:
-                    break;
+                char new_channel_name_buf[100];
+                snprintf(new_channel_name_buf, 100, channelPattern, current_zone_name.c_str());
+                new_channel = cMgr->GetJoinChannel(new_channel_name_buf, channel->ChannelID);
+            }
+            else if (IsPlayerbotChatChannel(channel, ChatChannelId::TRADE) ||
+                     IsPlayerbotChatChannel(channel, ChatChannelId::GUILD_RECRUITMENT))
+            {
+                char new_channel_name_buf[100];
+                // 3459 is ID for a zone named "City" (only exists for the sake of using its name).
+                // Currently in mangos TBC, if you switch zones, then you join "Trade - <zone>" and
+                // "GuildRecruitment - <zone>", which is a core bug. They should be the "City" versions.
+                std::string cityName = GET_PLAYERBOT_AI(bot)->GetLocalizedAreaName(GetAreaEntryByAreaID(3459));
+                snprintf(new_channel_name_buf, 100, channelPattern, cityName.c_str());
+                new_channel = cMgr->GetJoinChannel(new_channel_name_buf, channel->ChannelID);
+            }
+            else if (IsPlayerbotChatChannel(channel, ChatChannelId::LOOKING_FOR_GROUP) ||
+                     IsPlayerbotChatChannel(channel, ChatChannelId::WORLD_DEFENSE))
+            {
+                new_channel = cMgr->GetJoinChannel(channelPattern, channel->ChannelID);
             }
 
             if (new_channel)

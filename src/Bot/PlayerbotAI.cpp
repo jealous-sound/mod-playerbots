@@ -78,6 +78,31 @@ std::string& trim(std::string& s);
 
 std::set<std::string> PlayerbotAI::unsecuredCommands;
 
+bool IsPlayerbotChatChannel(ChatChannelsEntry const* channel, ChatChannelId channelId)
+{
+    if (!channel)
+        return false;
+
+    switch (channelId)
+    {
+        // Custom clients can remap the numeric channel IDs. The DBC flags retain the channel's role.
+        case ChatChannelId::GENERAL:
+            return channel->flags & CHANNEL_DBC_FLAG_UNK1;
+        case ChatChannelId::TRADE:
+            return (channel->flags & CHANNEL_DBC_FLAG_TRADE) && !(channel->flags & CHANNEL_DBC_FLAG_LFG);
+        case ChatChannelId::LOCAL_DEFENSE:
+            return (channel->flags & CHANNEL_DBC_FLAG_DEFENSE) && (channel->flags & CHANNEL_DBC_FLAG_ZONE_DEP);
+        case ChatChannelId::WORLD_DEFENSE:
+            return channel->ChannelID == ChatChannelId::WORLD_DEFENSE;
+        case ChatChannelId::LOOKING_FOR_GROUP:
+            return channel->flags & CHANNEL_DBC_FLAG_LFG;
+        case ChatChannelId::GUILD_RECRUITMENT:
+            return channel->flags & CHANNEL_DBC_FLAG_GUILD_REQ;
+        default:
+            return false;
+    }
+}
+
 PlayerbotChatHandler::PlayerbotChatHandler(Player* pMasterPlayer) : ChatHandler(pMasterPlayer->GetSession()) {}
 
 uint32 PlayerbotChatHandler::extractQuestId(std::string const str)
@@ -2875,12 +2900,6 @@ bool PlayerbotAI::SayToChannel(std::string const& msg, ChatChannelId const& chan
     if (!cMgr)
         return false;
 
-    AreaTableEntry const* current_zone = GetCurrentZone();
-    if (!current_zone)
-        return false;
-
-    const auto current_str_zone = GetLocalizedAreaName(current_zone);
-
     std::mutex socialMutex;
     std::lock_guard<std::mutex> lock(socialMutex);  // Blocking for thread safety when accessing SocialMgr
 
@@ -2890,31 +2909,12 @@ bool PlayerbotAI::SayToChannel(std::string const& msg, ChatChannelId const& chan
         if (!channel)
             continue;
 
-        // Checks if the channel matches the specified ChatChannelId
-        if (channel->GetChannelId() == chanId)
-        {
-            // If the channel name is empty, skip it to avoid access problems
-            if (channel->GetName().empty())
-                continue;
+        ChatChannelsEntry const* channelEntry = sChatChannelsStore.LookupEntry(channel->GetChannelId());
+        if (!IsPlayerbotChatChannel(channelEntry, chanId) || !bot->IsInChannel(channel))
+            continue;
 
-            // Checks if the channel name contains the current zone
-            const auto does_contains = channel->GetName().find(current_str_zone) != std::string::npos;
-            if (chanId != ChatChannelId::LOOKING_FOR_GROUP && chanId != ChatChannelId::WORLD_DEFENSE && !does_contains)
-            {
-                continue;
-            }
-            else if (chanId == ChatChannelId::LOOKING_FOR_GROUP || chanId == ChatChannelId::WORLD_DEFENSE)
-            {
-                // Here you can add the capital check if necessary
-            }
-
-            // Final check to ensure the channel is correct before trying to say something
-            if (channel)
-            {
-                channel->Say(bot->GetGUID(), msg.c_str(), LANG_UNIVERSAL);
-                return true;
-            }
-        }
+        channel->Say(bot->GetGUID(), msg.c_str(), LANG_UNIVERSAL);
+        return true;
     }
 
     return false;
@@ -6405,37 +6405,21 @@ ChatChannelSource PlayerbotAI::GetChatChannelSource(Player* bot, uint32 type, st
             Channel const* channel = cMgr->GetChannel(channelName, bot);
             if (channel)
             {
-                switch (channel->GetChannelId())
-                {
-                    case ChatChannelId::GENERAL:
-                    {
-                        return ChatChannelSource::SRC_GENERAL;
-                    }
-                    case ChatChannelId::TRADE:
-                    {
-                        return ChatChannelSource::SRC_TRADE;
-                    }
-                    case ChatChannelId::LOCAL_DEFENSE:
-                    {
-                        return ChatChannelSource::SRC_LOCAL_DEFENSE;
-                    }
-                    case ChatChannelId::WORLD_DEFENSE:
-                    {
-                        return ChatChannelSource::SRC_WORLD_DEFENSE;
-                    }
-                    case ChatChannelId::LOOKING_FOR_GROUP:
-                    {
-                        return ChatChannelSource::SRC_LOOKING_FOR_GROUP;
-                    }
-                    case ChatChannelId::GUILD_RECRUITMENT:
-                    {
-                        return ChatChannelSource::SRC_GUILD_RECRUITMENT;
-                    }
-                    default:
-                    {
-                        return ChatChannelSource::SRC_UNDEFINED;
-                    }
-                }
+                ChatChannelsEntry const* channelEntry = sChatChannelsStore.LookupEntry(channel->GetChannelId());
+                if (IsPlayerbotChatChannel(channelEntry, ChatChannelId::GENERAL))
+                    return ChatChannelSource::SRC_GENERAL;
+                if (IsPlayerbotChatChannel(channelEntry, ChatChannelId::TRADE))
+                    return ChatChannelSource::SRC_TRADE;
+                if (IsPlayerbotChatChannel(channelEntry, ChatChannelId::LOCAL_DEFENSE))
+                    return ChatChannelSource::SRC_LOCAL_DEFENSE;
+                if (IsPlayerbotChatChannel(channelEntry, ChatChannelId::WORLD_DEFENSE))
+                    return ChatChannelSource::SRC_WORLD_DEFENSE;
+                if (IsPlayerbotChatChannel(channelEntry, ChatChannelId::LOOKING_FOR_GROUP))
+                    return ChatChannelSource::SRC_LOOKING_FOR_GROUP;
+                if (IsPlayerbotChatChannel(channelEntry, ChatChannelId::GUILD_RECRUITMENT))
+                    return ChatChannelSource::SRC_GUILD_RECRUITMENT;
+
+                return ChatChannelSource::SRC_UNDEFINED;
             }
         }
     }

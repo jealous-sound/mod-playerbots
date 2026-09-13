@@ -43,6 +43,7 @@ class WorldPosition;
 
 struct CreatureData;
 struct GameObjectData;
+struct ChatChannelsEntry;
 
 enum StrategyType : uint32;
 
@@ -164,6 +165,8 @@ enum ChatChannelId
     LOOKING_FOR_GROUP = 26,
     GUILD_RECRUITMENT = 25,
 };
+
+bool IsPlayerbotChatChannel(ChatChannelsEntry const* channel, ChatChannelId channelId);
 
 enum RoguePoisonId
 {
