@@ -23,8 +23,9 @@ void EmoteStrategy::InitTriggers(std::vector<TriggerNode*>& triggers)
     {
         triggers.push_back(new TriggerNode(
             "often",
-            { NextAction("suggest what to do", 10.0f), NextAction("suggest dungeon", 3.0f),
-                              NextAction("suggest trade", 3.0f) }));
+            // Give the independently throttled Trade attempt a turn before general chatter.
+            { NextAction("suggest trade", 10.1f), NextAction("suggest what to do", 10.0f),
+                NextAction("suggest dungeon", 3.0f) }));
     }
 
     if (sPlayerbotAIConfig.enableGreet)

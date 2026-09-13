@@ -45,7 +45,8 @@ bool SuggestWhatToDoAction::isUseful()
     if (!sRandomPlayerbotMgr.IsRandomBot(bot) || bot->GetGroup() || bot->GetInstanceId() || bot->GetBattleground())
         return false;
 
-    std::string qualifier = "suggest what to do";
+    // Trade is queued below general chatter. Sharing its cooldown starves sale suggestions.
+    std::string qualifier = getName() == "suggest trade" ? "suggest trade" : "suggest what to do";
     time_t lastSaid = AI_VALUE2(time_t, "last said", qualifier);
     return (time(0) - lastSaid) > 30;
 }
@@ -314,6 +315,13 @@ SuggestTradeAction::SuggestTradeAction(PlayerbotAI* botAI) : SuggestWhatToDoActi
 
 bool SuggestTradeAction::Execute(Event /*event*/)
 {
+    if (!sPlayerbotAIConfig.enableBroadcasts)
+        return false;
+
+    // Throttle attempts too: an empty inventory or a failed probability roll must not spin.
+    botAI->GetAiObjectContext()->GetValue<time_t>("last said", "suggest trade")
+        ->Set(time(nullptr) + urand(1, 60));
+
     uint32 quality = urand(0, 100);
     if (quality > 95)
         quality = ITEM_QUALITY_LEGENDARY;
@@ -327,7 +335,7 @@ bool SuggestTradeAction::Execute(Event /*event*/)
         quality = ITEM_QUALITY_NORMAL;
 
     uint32 item = 0, count = 0;
-    while (quality-- > ITEM_QUALITY_POOR)
+    for (; quality > ITEM_QUALITY_POOR; --quality)
     {
         FindTradeItemsVisitor visitor(quality);
         IterateItems(&visitor);
@@ -354,7 +362,7 @@ bool SuggestTradeAction::Execute(Event /*event*/)
     }
 
     if (!item || !count)
-        return false;
+        return BroadcastHelper::BroadcastSuggestTrade(botAI);
 
     ItemTemplate const* proto = sObjectMgr->GetItemTemplate(item);
     if (!proto)
@@ -362,8 +370,7 @@ bool SuggestTradeAction::Execute(Event /*event*/)
 
     uint32 price = proto->SellPrice * sRandomPlayerbotMgr.GetSellMultiplier(bot) * count;
     if (!price)
-        return false;
+        return BroadcastHelper::BroadcastSuggestTrade(botAI);
 
-    BroadcastHelper::BroadcastSuggestSell(botAI, proto, count, price, bot);
-    return true;
+    return BroadcastHelper::BroadcastSuggestSell(botAI, proto, count, price, bot);
 }

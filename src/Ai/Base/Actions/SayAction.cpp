@@ -7,6 +7,7 @@
 #include "SayAction.h"
 #include "AiFactory.h"
 #include "Event.h"
+#include "ObjectAccessor.h"
 #include "PlayerbotTextMgr.h"
 #include "Playerbots.h"
 #include <regex>
@@ -517,8 +518,10 @@ bool ChatReplyAction::SendGeneralResponse(Player* bot, ChatChannelSource chatCha
         }
         case ChatChannelSource::SRC_TRADE:
         {
-            //do not reply to the chat
-            //may whisper
+            // Reply to players in the same channel, without starting bot-to-bot reply chains.
+            if (Player* sender = ObjectAccessor::FindPlayerByName(name))
+                if (!sender->GetSession()->IsBot())
+                    GET_PLAYERBOT_AI(bot)->SayToChannel(responseMessage, ChatChannelId::TRADE);
             break;
         }
         case ChatChannelSource::SRC_LOCAL_DEFENSE:

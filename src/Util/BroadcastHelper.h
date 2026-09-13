@@ -137,6 +137,7 @@ public:
         std::vector<std::string> allowedFactions,
         Player* bot
     );
+    static bool BroadcastSuggestTrade(PlayerbotAI* ai);
     static bool BroadcastSuggestSell(
         PlayerbotAI* ai,
         ItemTemplate const* proto,

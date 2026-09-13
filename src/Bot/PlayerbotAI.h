@@ -167,6 +167,7 @@ enum ChatChannelId
 };
 
 bool IsPlayerbotChatChannel(ChatChannelsEntry const* channel, ChatChannelId channelId);
+ChatChannelsEntry const* GetPlayerbotWorldChannelEntry();
 
 enum RoguePoisonId
 {

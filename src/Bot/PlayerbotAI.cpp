@@ -78,6 +78,19 @@ std::string& trim(std::string& s);
 
 std::set<std::string> PlayerbotAI::unsecuredCommands;
 
+ChatChannelsEntry const* GetPlayerbotWorldChannelEntry()
+{
+    // Newcomers and pol are separate channels; stock DBCs retain the World fallback.
+    for (uint32 i = 0; i < sChatChannelsStore.GetNumRows(); ++i)
+    {
+        ChatChannelsEntry const* channel = sChatChannelsStore.LookupEntry(i);
+        if (channel && (channel->flags & CHANNEL_DBC_FLAG_GLOBAL) &&
+            channel->pattern[LOCALE_enUS] && std::string(channel->pattern[LOCALE_enUS]) == "Ascension")
+            return channel;
+    }
+    return nullptr;
+}
+
 bool IsPlayerbotChatChannel(ChatChannelsEntry const* channel, ChatChannelId channelId)
 {
     if (!channel)
@@ -1191,12 +1204,10 @@ void PlayerbotAI::HandleBotOutgoingPacket(WorldPacket const& packet)
 
             return;
         }
+        case SMSG_GM_MESSAGECHAT:  // Privileged accounts include the sender name in the packet.
         case SMSG_MESSAGECHAT:  // do not react to self or if not ready to reply
         {
-            if (!sPlayerbotAIConfig.randomBotTalk)
-                return;
-
-            if (!AllowActivity())
+            if (!sPlayerbotAIConfig.randomBotTalk || !AllowActivity())
                 return;
 
             WorldPacket p(packet);
@@ -2880,7 +2891,20 @@ bool PlayerbotAI::SayToWorld(std::string const& msg)
     if (!cMgr)
         return false;
 
-    // no zone
+    if (ChatChannelsEntry const* worldEntry = GetPlayerbotWorldChannelEntry())
+    {
+        for (auto const& [key, channel] : cMgr->GetChannels())
+        {
+            if (channel && channel->GetChannelId() == worldEntry->ChannelID && channel->IsMember(bot->GetGUID()))
+            {
+                channel->Say(bot->GetGUID(), msg.c_str(), LANG_UNIVERSAL);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    // Stock DBCs use a custom World channel.
     if (Channel* worldChannel = cMgr->GetChannel("World", bot))
     {
         worldChannel->Say(bot->GetGUID(), msg.c_str(), LANG_UNIVERSAL);
@@ -2910,7 +2934,7 @@ bool PlayerbotAI::SayToChannel(std::string const& msg, ChatChannelId const& chan
             continue;
 
         ChatChannelsEntry const* channelEntry = sChatChannelsStore.LookupEntry(channel->GetChannelId());
-        if (!IsPlayerbotChatChannel(channelEntry, chanId) || !bot->IsInChannel(channel))
+        if (!IsPlayerbotChatChannel(channelEntry, chanId) || !channel->IsMember(bot->GetGUID()))
             continue;
 
         channel->Say(bot->GetGUID(), msg.c_str(), LANG_UNIVERSAL);
@@ -6406,6 +6430,8 @@ ChatChannelSource PlayerbotAI::GetChatChannelSource(Player* bot, uint32 type, st
             if (channel)
             {
                 ChatChannelsEntry const* channelEntry = sChatChannelsStore.LookupEntry(channel->GetChannelId());
+                if (channelEntry && channelEntry == GetPlayerbotWorldChannelEntry())
+                    return ChatChannelSource::SRC_WORLD;
                 if (IsPlayerbotChatChannel(channelEntry, ChatChannelId::GENERAL))
                     return ChatChannelSource::SRC_GENERAL;
                 if (IsPlayerbotChatChannel(channelEntry, ChatChannelId::TRADE))

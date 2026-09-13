@@ -612,7 +612,8 @@ void PlayerbotHolder::OnBotLogin(Player* const bot)
     }
 
     // bots join World chat if not solo oriented
-    if (bot->GetLevel() >= 10 && sRandomPlayerbotMgr.IsRandomBot(bot) && GET_PLAYERBOT_AI(bot) &&
+    if (!GetPlayerbotWorldChannelEntry() && bot->GetLevel() >= 10 &&
+        sRandomPlayerbotMgr.IsRandomBot(bot) && GET_PLAYERBOT_AI(bot) &&
         GET_PLAYERBOT_AI(bot)->GetGrouperType() != GrouperType::SOLO)
     {
         // TODO make action/config
@@ -643,7 +644,11 @@ void PlayerbotHolder::OnBotLogin(Player* const bot)
                 continue;
 
             Channel* new_channel = nullptr;
-            if (IsPlayerbotChatChannel(channel, ChatChannelId::GENERAL) ||
+            if (channel == GetPlayerbotWorldChannelEntry())
+            {
+                new_channel = cMgr->GetJoinChannel(channelPattern, channel->ChannelID);
+            }
+            else if (IsPlayerbotChatChannel(channel, ChatChannelId::GENERAL) ||
                 IsPlayerbotChatChannel(channel, ChatChannelId::LOCAL_DEFENSE))
             {
                 char new_channel_name_buf[100];

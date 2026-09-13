@@ -800,6 +800,23 @@ bool BroadcastHelper::BroadcastSuggestGrindReputation(PlayerbotAI* ai, std::vect
     return false;
 }
 
+bool BroadcastHelper::BroadcastSuggestTrade(PlayerbotAI* ai)
+{
+    if (!sPlayerbotAIConfig.enableBroadcasts ||
+        urand(1, sPlayerbotAIConfig.broadcastChanceMaxValue) > sPlayerbotAIConfig.broadcastChanceSuggestSell)
+        return false;
+
+    // Bots without sale stock can discuss trading, but must not advertise items they do not own.
+    static char const* const messages[] = {
+        "Anyone selling crafting materials?",
+        "Any crafters taking orders today?",
+        "What's everyone trading today?",
+        "Anyone selling bags?"
+    };
+
+    return BroadcastToChannelWithGlobalChance(ai, messages[urand(0, 3)], { {TO_TRADE, 100} });
+}
+
 bool BroadcastHelper::BroadcastSuggestSell(PlayerbotAI* ai, ItemTemplate const* proto, uint32 count, uint32 price, Player* bot)
 {
     if (!sPlayerbotAIConfig.enableBroadcasts)
