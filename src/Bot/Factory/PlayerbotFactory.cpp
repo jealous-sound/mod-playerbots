@@ -886,6 +886,12 @@ void PlayerbotFactory::Refresh()
     // }
     InitAttunementQuests();
     ClearInventory();
+    // Recover low-level Druids initialized while their race's outfit was empty.
+    // The low-level equipment path uses the corrected DBC and preserves owned items.
+    if (level < 5 && bot->getClass() == CLASS_DRUID &&
+        !bot->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_CHEST) &&
+        !bot->GetItemByPos(INVENTORY_SLOT_BAG_0, EQUIPMENT_SLOT_LEGS))
+        InitEquipment(true);
     InitAmmo();
     InitFood();
     InitReagents();
@@ -1259,17 +1265,30 @@ void PlayerbotFactory::InitPetTalents()
                     talentID = talentInfo->TalentID;
 
                     uint32 currentTalentRank = 0;
+                    uint32 availableTalentRanks = 0;
                     for (uint8 rank = 0; rank < MAX_TALENT_RANK; ++rank)
                     {
-                        if (talentInfo->RankID[rank] && pet->HasSpell(talentInfo->RankID[rank]))
+                        if (!talentInfo->RankID[rank] || !sSpellMgr->GetSpellInfo(talentInfo->RankID[rank]))
+                            break;
+                        availableTalentRanks = rank + 1;
+                        if (pet->HasSpell(talentInfo->RankID[rank]))
                         {
                             currentTalentRank = rank + 1;
-                            break;
                         }
                     }
-                    learnLevel = std::min(lvl, pet->GetFreeTalentPoints() + currentTalentRank) - 1;
+                    // Configured stock builds may request more ranks than the
+                    // loaded Ascension talent provides. Never request an empty rank.
+                    uint32 const desiredRank = std::min({lvl, availableTalentRanks,
+                        pet->GetFreeTalentPoints() + currentTalentRank});
+                    if (desiredRank <= currentTalentRank)
+                    {
+                        talentID = 0;
+                        continue;
+                    }
+                    learnLevel = desiredRank - 1;
                 }
-                bot->LearnPetTalent(pet->GetGUID(), talentID, learnLevel);
+                if (talentID)
+                    bot->LearnPetTalent(pet->GetGUID(), talentID, learnLevel);
                 if (pet->GetFreeTalentPoints() == 0)
                 {
                     break;
