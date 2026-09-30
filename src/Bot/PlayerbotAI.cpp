@@ -12,6 +12,7 @@
 #include "CharacterPackets.h"
 #include "ChatHelper.h"
 #include "CheckMountStateAction.h"
+#include "CoaVoiceConfig.h"
 #include "Common.h"
 #include "CreatureData.h"
 #include "DBCStores.h"
@@ -1048,9 +1049,9 @@ bool PlayerbotAI::IsAllowedCommand(std::string const text)
     return false;
 }
 
-void PlayerbotAI::HandleCommand(uint32 type, std::string const text, Player* fromPlayer)
+void PlayerbotAI::HandleCommand(uint32 type, std::string const text, Player* fromPlayer, bool quietRefusals)
 {
-    if (!GetSecurity()->CheckLevelFor(PLAYERBOT_SECURITY_INVITE, type != CHAT_MSG_WHISPER, fromPlayer))
+    if (!GetSecurity()->CheckLevelFor(PLAYERBOT_SECURITY_INVITE, type != CHAT_MSG_WHISPER || quietRefusals, fromPlayer))
         return;
 
     if (type == CHAT_MSG_ADDON)
@@ -1065,7 +1066,7 @@ void PlayerbotAI::HandleCommand(uint32 type, std::string const text, Player* fro
         split(commands, text, sPlayerbotAIConfig.commandSeparator.c_str());
         for (std::vector<std::string>::iterator i = commands.begin(); i != commands.end(); ++i)
         {
-            HandleCommand(type, *i, fromPlayer);
+            HandleCommand(type, *i, fromPlayer, quietRefusals);
         }
 
         return;
@@ -1107,7 +1108,8 @@ void PlayerbotAI::HandleCommand(uint32 type, std::string const text, Player* fro
         return;
     }
     if (!IsAllowedCommand(filtered) &&
-        (!GetSecurity()->CheckLevelFor(PLAYERBOT_SECURITY_ALLOW_ALL, type != CHAT_MSG_WHISPER, fromPlayer)))
+        (!GetSecurity()->CheckLevelFor(PLAYERBOT_SECURITY_ALLOW_ALL, type != CHAT_MSG_WHISPER || quietRefusals,
+                                       fromPlayer)))
         return;
 
     if (type == CHAT_MSG_RAID_WARNING && filtered.find(bot->GetName()) != std::string::npos &&
@@ -1241,6 +1243,21 @@ void PlayerbotAI::TakeSharedQuest(WorldPacket const& packet)
     bot->AddQuestAndCheckCompletion(quest, sharer);
 }
 
+// Chat that ChatReplyAction::ChatReplyDo answers with something other than the generic reply: LFG/LFM quest
+// offers, WTB item offers, the toxic-links and Thunderfury jokes. Pure string parsing: runs on the speaker's thread.
+static bool IsLegacySpecialChat(std::string const& message)
+{
+    if (message.starts_with("LFG") || message.starts_with("LFM") || message.starts_with("WTB"))
+        return true;
+
+    std::set<uint32> const itemIds = ChatHelper::ExtractAllItemIds(message);
+    if (message.starts_with(sPlayerbotAIConfig.toxicLinksPrefix) &&
+        (!itemIds.empty() || !ChatHelper::ExtractAllQuestIds(message).empty()))
+        return true;
+
+    return itemIds.count(19019) > 0;
+}
+
 void PlayerbotAI::HandleBotOutgoingPacket(WorldPacket const& packet)
 {
     if (packet.empty())
@@ -1351,6 +1368,11 @@ void PlayerbotAI::HandleBotOutgoingPacket(WorldPacket const& packet)
                     default:
                         return;
                 }
+
+                // In voice mode the director answers people; only the special replies ChatReplyDo handles still
+                // queue here.
+                if (CoaVoiceConfig::Enabled() && !IsLegacySpecialChat(message))
+                    return;
 
                 if (chanName == "World")
                     return;

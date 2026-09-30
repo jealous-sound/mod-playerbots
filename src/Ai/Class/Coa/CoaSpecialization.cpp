@@ -958,18 +958,18 @@ std::string AnnounceText(CoaLfgSettings const& settings)
 }
 }  // namespace
 
-void CoaLfgHeard(Player* player, std::string const& message, Channel* channel)
+bool CoaLfgHeard(Player* player, std::string const& message, Channel* channel)
 {
     if (!player || !channel || GET_PLAYERBOT_AI(player))
-        return;
+        return false;
 
     CoaLfgSettings const settings = Settings();
     if (!settings.enabled || !Listened(settings, channel))
-        return;
+        return false;
 
     std::vector<CoaRole> const roles = RolesAsked(settings, message);
     if (roles.empty())
-        return;
+        return false;
 
     ChatHandler chat(player->GetSession());
     time_t const now = time(nullptr);
@@ -991,7 +991,7 @@ void CoaLfgHeard(Player* player, std::string const& message, Channel* channel)
         if (wanted.empty())
         {
             chat.SendSysMessage("The bots already heard you: invite the ones that whispered you, or ask again in a moment.");
-            return;
+            return true;
         }
 
         for (auto itr = LfgOffers.begin(); itr != LfgOffers.end();)
@@ -1011,7 +1011,7 @@ void CoaLfgHeard(Player* player, std::string const& message, Channel* channel)
     if (player->GetGroup() && player->GetGroup()->IsFull())
     {
         chat.SendSysMessage("Your group is full.");
-        return;
+        return true;
     }
 
     for (CoaRole const role : wanted)
@@ -1049,6 +1049,7 @@ void CoaLfgHeard(Player* player, std::string const& message, Channel* channel)
         if (!offered)
             chat.PSendSysMessage("No bot of your faction is free to play {} right now.", RoleName(role));
     }
+    return true;
 }
 
 bool CoaLfgTakeOffer(Player* bot, Player* inviter)

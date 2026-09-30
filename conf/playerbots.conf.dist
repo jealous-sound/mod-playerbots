@@ -1620,6 +1620,220 @@ AiPlayerbot.CoaLfgAnnounceMinutes = 10
 
 AiPlayerbot.CoaLfgAnnounceText =
 
+#
+#    CoA voice: bots answer real players in chat with ready-made lines (the ai_playerbot_texts rows
+#    named coa_reply_*, coa_emote_* and coa_deny_* of data/sql/playerbots/custom/coa_texts.sql).
+#    One bot at most answers a message, a few seconds later, in whispers, say, yell, party, raid,
+#    guild and the channels below, and to text emotes (/wave, /hug...) aimed at a bot. Nothing is
+#    sent outside the server. Players can stop it for their account with .playerbots optout voice.
+#    The lines are written in French (text_loc2) and English: set AiPlayerbot.BotTextLocale = 2 for
+#    French lines whatever the players' client language.
+#    Every AiPlayerbot.CoaVoice.* and AiPlayerbot.CoaHooks.* setting is read again by .reload config.
+#    Times are in seconds.
+#
+
+#    AiPlayerbot.CoaVoice.Enable
+#        Description: Master switch. Off, bots chat exactly as they did before (the legacy replies,
+#                     refusals and emote lines). On, the voice director chooses who answers and
+#                     what is said; the legacy generic replies are silenced, while the LFG/LFM/WTB
+#                     offers and the link jokes stay. .playerbots voice stats shows its counters.
+#        Default:     0 - off
+#                     1 - on
+
+AiPlayerbot.CoaVoice.Enable = 0
+
+#    AiPlayerbot.CoaVoice.Channels
+#        Description: Comma separated names of the chat channels answered. A channel whose name
+#                     starts with one of them is answered, whatever the case: "General" would
+#                     cover "General - Elwynn Forest". An LFG request the CoaLfg bots handled is
+#                     not answered again here.
+#        Default:     Zone
+
+AiPlayerbot.CoaVoice.Channels = Zone
+
+#    AiPlayerbot.CoaVoice.MaxResponders
+#        Description: How many bots answer one message, at most (1 to Shortlist). After the first,
+#                     only bots named in the message answer.
+#        Default:     1
+
+AiPlayerbot.CoaVoice.MaxResponders = 1
+
+#    AiPlayerbot.CoaVoice.Shortlist
+#        Description: How many of the best placed bots are tried in turn when the first cannot
+#                     answer (cooldown, nothing new to say), 1 to 10.
+#        Default:     3
+
+AiPlayerbot.CoaVoice.Shortlist = 3
+
+#    AiPlayerbot.CoaVoice.MaxNominees
+#        Description: How many bots are considered for one message, 1 to 512. Bots named in the
+#                     message are always kept; the others are drawn at random past this number.
+#        Default:     64
+
+AiPlayerbot.CoaVoice.MaxNominees = 64
+
+#    AiPlayerbot.CoaVoice.HeuristicChance.Whisper, .Party, .Guild, .Say, .Channel, .Emote
+#        Description: Percent chance (0 to 100) that a message is answered when it names no bot.
+#                     Party also covers raid chat, Say also covers yell, Emote covers text emotes
+#                     aimed at a bot and /e lines naming one. A bot named in party, raid, guild,
+#                     say, yell or channel chat always answers, cooldowns allowing; past this
+#                     chance, no other bot answers in its place.
+#        Default:     100, 60, 30, 25, 10, 50
+
+AiPlayerbot.CoaVoice.HeuristicChance.Whisper = 100
+AiPlayerbot.CoaVoice.HeuristicChance.Party = 60
+AiPlayerbot.CoaVoice.HeuristicChance.Guild = 30
+AiPlayerbot.CoaVoice.HeuristicChance.Say = 25
+AiPlayerbot.CoaVoice.HeuristicChance.Channel = 10
+AiPlayerbot.CoaVoice.HeuristicChance.Emote = 50
+
+#    AiPlayerbot.CoaVoice.ReplyDelayMin, AiPlayerbot.CoaVoice.ReplyDelayMax
+#        Description: Seconds between a message and its answer, drawn between the two.
+#        Default:     4, 12
+
+AiPlayerbot.CoaVoice.ReplyDelayMin = 4
+AiPlayerbot.CoaVoice.ReplyDelayMax = 12
+
+#    AiPlayerbot.CoaVoice.ReplyDelayCombatMin, AiPlayerbot.CoaVoice.ReplyDelayCombatMax
+#        Description: The same when the answering bot is in combat.
+#        Default:     10, 25
+
+AiPlayerbot.CoaVoice.ReplyDelayCombatMin = 10
+AiPlayerbot.CoaVoice.ReplyDelayCombatMax = 25
+
+#    AiPlayerbot.CoaVoice.EmoteReplyDelayMin, AiPlayerbot.CoaVoice.EmoteReplyDelayMax
+#        Description: The same for answers to emotes.
+#        Default:     1, 3
+
+AiPlayerbot.CoaVoice.EmoteReplyDelayMin = 1
+AiPlayerbot.CoaVoice.EmoteReplyDelayMax = 3
+
+#    AiPlayerbot.CoaVoice.TemplateCandidates
+#        Description: How many text rows are tried for one answer before the bot gives up (a row
+#                     is skipped when it repeats what was said recently), 1 to 32.
+#        Default:     8
+
+AiPlayerbot.CoaVoice.TemplateCandidates = 8
+
+#    AiPlayerbot.CoaVoice.MaxBytes
+#        Description: Longest line a bot says, in bytes (32 to 255), cut between characters.
+#        Default:     240
+
+AiPlayerbot.CoaVoice.MaxBytes = 240
+
+#    AiPlayerbot.CoaVoice.BlockedWords
+#        Description: Comma separated words or phrases a bot never says: a line holding one is
+#                     not used. Case and accents do not matter.
+#        Default:     (empty)
+
+AiPlayerbot.CoaVoice.BlockedWords =
+
+#    AiPlayerbot.CoaVoice.Cooldown.Bot, .Whisper, .Scope, .Sender
+#        Description: Seconds (0 to 1800) before a bot answers again in public chat (Bot) or in
+#                     whispers (Whisper); before anyone answers again in the same place (Scope: a
+#                     group, a guild, a channel, the surroundings of a /say; a whisper conversation
+#                     uses Whisper); before the same player gets another public answer (Sender).
+#        Default:     20, 3, 8, 10
+
+AiPlayerbot.CoaVoice.Cooldown.Bot = 20
+AiPlayerbot.CoaVoice.Cooldown.Whisper = 3
+AiPlayerbot.CoaVoice.Cooldown.Scope = 8
+AiPlayerbot.CoaVoice.Cooldown.Sender = 10
+
+#    AiPlayerbot.CoaVoice.ScopePerMinute
+#        Description: Answers per minute in one place, at most.
+#        Default:     6
+
+AiPlayerbot.CoaVoice.ScopePerMinute = 6
+
+#    AiPlayerbot.CoaVoice.GlobalPerMinute
+#        Description: Answers per minute on the whole realm, at most.
+#        Default:     60
+
+AiPlayerbot.CoaVoice.GlobalPerMinute = 60
+
+#    AiPlayerbot.CoaVoice.BotToBot
+#        Description: Whether bots also answer what other bots say in say and yell, and the bots'
+#                     own answers in party, raid, guild and channels, as long as a real player
+#                     spoke there within HumanWindowSeconds.
+#        Default:     0 - bots answer real players only
+#                     1 - bots answer bots too
+
+AiPlayerbot.CoaVoice.BotToBot = 0
+
+#    AiPlayerbot.CoaVoice.BotChainMax
+#        Description: With BotToBot, how many bot lines may follow one real player's message.
+#        Default:     2
+
+AiPlayerbot.CoaVoice.BotChainMax = 2
+
+#    AiPlayerbot.CoaVoice.ChainDecay
+#        Description: With BotToBot, the answer chance is multiplied by this at every bot line of
+#                     a chain (0 to 1).
+#        Default:     0.5
+
+AiPlayerbot.CoaVoice.ChainDecay = 0.5
+
+#    AiPlayerbot.CoaVoice.HumanWindowSeconds
+#        Description: With BotToBot, bots answer each other only where a real player spoke within
+#                     this many seconds (0 to 1800).
+#        Default:     120
+
+AiPlayerbot.CoaVoice.HumanWindowSeconds = 120
+
+#    AiPlayerbot.CoaVoice.Repetition.Threshold
+#        Description: How alike two lines may be (0 to 1, shared words over all words) before the
+#                     second counts as a repeat of the first and is not said.
+#        Default:     0.7
+
+AiPlayerbot.CoaVoice.Repetition.Threshold = 0.7
+
+#    AiPlayerbot.CoaVoice.Repetition.History
+#        Description: How many recent lines per place are compared for repeats (1 to 100).
+#        Default:     20
+
+AiPlayerbot.CoaVoice.Repetition.History = 20
+
+#    AiPlayerbot.CoaVoice.IndexRefreshSeconds
+#        Description: How often the list of bots per zone and guild, used to choose who answers,
+#                     is rebuilt (1 to 60).
+#        Default:     5
+
+AiPlayerbot.CoaVoice.IndexRefreshSeconds = 5
+
+#    AiPlayerbot.CoaVoice.MaxEmitsPerTick
+#        Description: Lines sent per world update at most (1 to 200); the rest wait for the next.
+#        Default:     20
+
+AiPlayerbot.CoaVoice.MaxEmitsPerTick = 20
+
+#    AiPlayerbot.CoaVoice.ReplyEmotes
+#        Description: Whether a bot may play an emote (wave, bow, laugh...) with its answer.
+#        Default:     1 - yes
+#                     0 - no
+
+AiPlayerbot.CoaVoice.ReplyEmotes = 1
+
+#    AiPlayerbot.CoaVoice.DenyFallback
+#        Description: A whisper from a player the bot does not obey, which no voice line answers,
+#                     gets a short refusal in the bots' language (busy, taken, ask the leader...)
+#                     in place of the legacy English one; also when GlobalPerMinute is reached, but
+#                     not when Cooldown.Whisper or ScopePerMinute holds the answer back. A free bot
+#                     asked for help or to join a group asks for an invite this way instead of
+#                     declining.
+#        Default:     1 - on
+#                     0 - off: such whispers stay unanswered
+
+AiPlayerbot.CoaVoice.DenyFallback = 1
+
+#    AiPlayerbot.CoaHooks.BusMax
+#        Description: Chat events waiting between the chat hooks and the next world update, at
+#                     most. Past it the newest events are dropped and counted (.playerbots voice
+#                     stats, "dropped").
+#        Default:     20000
+
+AiPlayerbot.CoaHooks.BusMax = 20000
+
 # Quality a looted item must reach to be written to the "playerbots.loot" logger:
 # 3 rare (blue), 4 epic, 5 legendary. Nothing is written unless worldserver.conf
 # points that logger at an appender, and only bots are ever logged.

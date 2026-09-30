@@ -115,7 +115,8 @@ bool PrepareCoaRecruit(Player* master, Player* chosen, CoaRole role, bool chosen
                        std::string& message);
 
 // "lfg bot heal" and the like, said by a player in a listened chat channel: free bots whisper offers.
-void CoaLfgHeard(Player* player, std::string const& message, Channel* channel);
+// True when the message was such a request (whatever came of it), so the voice director leaves it alone.
+bool CoaLfgHeard(Player* player, std::string const& message, Channel* channel);
 
 // Whether `bot` was offered to `inviter` by "lfg bot" and the offer still holds; the offer is used up.
 bool CoaLfgTakeOffer(Player* bot, Player* inviter);

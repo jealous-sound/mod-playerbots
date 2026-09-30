@@ -7,6 +7,7 @@
 #include "SayAction.h"
 #include "AiFactory.h"
 #include "CoaText.h"
+#include "CoaVoiceConfig.h"
 #include "Event.h"
 #include "PlayerbotTextMgr.h"
 #include "Playerbots.h"
@@ -220,6 +221,10 @@ void ChatReplyAction::ChatReplyDo(Player* bot, uint32& type, uint32& guid1, std:
         HandleThunderfuryReply(bot, chatChannelSource);
         return;
     }
+
+    // Voice mode: the director answers people itself; only the special replies above remain.
+    if (CoaVoiceConfig::Enabled())
+        return;
 
     auto messageRepy = GenerateReplyMessage(bot, msg, guid1, name);
     SendGeneralResponse(bot, chatChannelSource, messageRepy, name);

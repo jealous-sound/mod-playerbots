@@ -9,6 +9,8 @@
 #include "BattleGroundTactics.h"
 #include "BattlefieldScript.h"
 #include "Channel.h"
+#include "CoaHooks.h"
+#include "CoaVoiceConfig.h"
 #include "Config.h"
 #include "DatabaseEnv.h"
 #include "DatabaseLoader.h"
@@ -221,7 +223,9 @@ public:
             return true;
         }
 
-        botAI->HandleCommand(type, msg, player);
+        // Voice mode: when the director takes the whisper as conversation, it answers or refuses by itself.
+        bool const quiet = CoaVoiceConfig::Enabled() && CoaHooks::OnWhisper(player, receiver, msg);
+        botAI->HandleCommand(type, msg, player, quiet);
 
         // hotfix; otherwise the server will crash when whispering logout
         // https://github.com/mod-playerbots/mod-playerbots/pull/1838
@@ -234,6 +238,9 @@ public:
 
     bool OnPlayerCanUseChat(Player* player, uint32 type, uint32 /*lang*/, std::string& msg, Group* group) override
     {
+        if (CoaVoiceConfig::Enabled())
+            CoaHooks::OnGroupChat(player, type, msg, group);
+
         for (GroupReference* itr = group->GetFirstMember(); itr != nullptr; itr = itr->next())
         {
             Player* const member = itr->GetSource();
@@ -256,6 +263,9 @@ public:
     {
         if (type != CHAT_MSG_GUILD)
             return true;
+
+        if (CoaVoiceConfig::Enabled())
+            CoaHooks::OnGuildChat(player, msg);
 
         PlayerbotMgr* playerbotMgr = PlayerbotsMgr::instance().GetPlayerbotMgr(player);
 
@@ -280,14 +290,18 @@ public:
 
     bool OnPlayerCanUseChat(Player* player, uint32 type, uint32 /*lang*/, std::string& msg, Channel* channel) override
     {
-        CoaLfgHeard(player, msg, channel);
+        bool const lfgHandled = CoaLfgHeard(player, msg, channel);
+        // Voice mode: a conversation line the director took skips the scan below, which runs a security check
+        // per random bot only to drop text that is not a command.
+        bool const voiceTook = CoaVoiceConfig::Enabled() && CoaHooks::OnChannelChat(player, msg, channel, lfgHandled);
 
         PlayerbotMgr* const playerbotMgr = PlayerbotsMgr::instance().GetPlayerbotMgr(player);
 
         if (playerbotMgr != nullptr && channel->GetFlags() & 0x18)
             playerbotMgr->HandleCommand(type, msg);
 
-        sRandomPlayerbotMgr.HandleCommand(type, msg, player);
+        if (!voiceTook)
+            sRandomPlayerbotMgr.HandleCommand(type, msg, player);
 
         return true;
     }
@@ -592,4 +606,6 @@ void AddPlayerbotsScripts()
     AddSC_coa_group_telemetry();
     AddSC_coa_status_file();
     AddSC_coa_lfg();
+    AddSC_coa_hooks();
+    AddSC_coa_world();
 }

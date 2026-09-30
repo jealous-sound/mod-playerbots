@@ -5,6 +5,7 @@
  */
 
 #include "EmoteAction.h"
+#include "CoaVoiceConfig.h"
 #include "Event.h"
 #include "Playerbots.h"
 #include "ServerFacade.h"
@@ -741,7 +742,11 @@ bool EmoteAction::Execute(Event event)
     }
 
     if (emote)
-        return ReceiveEmote(pSource, emote, bot->InBattleground() ? false : urand(0, 1));
+    {
+        // Voice mode: the director says the bot's words; the animation stays. Voice off draws the same urand.
+        bool const verbal = CoaVoiceConfig::Enabled() ? false : (bot->InBattleground() ? false : urand(0, 1));
+        return ReceiveEmote(pSource, emote, verbal);
+    }
 
     if (param.find("sound") == 0)
     {

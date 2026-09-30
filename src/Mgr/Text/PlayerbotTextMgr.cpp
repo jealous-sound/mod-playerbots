@@ -10,6 +10,56 @@
 #include "QueryResult.h"    // Required due to a poor implementation by AC
 #include "Random.h"
 #include "WorldSessionMgr.h"
+#include <algorithm>
+#include <string_view>
+#include <unordered_set>
+
+namespace
+{
+// Distinct non-empty texts of the rows `keep` accepts, in `locale`, or in English when no such row has that locale,
+// then a urand-driven partial Fisher-Yates keeps maxCount of them. Dedupe because ".bot reload" appends every row
+// again (LoadBotTexts never clears the map).
+template <typename Keep>
+uint32 PickCandidates(std::vector<BotTextEntry> const& rows, Keep const& keep, uint32 locale, uint32 maxCount,
+                      std::vector<std::string>& out)
+{
+    if (!maxCount)
+        return 0;
+    if (locale >= TOTAL_LOCALES)
+        locale = 0;
+
+    std::vector<std::string const*> texts;
+    std::unordered_set<std::string_view> seen;
+    auto const collect = [&](uint32 textLocale)
+    {
+        for (BotTextEntry const& row : rows)
+        {
+            if (!keep(row))
+                continue;
+            auto const text = row.m_text.find(textLocale);
+            if (text == row.m_text.end() || text->second.empty())
+                continue;
+            if (seen.insert(text->second).second)
+                texts.push_back(&text->second);
+        }
+    };
+
+    if (locale)
+        collect(locale);
+    if (texts.empty())
+        collect(0);
+
+    uint32 const count = uint32(texts.size());
+    uint32 const kept = std::min(maxCount, count);
+    out.reserve(kept);
+    for (uint32 i = 0; i < kept; ++i)
+    {
+        std::swap(texts[i], texts[urand(i, count - 1)]);
+        out.push_back(*texts[i]);
+    }
+    return kept;
+}
+}  // namespace
 
 void PlayerbotTextMgr::replaceAll(std::string& str, std::string const& from, std::string const& to)
 {
@@ -164,6 +214,32 @@ std::string PlayerbotTextMgr::GetBotText(ChatReplyType replyType, std::string na
     placeholders["%s"] = name;
 
     return GetBotText(replyType, placeholders);
+}
+
+// CoA voice candidates
+
+uint32 PlayerbotTextMgr::GetCandidates(std::string const& name, uint32 locale, uint32 maxCount,
+                                       std::vector<std::string>& out) const
+{
+    out.clear();
+    auto const found = botTexts.find(name);
+    if (found == botTexts.end())
+        return 0;
+
+    auto const any = [](BotTextEntry const&) { return true; };
+    return PickCandidates(found->second, any, locale, maxCount, out);
+}
+
+uint32 PlayerbotTextMgr::GetCandidates(ChatReplyType replyType, uint32 locale, uint32 maxCount,
+                                       std::vector<std::string>& out) const
+{
+    out.clear();
+    auto const found = botTexts.find("reply");
+    if (found == botTexts.end())
+        return 0;
+
+    auto const ofType = [replyType](BotTextEntry const& row) { return row.m_replyType == uint32(replyType); };
+    return PickCandidates(found->second, ofType, locale, maxCount, out);
 }
 
 // probabilities

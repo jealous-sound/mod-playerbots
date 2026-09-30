@@ -403,7 +403,9 @@ public:
     void UpdateAIInternal(uint32 elapsed, bool minimal = false) override;
 
     std::string const HandleRemoteCommand(std::string const command);
-    void HandleCommand(uint32 type, std::string const text, Player* fromPlayer);
+    // quietRefusals: the voice director took this whisper as conversation and answers or refuses by itself, so the
+    // security checks refuse without whispering the legacy refusal.
+    void HandleCommand(uint32 type, std::string const text, Player* fromPlayer, bool quietRefusals = false);
     void QueueChatResponse(const ChatQueuedReply reply);
     // Until when this bot ignores what other random bots say in chat. Read and written on the speaker's
     // thread as well as the bot's own.
@@ -553,6 +555,8 @@ public:
     static uint32 GetMixedGearScore(Player* player, bool withBags, bool withBank, uint32 topN = 0);
     bool HasSkill(SkillType skill);
     bool IsAllowedCommand(std::string const text);
+    // The commands any player may give (IsAllowedCommand), for CoaChatIntent::LooksLikeCommand.
+    static std::set<std::string> const& GetUnsecuredCommands() { return unsecuredCommands; }
     float GetRange(std::string const type);
 
     Player* GetBot() { return bot; }
