@@ -11,6 +11,8 @@
 #include "BrainUsageStore.h"
 #include "Chat.h"
 #include "CoaEventBus.h"
+#include "CoaMemoryConfig.h"
+#include "CoaMemoryMgr.h"
 #include "CoaPlayerPrefs.h"
 #include "CoaThread.h"
 #include "CoaTime.h"
@@ -55,7 +57,8 @@ void PrintBrainLine(uint32 account, std::string const& line)
 }
 
 // Every hook runs on the thread of World::Update. OnUpdate comes after MapMgr::Update has joined the map threads, so
-// the director may touch any Player there; nothing posts to the bus while it drains.
+// the director and the memory manager may touch any Player there (and swap the bots' memory views); nothing posts to
+// the bus while it drains.
 class CoaWorldScript : public WorldScript
 {
 public:
@@ -74,13 +77,22 @@ public:
         std::shared_ptr<CoaVoiceConfig const> const config = CoaVoiceConfig::Load();
         CoaVoiceConfig::Publish(config);
 
+        // With CoaMemory.Enable = 0 this reads that one key.
+        std::shared_ptr<CoaMemoryConfig const> const memory = CoaMemoryConfig::Load();
+        CoaMemoryConfig::Publish(memory);
+
+        // The bus carries the voice's chat and the memory's deeds.
         CoaEventBus& bus = CoaEventBus::Instance();
         bus.Configure(sConfigMgr->GetOption<uint32>("AiPlayerbot.CoaHooks.BusMax", 20000));
-        bus.SetEnabled(config->enable);
+        bus.SetEnabled(config->enable || memory->enable);
 
-        // At startup OnStartup loads the preferences; here only a .reload config that turns voice on does (async).
-        if (reload && config->enable)
+        // At startup OnStartup loads the preferences; here only a .reload config with voice or memory on does (async).
+        if (reload && (config->enable || memory->enable))
             CoaPlayerPrefs::Instance().LoadAsync();
+        // Off -> on: the online bots log in to memory over the next ticks. On -> off: memory stops at once with a
+        // final flush; events still queued reach Update once more, which drops them.
+        if (reload)
+            CoaMemoryMgr::Instance().OnConfigReload();
 
         // With CoaBrain.Enable = 0 this reads that one key. At startup the brain waits for OnStartup, where the
         // database is open: its usage must be loaded before it first runs. A reload ends .playerbots brain on|off.
@@ -102,8 +114,10 @@ public:
     void OnStartup() override
     {
         CoaThread::CaptureWorldThread();
-        if (CoaVoiceConfig::Enabled())
+        if (CoaVoiceConfig::Enabled() || CoaMemoryConfig::Enabled())
             CoaPlayerPrefs::Instance().LoadSync();
+        // After the preferences: the memory's first tick purges the accounts that opted out while it was off.
+        CoaMemoryMgr::Instance().OnStartup();
 
         std::shared_ptr<BrainConfig const> const brain = BrainConfig::Current();
         if (brain->enable)
@@ -130,14 +144,26 @@ public:
         }
 
         // With voice off the director is left alone (no lock, no snapshot copy), except for the one tick after it
-        // was turned off, or with events still queued (on and off again within one tick): that tick drops what the
-        // bus held and resets the director's state. The director drains its brain results inside Update.
+        // was turned off, or with voice events still queued (on and off again within one tick): that tick drops
+        // what the bus held and resets the director's state. The director drains its brain results inside Update.
+        // Memory goes first (bus -> memory -> voice): the director's conversation notes of this tick then meet
+        // memories already up to date. With memory off Running() is false and no memory event is queued, so these
+        // statements reduce to M2's.
         bool const enabled = CoaVoiceConfig::Enabled();
         CoaEventBus& bus = CoaEventBus::Instance();
-        if (!enabled && !directorRunning && !bus.Pending())
+        CoaMemoryMgr& memory = CoaMemoryMgr::Instance();
+        if (!enabled && !directorRunning && !memory.Running() && !bus.Pending())
             return;
 
         bus.Drain(events);
+        CoaMemoryMgr::TakeMemoryEvents(events, memoryEvents);
+        // Events left over from a memory turned off meanwhile reach Update once more, which drops them.
+        if (memory.Running() || !memoryEvents.empty())
+            memory.Update(diff, memoryEvents, brainPrint);
+        memoryEvents.clear();
+        if (!enabled && !directorRunning && events.empty())
+            return;
+
         CoaVoiceDirector::Instance().Update(diff, events);
         events.clear();
         directorRunning = enabled;
@@ -159,13 +185,26 @@ public:
 
     // After the world loop: map threads are stopped, bots still exist. Late speech (Logout, KickAll) is dropped,
     // waiting lines are never sent, a load in flight is never processed. Queued writes, the brain's last usage rows
-    // included, are flushed by PlayerbotsDatabase.Close() in OnDatabasesClosing. The brain's workers get
-    // CoaBrain.Shutdown.WorkerDeadlineMs, then are detached.
+    // and the memory's final flush included, are flushed by PlayerbotsDatabase.Close() in OnDatabasesClosing. The
+    // brain's workers get CoaBrain.Shutdown.WorkerDeadlineMs, then are detached.
     void OnShutdown() override
     {
         CoaThread::CaptureWorldThread();
-        CoaEventBus::Instance().Close();
+        CoaEventBus& bus = CoaEventBus::Instance();
+        CoaMemoryMgr& memory = CoaMemoryMgr::Instance();
+        // The deeds of the last tick are kept for the final flush; the voice events are dropped uncounted, as Close
+        // drops them. With memory off Close alone frees the queue, as in M2.
+        if (memory.Running())
+        {
+            bus.Drain(events);
+            CoaMemoryMgr::TakeMemoryEvents(events, memoryEvents);
+            events.clear();
+        }
+        bus.Close();
+        // The director may hand the notes of its waiting decisions to the memory: it shuts down first.
         CoaVoiceDirector::Instance().Shutdown();
+        memory.Shutdown(memoryEvents);
+        memoryEvents.clear();
         bool const brainRan = BrainService::EverStarted();
         if (brainRan)
             BrainAdmin::Shutdown();
@@ -176,8 +215,9 @@ public:
     }
 
 private:
-    std::vector<CoaEvent> events;  // reused every tick
-    bool directorRunning = false;  // the director was updated with voice on, and has not seen it off yet
+    std::vector<CoaEvent> events;        // reused every tick
+    std::vector<CoaEvent> memoryEvents;  // the memory's share of `events`, reused every tick
+    bool directorRunning = false;        // the director was updated with voice on, and has not seen it off yet
     BrainAdminPrint const brainPrint = PrintBrainLine;  // built once: no std::function per tick
 };
 }  // namespace

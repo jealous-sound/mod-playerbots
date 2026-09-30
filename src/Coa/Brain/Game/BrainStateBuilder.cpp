@@ -6,6 +6,7 @@
 
 #include "BrainStateBuilder.h"
 #include "BrainConfig.h"
+#include "CoaHash.h"
 #include "CoaSpecLookup.h"
 #include "CoaSpecialization.h"
 #include "CoaText.h"
@@ -200,6 +201,30 @@ std::size_t JoinedSize(std::vector<std::string> const& lines)
     return size;
 }
 
+// 16 lower-case hex digits.
+std::string Hex16(uint64 value)
+{
+    static constexpr char DIGITS[] = "0123456789abcdef";
+    std::string out(16, '0');
+    for (std::size_t i = out.size(); i-- > 0; value >>= 4)
+        out[i] = DIGITS[value & 0xF];
+    return out;
+}
+
+// M3: the memory lines of the state, as one string for the cache key.
+std::string JoinLines(std::vector<std::string> const& lines)
+{
+    std::string out;
+    out.reserve(JoinedSize(lines));
+    for (std::size_t i = 0; i < lines.size(); ++i)
+    {
+        if (i)
+            out += '\n';
+        out += lines[i];
+    }
+    return out;
+}
+
 // The line placeholders filled for `bot` answering `speaker` (the console: a level-60 "Player").
 CoaVoiceTemplates::Placeholders TestPlaceholders(Player* bot, Player* speaker)
 {
@@ -242,6 +267,11 @@ bool FillChatJob(BrainChatFacts const& facts, std::string_view text, BrainChatPl
                        CoaChatIntent::IntentName(facts.features.intent) + "|" +
                        (facts.features.namedBots ? "named" : "-") + "|" +
                        std::to_string(std::min<std::size_t>(facts.bots.size(), 3)) + "|" + cacheText;
+        // M3: rated answers and answers given with memory lines are never served for another kind of job.
+        if (facts.askRating)
+            job.cacheKey += "|r";
+        if (!facts.memory.empty())
+            job.cacheKey += "|m" + Hex16(CoaHash::Bytes(JoinLines(facts.memory)));
     }
     return true;
 }
@@ -296,6 +326,19 @@ std::string BrainStateBuilder::ChatState(BrainChatFacts const& facts, BrainQuest
             lines.push_back("b" + std::to_string(i) + ": " + DescribeBot(facts.bots[i]));
     }
 
+    // M3: what the bots remember about the speaker goes first when the state is too long; with its last line the
+    // section header goes too.
+    if (!facts.memory.empty())
+    {
+        std::size_t const memoryHeader = lines.size();
+        lines.emplace_back("[memory]");
+        lines.insert(lines.end(), facts.memory.begin(), facts.memory.end());
+        while (JoinedSize(lines) > maxChars && lines.size() > memoryHeader + 1)
+            lines.pop_back();
+        if (lines.size() == memoryHeader + 1)
+            lines.pop_back();
+    }
+
     // Over the limit: the last bots first (b0 stays), then the "also" line. The header is never cut.
     while (JoinedSize(lines) > maxChars && lines.size() > firstBot + 1)
         lines.pop_back();
@@ -339,7 +382,7 @@ std::vector<BrainQuestion> BrainStateBuilder::ChatQuestions(BrainChatFacts const
                                                             BrainQuestionSet const& questions, bool askWho)
 {
     std::vector<BrainQuestion> out;
-    out.reserve(5);
+    out.reserve(facts.askRating ? 8 : 5);
 
     BrainQuestion reply;
     reply.name = "reply";
@@ -395,6 +438,32 @@ std::vector<BrainQuestion> BrainStateBuilder::ChatQuestions(BrainChatFacts const
         emote.options.push_back({key, described != questions.emotes.end() ? described->second : key, ""});
     }
     out.push_back(std::move(emote));
+
+    // M3: the bots' memory rates the message (ReadRating reads these answers).
+    if (facts.askRating)
+    {
+        BrainQuestion friendliness;
+        friendliness.name = "friendliness";
+        friendliness.type = BrainQuestionType::Score;
+        friendliness.instructions = questions.friendlinessInstructions;
+        for (std::size_t level = 0; level < questions.friendlinessLevels.size(); ++level)
+            friendliness.options.push_back({std::to_string(level), questions.friendlinessLevels[level], ""});
+        out.push_back(std::move(friendliness));
+
+        BrainQuestion insult;
+        insult.name = "insult";
+        insult.type = BrainQuestionType::YesNo;
+        insult.instructions = questions.insultInstructions;
+        insult.options = {{"true", questions.insultTrue, ""}, {"false", questions.insultFalse, ""}};
+        out.push_back(std::move(insult));
+
+        BrainQuestion thanks;
+        thanks.name = "thanks";
+        thanks.type = BrainQuestionType::YesNo;
+        thanks.instructions = questions.thanksInstructions;
+        thanks.options = {{"true", questions.thanksTrue, ""}, {"false", questions.thanksFalse, ""}};
+        out.push_back(std::move(thanks));
+    }
     return out;
 }
 
@@ -633,4 +702,35 @@ char const* BrainStateBuilder::ToneName(int32 level)
         default:
             return "unknown";
     }
+}
+
+bool BrainStateBuilder::ReadRating(BrainResult const& result, MemorySentiment& sentiment)
+{
+    if (result.error != BrainError::None)
+        return false;
+
+    auto const valid = [&result](std::string_view name, BrainQuestionType type) -> BrainAnswer const*
+    {
+        BrainAnswer const* const answer = result.Find(name);
+        return answer && answer->valid && answer->type == type ? answer : nullptr;
+    };
+    BrainAnswer const* friendliness = valid("friendliness", BrainQuestionType::Score);
+    if (friendliness && (friendliness->level < 0 || friendliness->level > 4))
+        friendliness = nullptr;
+    BrainAnswer const* const insult = valid("insult", BrainQuestionType::YesNo);
+    BrainAnswer const* const thanks = valid("thanks", BrainQuestionType::YesNo);
+    if (!friendliness && !insult && !thanks)
+        return false;
+
+    if (friendliness)
+    {
+        sentiment.s = float(friendliness->level - 2) / 2.0f;
+        sentiment.c = friendliness->calibrated ? std::clamp(friendliness->p, 0.0f, 1.0f) : 0.3f;
+    }
+    if (insult)
+        sentiment.insult = insult->p >= 0.7f;
+    if (thanks)
+        sentiment.thanks = thanks->p >= 0.7f;
+    sentiment.source = MemorySentimentSource::Brain;
+    return true;
 }

@@ -12,6 +12,8 @@
 #include "Channel.h"
 #include "ChannelMgr.h"
 #include "CoaHash.h"
+#include "CoaMemoryConfig.h"
+#include "CoaMemoryMgr.h"
 #include "CoaPlayerPrefs.h"
 #include "CoaSpecLookup.h"
 #include "CoaSpecialization.h"
@@ -24,6 +26,7 @@
 #include "EmoteAction.h"
 #include "Group.h"
 #include "Log.h"
+#include "MemoryTypes.h"
 #include "NameMatch.h"
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
@@ -31,6 +34,7 @@
 #include "Playerbots.h"
 #include "QuestionRegistry.h"
 #include "Random.h"
+#include "SentimentHeuristic.h"
 #include "ServerFacade.h"
 #include "StringFormat.h"
 #include "World.h"
@@ -42,6 +46,8 @@
 #include <cmath>
 #include <ctime>
 #include <limits>
+#include <optional>
+#include <utility>
 
 namespace
 {
@@ -195,6 +201,91 @@ CoaIntent EmoteIntent(CoaEmoteCategory category)
             return CoaIntent::Other;
     }
 }
+
+// M3: where a message addressed to a bot was said, as the bots' memory files it.
+MemoryTalkKind TalkKindOf(CoaVoiceScopeKind kind)
+{
+    switch (kind)
+    {
+        case CoaVoiceScopeKind::Whisper:
+            return MemoryTalkKind::Whisper;
+        case CoaVoiceScopeKind::Party:
+        case CoaVoiceScopeKind::Raid:
+            return MemoryTalkKind::Group;
+        case CoaVoiceScopeKind::Guild:
+            return MemoryTalkKind::Guild;
+        case CoaVoiceScopeKind::Channel:
+            return MemoryTalkKind::Channel;
+        case CoaVoiceScopeKind::TextEmote:
+            return MemoryTalkKind::Emote;
+        default:
+            return MemoryTalkKind::Say;  // say, yell, "/e"
+    }
+}
+
+// M3 (CoaMemory.MemoryReplies): how `bot` sounds toward `sender`. None after one relaxed load when off.
+MemoryTone ToneToward(Player* bot, Player* sender)
+{
+    if (!CoaMemoryConfig::BehaviourActive(MemoryBehaviour::MemoryReplies))
+        return MemoryTone::None;
+    return CoaMemoryMgr::Instance().ToneFor(bot, sender);
+}
+
+// The coa_mem_reply_* name of a tone for the intent answered; null keeps the M1 name.
+char const* MemoryReplyName(MemoryTone tone, CoaIntent intent)
+{
+    switch (tone)
+    {
+        case MemoryTone::Grudge:
+            return intent == CoaIntent::Farewell ? "coa_mem_reply_cold" : "coa_mem_reply_grudge";
+        case MemoryTone::Cold:
+            return "coa_mem_reply_cold";
+        case MemoryTone::Friend:
+            switch (intent)
+            {
+                case CoaIntent::Greeting:
+                case CoaIntent::Thanks:
+                case CoaIntent::Compliment:
+                case CoaIntent::Joke:
+                case CoaIntent::Other:
+                case CoaIntent::None:
+                    return "coa_mem_reply_friend";
+                default:
+                    return nullptr;
+            }
+        default:
+            return nullptr;
+    }
+}
+
+char const* ToneLogName(MemoryTone tone)
+{
+    switch (tone)
+    {
+        case MemoryTone::Friend:
+            return "friend";
+        case MemoryTone::Cold:
+            return "cold";
+        case MemoryTone::Grudge:
+            return "grudge";
+        default:
+            return "none";
+    }
+}
+
+// Runs `fn` when it goes out of scope.
+template <typename F>
+class ScopeExit
+{
+public:
+    explicit ScopeExit(F fn) : onExit(std::move(fn)) {}
+    ~ScopeExit() { onExit(); }
+    ScopeExit(ScopeExit const&) = delete;
+    ScopeExit& operator=(ScopeExit const&) = delete;
+
+private:
+    F onExit;
+};
 
 std::string ClassName(Player* bot)
 {
@@ -523,10 +614,21 @@ void CoaVoiceDirector::Reset()
     if (!decisions.empty())
     {
         std::shared_ptr<IBrain> const brain = BrainService::Current();
-        for (auto const& [eventId, decision] : decisions)
+        std::vector<PendingDecision*> noted;
+        for (auto& [eventId, decision] : decisions)
         {
             brain->Cancel(decision.jobId);
             CountDrop(CoaVoiceDrop::Disabled);
+            if (!decision.memoryNotes.empty())
+                noted.push_back(&decision);
+        }
+        // M3: their messages are still remembered, oldest first, with the heuristic's rating.
+        if (!noted.empty())
+        {
+            std::sort(noted.begin(), noted.end(),
+                      [](PendingDecision const* a, PendingDecision const* b) { return a->eventId < b->eventId; });
+            for (PendingDecision* decision : noted)
+                DeliverMemoryNotes(decision->memoryNotes);
         }
         decisions.clear();
     }
@@ -621,6 +723,17 @@ bool CoaVoiceDirector::HandleEvent(CoaVoiceConfig const& config, CoaEvent& event
     {
         fail(why);
         return true;
+    }
+
+    // M3: the bots a real player addresses remember the message whatever becomes of the answer. The notes go to the
+    // memory when this returns, unless a brain job rating the message took them. Memory off: one relaxed load; a
+    // memory that stayed off (tables missing) is not running: no notes.
+    auto deliverNotes = [this] { DeliverMemoryNotes(memoryNotes); };
+    std::optional<ScopeExit<decltype(deliverNotes)>> notesGuard;
+    if (!event.fromBot && CoaMemoryConfig::Enabled() && CoaMemoryMgr::Running())
+    {
+        NoteConversation(event, kind, sender);
+        notesGuard.emplace(deliverNotes);
     }
 
     // One draw: under the scope's chance anyone may answer; above it, up to a named bot's forced chance, only the
@@ -737,10 +850,11 @@ uint32 CoaVoiceDirector::RunBallot(CoaVoiceConfig const& config, CoaEvent const&
 
         CoaVoiceLine line;
         CoaVoiceDrop lineWhy = CoaVoiceDrop::NoLine;
+        bool quiet = false;
         bool const composed =
             (pick && plan && !pick->lineOrder.empty() &&
              ComposeFromBrain(config, scope, bot, sender, intent, *pick, *plan, nowMs, line)) ||
-            Compose(config, scope, bot, sender, intent, candidate.named, event.textEmote, nowMs, line, lineWhy);
+            Compose(config, scope, bot, sender, intent, candidate.named, event.textEmote, nowMs, line, lineWhy, quiet);
         if (!composed)
         {
             if (lineReason == CoaVoiceDrop::Count || lineWhy == CoaVoiceDrop::Repetition)
@@ -748,8 +862,8 @@ uint32 CoaVoiceDirector::RunBallot(CoaVoiceConfig const& config, CoaEvent const&
             continue;
         }
 
-        // The brain's emote (0: none) replaces the persona's roll.
-        if (pick && pick->emote >= 0 && config.replyEmotes && kind != CoaVoiceScopeKind::TextEmote)
+        // The brain's emote (0: none) replaces the persona's roll. A cold or grudge memory line has none (M3).
+        if (pick && pick->emote >= 0 && config.replyEmotes && kind != CoaVoiceScopeKind::TextEmote && !quiet)
             line.emote = uint32(pick->emote);
 
         uint32 delayMin = config.replyDelayMinMs;
@@ -915,6 +1029,23 @@ bool CoaVoiceDirector::TrySubmitDecision(CoaVoiceConfig const& config, CoaEvent 
     bool const askWho = brain->ChainCalibrated() && whoChoices > 1;
     plan.whoCount = askWho ? uint32(whoChoices) : 0;
 
+    // M3: the rating questions and the [memory] lines. Memory off, or not running (tables missing): the job and its
+    // cache key stay M2's, and no rating is paid for.
+    if (CoaMemoryConfig::Enabled() && CoaMemoryMgr::Running())
+    {
+        std::shared_ptr<CoaMemoryConfig const> const memory = CoaMemoryConfig::Current();
+        facts.askRating = !memoryNotes.empty() && memory->UseBrainRating();
+        if (memory->stateTokenBudget)
+        {
+            std::vector<ObjectGuid> bots;
+            bots.reserve(kept.size());
+            for (CoaVoiceCandidate const& candidate : kept)
+                bots.push_back(candidate.guid);
+            facts.memory = CoaMemoryMgr::Instance().BrainLines(bots, event.sender, sender->GetZoneId(),
+                                                               memory->stateTokenBudget * 4);
+        }
+    }
+
     BrainJob job;
     if (!BrainStateBuilder::BuildChatJob(facts, event.text, plan, askWho, job))
         return false;
@@ -951,6 +1082,12 @@ bool CoaVoiceDirector::TrySubmitDecision(CoaVoiceConfig const& config, CoaEvent 
     decision.namedOnly = namedOnly;
     decision.forced = forced;
     decision.plan = std::move(plan);
+    // M3: the notes wait for the rating; ResumeDecision delivers them.
+    if (facts.askRating)
+    {
+        decision.memoryNotes = std::move(memoryNotes);
+        memoryNotes.clear();
+    }
 
     if (whisperCapped)
         ++whisperBrainToday[account];
@@ -1016,6 +1153,17 @@ void CoaVoiceDirector::ResumeDecision(CoaVoiceConfig const& config, PendingDecis
                                       BrainResult const* result, uint64 nowMs)
 {
     currentEventId = decision.eventId;
+
+    // M3: the message is remembered once whatever happens below, rated by the brain when its answers are valid.
+    if (!decision.memoryNotes.empty())
+    {
+        if (result)
+            for (MemoryConversation& note : decision.memoryNotes)
+                if (BrainStateBuilder::ReadRating(*result, note.sentiment))
+                    ++stats.notesBrainRated;
+        DeliverMemoryNotes(decision.memoryNotes);
+    }
+
     CoaVoiceScopeKind const kind = decision.scope.kind;
     BrainStats& brainStats = BrainStats::Instance();
     (result ? brainStats.byAnswer : brainStats.byTimeout).fetch_add(1, std::memory_order_relaxed);
@@ -1248,6 +1396,10 @@ bool CoaVoiceDirector::ComposeFromBrain(CoaVoiceConfig const& config, CoaVoiceSc
                                         Player* sender, CoaIntent intent, BrainPick const& pick,
                                         BrainChatPlan const& plan, uint64 nowMs, CoaVoiceLine& line)
 {
+    // M3: a disliked player or a grudge gets the memory's dry lines from Compose, never a ranked M1 line.
+    if (MemoryTone const tone = ToneToward(bot, sender); tone == MemoryTone::Cold || tone == MemoryTone::Grudge)
+        return false;
+
     CoaVoicePersona const persona = CoaVoicePersona::For(bot->GetGUID());
     CoaVoiceTemplates::Placeholders const placeholders = PlaceholdersFor(bot, sender);
 
@@ -1582,14 +1734,27 @@ double CoaVoiceDirector::ReplyChance(CoaVoiceConfig const& config, CoaVoiceScope
 
 bool CoaVoiceDirector::Compose(CoaVoiceConfig const& config, CoaVoiceScope const& scope, Player* bot, Player* sender,
                                CoaIntent intent, bool named, uint32 textEmote, uint64 nowMs, CoaVoiceLine& line,
-                               CoaVoiceDrop& why)
+                               CoaVoiceDrop& why, bool& quiet)
 {
     bool const isTextEmote = scope.kind == CoaVoiceScopeKind::TextEmote;
-    char const* const name = isTextEmote ? CoaVoiceTemplates::EmoteName(CoaVoiceTemplates::EmoteCategoryFor(textEmote))
-                                         : CoaVoiceTemplates::ReplyName(intent, named);
+    CoaEmoteCategory const category = isTextEmote ? CoaVoiceTemplates::EmoteCategoryFor(textEmote)
+                                                   : CoaEmoteCategory::None;
+    char const* const name =
+        isTextEmote ? CoaVoiceTemplates::EmoteName(category) : CoaVoiceTemplates::ReplyName(intent, named);
     why = CoaVoiceDrop::NoLine;
+    quiet = false;
     if (!name)
         return false;
+
+    // M3 (CoaMemory.MemoryReplies): the memory's own lines for a friend, a disliked player or a grudge, when the
+    // realm has rows for them; otherwise the M1 name and path below, unchanged. Memory off: tone None at once.
+    MemoryTone const tone = ToneToward(bot, sender);
+    char const* const memoryName = MemoryReplyName(tone, isTextEmote ? EmoteIntent(category) : intent);
+    std::vector<std::string> rows;
+    if (memoryName)
+        rows = CoaVoiceTemplates::Candidates(memoryName, locale, config.templateCandidates);
+    bool const memoryLine = !rows.empty();
+    quiet = memoryLine && (tone == MemoryTone::Cold || tone == MemoryTone::Grudge);
 
     CoaVoicePersona const persona = CoaVoicePersona::For(bot->GetGUID());
     CoaVoiceTemplates::Placeholders placeholders = PlaceholdersFor(bot, sender);
@@ -1598,11 +1763,11 @@ bool CoaVoiceDirector::Compose(CoaVoiceConfig const& config, CoaVoiceScope const
     options.maxBytes = config.maxBytes;
     options.blockedWords = &config.blockedWords;
 
-    auto const pick = [&](std::vector<std::string> const& rows)
+    auto const pick = [&](std::vector<std::string> const& texts)
     {
-        for (std::string const& row : rows)
+        for (std::string const& row : texts)
         {
-            std::string text = persona.ApplyQuirks(placeholders.Fill(row), intent);
+            std::string text = quiet ? placeholders.Fill(row) : persona.ApplyQuirks(placeholders.Fill(row), intent);
             if (!CoaVoiceSanitizer::Clean(text, options))
                 continue;
             if (governor.IsRepeat(config, bot->GetGUID(), scope.key, text, nowMs))
@@ -1616,7 +1781,8 @@ bool CoaVoiceDirector::Compose(CoaVoiceConfig const& config, CoaVoiceScope const
         return false;
     };
 
-    std::vector<std::string> rows = CoaVoiceTemplates::Candidates(name, locale, config.templateCandidates);
+    if (!memoryLine)
+        rows = CoaVoiceTemplates::Candidates(name, locale, config.templateCandidates);
     bool found = pick(rows);
 
     // No coa_* row at all (texts not installed): the legacy "reply" rows, which say "%s" for the speaker.
@@ -1630,7 +1796,14 @@ bool CoaVoiceDirector::Compose(CoaVoiceConfig const& config, CoaVoiceScope const
     if (!found)
         return false;
 
-    if (!isTextEmote && config.replyEmotes && rand_chance() < persona.emoteChance * 100.0)
+    if (memoryLine)
+    {
+        ++stats.toneLines[size_t(tone)];
+        LOG_DEBUG("playerbots.voice", "event {} {}: {} uses a {} memory line", currentEventId,
+                  CoaVoiceScopeName(scope.kind), bot->GetName(), ToneLogName(tone));
+    }
+
+    if (!quiet && !isTextEmote && config.replyEmotes && rand_chance() < persona.emoteChance * 100.0)
         line.emote = CoaVoiceTemplates::ReplyEmoteFor(intent, persona);
     return true;
 }
@@ -1881,6 +2054,56 @@ void CoaVoiceDirector::QueueBotEcho(CoaVoiceLine const& line, Player* bot)
     botEchoes.push_back(std::move(echo));
 }
 
+void CoaVoiceDirector::NoteConversation(CoaEvent const& event, CoaVoiceScopeKind kind, Player* sender)
+{
+    constexpr std::size_t MAX_NOTES = 3;
+    memoryNotes.clear();
+    if (std::none_of(nominees.begin(), nominees.end(), [](CoaVoiceCandidate const& c) { return c.mentioned; }))
+        return;
+
+    // Rated once for every bot addressed; the words are only read here, never kept.
+    std::shared_ptr<CoaMemoryConfig const> const memory = CoaMemoryConfig::Current();
+    bool const isTextEmote = kind == CoaVoiceScopeKind::TextEmote;
+    MemoryConversation note;
+    note.speaker = event.sender;
+    note.speakerAccount = sender->GetSession()->GetAccountId();
+    note.speakerName = sender->GetName();
+    note.speakerLevel = uint8(sender->GetLevel());
+    note.mapId = uint16(sender->GetMapId());
+    note.zoneId = sender->GetZoneId();
+    note.kind = TalkKindOf(kind);
+    if (isTextEmote)
+    {
+        note.intent = EmoteIntent(CoaVoiceTemplates::EmoteCategoryFor(event.textEmote));
+        note.textEmote = event.textEmote;
+        note.sentiment = SentimentHeuristic::FromEmote(event.textEmote, *memory);
+    }
+    else
+    {
+        note.intent = CoaChatIntent::Classify(event.text);
+        note.sentiment = SentimentHeuristic::Rate(event.text, note.intent, *memory);
+    }
+
+    for (CoaVoiceCandidate const& candidate : nominees)
+    {
+        if (!candidate.mentioned)
+            continue;
+        note.bot = candidate.guid;
+        memoryNotes.push_back(note);
+        if (memoryNotes.size() >= MAX_NOTES)
+            break;
+    }
+}
+
+void CoaVoiceDirector::DeliverMemoryNotes(std::vector<MemoryConversation>& notes)
+{
+    CoaMemoryMgr& memory = CoaMemoryMgr::Instance();
+    for (MemoryConversation const& note : notes)
+        memory.OnConversation(note);
+    stats.notesDelivered += notes.size();
+    notes.clear();
+}
+
 std::string CoaVoiceDirector::FormatStats() const
 {
     COA_ASSERT_WORLD_THREAD();
@@ -1953,6 +2176,17 @@ std::string CoaVoiceDirector::FormatStats() const
         out += Acore::StringFormat(" {}={}", BrainFallbackName(BrainFallback(fallback)),
                                    load(brain.fallbacks[fallback]));
     out += "\n";
+
+    // M3. Shown once memory has been on, so the stats of a realm without memory stay M2's.
+    auto const counted = [](uint64 n) { return n != 0; };
+    bool const memoryUsed = stats.notesDelivered || stats.notesBrainRated ||
+                            std::any_of(stats.toneLines.begin(), stats.toneLines.end(), counted);
+    if (CoaMemoryConfig::Enabled() || memoryUsed)
+        out += Acore::StringFormat("memory: notes={} brain-rated={} tone friend={} cold={} grudge={}\n",
+                                   stats.notesDelivered, stats.notesBrainRated,
+                                   stats.toneLines[size_t(MemoryTone::Friend)],
+                                   stats.toneLines[size_t(MemoryTone::Cold)],
+                                   stats.toneLines[size_t(MemoryTone::Grudge)]);
 
     out +=
         Acore::StringFormat("cost us p50/p95: channel={} say={} whisper={} all={}/{}", cost(CoaVoiceScopeKind::Channel),

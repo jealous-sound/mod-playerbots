@@ -5,6 +5,7 @@
  */
 
 #include "AcceptDuelAction.h"
+#include "CoaMemoryRules.h"
 #include "Event.h"
 #include "Playerbots.h"
 
@@ -17,10 +18,14 @@ bool AcceptDuelAction::Execute(Event event)
     ObjectGuid playerGuid;
     p >> playerGuid;
 
+    // CoA memory (RivalDuels): Legacy with memory off, which keeps the rule below as it was (90 %).
+    CoaDuelVerdict const verdict = CoaMemoryRules::DuelVerdict(botAI, playerGuid);
+    uint8 const minHealth = verdict == CoaDuelVerdict::Eager ? uint8(MemoryThreshold::DUEL_EAGER_HEALTH) : uint8(90);
+
     // Do not auto duel with low health
-    if ((!botAI->HasGameClientMaster() ||
-        (botAI->GetMaster() && botAI->GetMaster()->GetGUID() != playerGuid)) &&
-        AI_VALUE2(uint8, "health", "self target") < 90)
+    if (verdict == CoaDuelVerdict::Refuse ||
+        ((!botAI->HasGameClientMaster() || (botAI->GetMaster() && botAI->GetMaster()->GetGUID() != playerGuid)) &&
+         AI_VALUE2(uint8, "health", "self target") < minHealth))
     {
         WorldPacket packet(CMSG_DUEL_CANCELLED, 8);
         packet << flagGuid;

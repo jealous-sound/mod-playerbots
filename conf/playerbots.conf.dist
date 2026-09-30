@@ -2022,6 +2022,17 @@ AiPlayerbot.CoaBrain.Privacy.SendPlayerText = 0
 
 AiPlayerbot.CoaBrain.Use.ChatReply = 1
 
+#    AiPlayerbot.CoaBrain.Use.Rating
+#        Description: Whether the voice decision also rates the player's message for the bots'
+#                     memory: how friendly it is, and whether it insults or thanks the bot.
+#                     It needs AiPlayerbot.CoaMemory.Enable = 1 and
+#                     AiPlayerbot.CoaMemory.Sentiment = 2, and adds about 150 input tokens to a
+#                     decision. Read with the memory settings below.
+#        Default:     0 - no: the memory rates messages with its word lists
+#                     1 - yes
+
+AiPlayerbot.CoaBrain.Use.Rating = 0
+
 #    AiPlayerbot.CoaBrain.QuestionFile
 #        Description: A JSON file rewording the questions (in English; the options stay the
 #                     code's), relative to the config directory unless absolute. Its "version"
@@ -2217,6 +2228,252 @@ AiPlayerbot.CoaBrain.Engine.mock.FailStatus = 0
 #        Default:     0
 
 AiPlayerbot.CoaBrain.Engine.mock.UsdPerCall = 0
+
+#
+#    CoA memory: bots remember the players and bots they deal with. For each character, a bot
+#    keeps ten feelings that fade with time (affinity, trust, respect, rivalry, gratitude, grudge,
+#    fear, annoyance, familiarity, camaraderie), a few counters (meetings, chats, help in fights,
+#    kills, duels, groups, trades) and a short diary of dated events. Never what anyone wrote: a
+#    message moves the feelings through the word lists below (or the brain's rating), then it is
+#    forgotten. Duels, kills, help in fights, groups, kicks, trades and bosses are remembered with
+#    the voice off; chats and text emotes only with AiPlayerbot.CoaVoice.Enable = 1. Removing a
+#    bot from the group five minutes or more after grouping with it dismisses it: not a kick.
+#    Memory changes what bots do only through the switches at the end of this block, each off by
+#    default: greetings, replies, revenge, duels and group offers.
+#    Apply data/sql/playerbots/updates/2026_09_30_02_coa_memory.sql first: without its two tables
+#    memory stays off (one error in the log). Changes are written a little later, a few bots at a
+#    time, and at logout and shutdown; old events, and characters not seen for a long time, are
+#    deleted after EventRetentionDays and RelationRetentionDays.
+#    Players see what bots keep about their account with .playerbots memory mine, and erase it
+#    with .playerbots optout memory. GMs: .playerbots memory show <bot> [player], forget <bot>
+#    <player>, wipe <bot>, purge <character or #account> and stats.
+#    Every AiPlayerbot.CoaMemory.* setting is read again by .reload config: turning Enable on
+#    loads the memories of the bots online over the next seconds, turning it off saves and frees
+#    them all.
+#
+
+#    AiPlayerbot.CoaMemory.Enable
+#        Description: Master switch. Off, nothing is recorded, read or written and the other keys
+#                     of this block are not read. (Deleting the random bot accounts with
+#                     AiPlayerbot.DeleteRandomBotAccounts = 1 deletes their memory rows even
+#                     then, as their character ids will be given again.)
+#                     Needs PlayerbotsDatabase.WorkerThreads = 1: with more, memory stays off
+#                     (one error in the log).
+#        Default:     0 - off
+#                     1 - on
+
+AiPlayerbot.CoaMemory.Enable = 0
+
+#    AiPlayerbot.CoaMemory.RandomBotsOnly
+#        Description: Whether only the bots of the random bot accounts (random and addclass bots)
+#                     keep a memory.
+#        Default:     1 - yes
+#                     0 - the players' own bots too
+
+AiPlayerbot.CoaMemory.RandomBotsOnly = 1
+
+#    AiPlayerbot.CoaMemory.TrackBotToBot
+#        Description: Whether what two bots do to each other (duels, kills, help, groups, kicks,
+#                     trades) is remembered too. Off, bots remember real players only; on means
+#                     many more rows and more work per world update. Bots here are the random
+#                     bot accounts' characters: a player's own characters played as bots are
+#                     remembered as that player's, so .playerbots optout memory and memory mine
+#                     cover them.
+#        Default:     0 - real players only
+#                     1 - bots too
+
+AiPlayerbot.CoaMemory.TrackBotToBot = 0
+
+#    AiPlayerbot.CoaMemory.MaxRelationsPerBot
+#        Description: Characters one bot remembers at most (8 to 1024). Past it, the one that
+#                     matters least is forgotten.
+#        Default:     64
+
+AiPlayerbot.CoaMemory.MaxRelationsPerBot = 64
+
+#    AiPlayerbot.CoaMemory.MaxEventsPerBot
+#        Description: Diary events kept in the database per bot (16 to 5000). The most important
+#                     ones (a faction leader or a boss killed together, a kill by a real player)
+#                     are kept past it until EventRetentionDays.
+#        Default:     200
+
+AiPlayerbot.CoaMemory.MaxEventsPerBot = 200
+
+#    AiPlayerbot.CoaMemory.MaxEventsLoaded
+#        Description: Newest diary events read when a bot logs in (8 to 512, and at most
+#                     MaxEventsPerBot).
+#        Default:     64
+
+AiPlayerbot.CoaMemory.MaxEventsLoaded = 64
+
+#    AiPlayerbot.CoaMemory.FlushIntervalSeconds
+#        Description: Seconds between two rounds of writing the changed memories to the database
+#                     (10 to 3600). A bot that logs out keeps its memory in the server this long,
+#                     so logging it in again meanwhile reads nothing.
+#        Default:     120
+
+AiPlayerbot.CoaMemory.FlushIntervalSeconds = 120
+
+#    AiPlayerbot.CoaMemory.FlushBotsPerTick
+#        Description: Bots written per world update during a round (1 to 1000). A round is
+#                     skipped while more than 2000 queries wait for the playerbots database;
+#                     logouts and shutdown always write.
+#        Default:     20
+
+AiPlayerbot.CoaMemory.FlushBotsPerTick = 20
+
+#    AiPlayerbot.CoaMemory.DrainPerTick
+#        Description: Events (duels, kills, groups...) applied per world update at most (100 to
+#                     100000); the rest wait for the next updates.
+#        Default:     2000
+
+AiPlayerbot.CoaMemory.DrainPerTick = 2000
+
+#    AiPlayerbot.CoaMemory.EventRetentionDays, AiPlayerbot.CoaMemory.RelationRetentionDays
+#        Description: Days a diary event is kept (1 to 3650), and days a character not seen
+#                     again is remembered (1 to 3650). Older rows are deleted every 10 minutes.
+#        Default:     30, 180
+
+AiPlayerbot.CoaMemory.EventRetentionDays = 30
+AiPlayerbot.CoaMemory.RelationRetentionDays = 180
+
+#    AiPlayerbot.CoaMemory.RetentionBatch
+#        Description: Rows one retention statement deletes at most (100 to 100000).
+#        Default:     5000
+
+AiPlayerbot.CoaMemory.RetentionBatch = 5000
+
+#    AiPlayerbot.CoaMemory.HalfLifeDays.Affinity, .Trust, .Respect, .Rivalry, .Gratitude,
+#    .Grudge, .Fear, .Annoyance, .Familiarity, .Camaraderie
+#        Description: Days for each feeling to fade by half (0 to 3650, decimals allowed).
+#        Default:     30, 60, 60, 10, 21, 14, 7, 3, 90, 45
+#                     0 - never fades
+
+AiPlayerbot.CoaMemory.HalfLifeDays.Affinity = 30
+AiPlayerbot.CoaMemory.HalfLifeDays.Trust = 60
+AiPlayerbot.CoaMemory.HalfLifeDays.Respect = 60
+AiPlayerbot.CoaMemory.HalfLifeDays.Rivalry = 10
+AiPlayerbot.CoaMemory.HalfLifeDays.Gratitude = 21
+AiPlayerbot.CoaMemory.HalfLifeDays.Grudge = 14
+AiPlayerbot.CoaMemory.HalfLifeDays.Fear = 7
+AiPlayerbot.CoaMemory.HalfLifeDays.Annoyance = 3
+AiPlayerbot.CoaMemory.HalfLifeDays.Familiarity = 90
+AiPlayerbot.CoaMemory.HalfLifeDays.Camaraderie = 45
+
+#    AiPlayerbot.CoaMemory.DailyChatDeltaCap
+#        Description: Points of affinity (which runs from -100 to 100) that messages and text
+#                     emotes may move per pair of characters per UTC day (0 to 100). Deeds are not
+#                     capped.
+#        Default:     15
+#                     0 - messages move no feeling
+
+AiPlayerbot.CoaMemory.DailyChatDeltaCap = 15
+
+#    AiPlayerbot.CoaMemory.Sentiment
+#        Description: How a message moves the feelings.
+#        Default:     1 - the word lists below
+#                     0 - not at all: only the counters and familiarity
+#                     2 - the brain's rating when the voice decision asks for it
+#                         (AiPlayerbot.CoaBrain.Use.Rating = 1), the word lists otherwise
+
+AiPlayerbot.CoaMemory.Sentiment = 1
+
+#    AiPlayerbot.CoaMemory.FriendlyWords, AiPlayerbot.CoaMemory.HostileWords
+#        Description: Comma separated words and short phrases found in friendly and in hostile
+#                     messages, case and accents ignored (write "t es" for "t'es"). Each counts
+#                     once per message. Entries without a letter or a digit (<3, :), ^^) are
+#                     looked for anywhere in the message.
+#        Default:     the lists below (French and English)
+
+AiPlayerbot.CoaMemory.FriendlyWords = merci,mercii,thanks,thank you,thx,ty,tyvm,cimer,gg,gj,wp,bravo,bien joue,good job,well played,sympa,cool,genial,super,parfait,top,nice,trop fort,trop forte,t es fort,t es forte,love,adore,bisous,<3,:),:D,^^
+AiPlayerbot.CoaMemory.HostileWords = noob,nub,n00b,naze,con,conne,connard,connasse,idiot,idiote,debile,abruti,abrutie,cretin,boulet,tocard,bouffon,clown,stfu,stupid,moron,loser,fdp,tg,ta gueule,ferme la,you suck,t es nul,t es nulle,tu es nul,pathetique,pathetic,degage,casse toi,go away,hate you,:(,-_-
+
+#    AiPlayerbot.CoaMemory.StateTokenBudget
+#        Description: With the CoA brain on: at most this many tokens (0 to 2000, about 4 bytes
+#                     each) of what the addressed bots remember about the speaker are added to the
+#                     description sent to the engine, as numbers and dated kinds of events, never
+#                     a name or anyone's words.
+#        Default:     300
+#                     0 - none
+
+AiPlayerbot.CoaMemory.StateTokenBudget = 300
+
+#    AiPlayerbot.CoaMemory.BattlegroundKills
+#        Description: Kills in battlegrounds and arenas.
+#        Default:     1 - counted, with a little rivalry and a grudge for an hour
+#                     0 - ignored
+#                     2 - remembered like kills in the world
+
+AiPlayerbot.CoaMemory.BattlegroundKills = 1
+
+#    AiPlayerbot.CoaMemory.LeaderEntries
+#        Description: Comma separated creature entries of the faction leaders (at most 32):
+#                     killing one together is remembered as a great event. Dungeon and world
+#                     bosses are recognized without it.
+#        Default:     (empty)
+
+AiPlayerbot.CoaMemory.LeaderEntries =
+
+#    AiPlayerbot.CoaMemory.OrphanSweepOnStartup
+#        Description: With Enable = 1, deletes at startup, before random bots are created, the
+#                     rows of characters that no longer exist. It reads the characters database
+#                     through the playerbots connection: when that database is on another MySQL
+#                     server, or its user cannot read it, the sweep is skipped (one warning).
+#        Default:     1 - yes
+#                     0 - no
+
+AiPlayerbot.CoaMemory.OrphanSweepOnStartup = 1
+
+#
+#    What memory changes. Each switch needs Enable = 1; with any of them on, random bots get the
+#    "coa memory" strategy (outside battlegrounds). Players who opted out of hostile bots
+#    (.playerbots optout hostile) get no cold or grudge line, no glare and no revenge.
+#
+
+#    AiPlayerbot.CoaMemory.GreetByMemory
+#        Description: Bots greet the real players they know when they pass by (a wave, a nod, a
+#                     bow or a glare, and a line), once an hour per player.
+#        Default:     0 - off
+#                     1 - on
+
+AiPlayerbot.CoaMemory.GreetByMemory = 0
+
+#    AiPlayerbot.CoaMemory.MemoryReplies
+#        Description: The voice director answers friends warmly, disliked players coldly and
+#                     players the bot holds a grudge against with grudge lines. Needs
+#                     AiPlayerbot.CoaVoice.Enable = 1.
+#        Default:     0 - off
+#                     1 - on
+
+AiPlayerbot.CoaMemory.MemoryReplies = 0
+
+#    AiPlayerbot.CoaMemory.Revenge
+#        Description: Bots prefer the PvP targets they hold a grudge against (one kill of the bot
+#                     outside battlegrounds is enough for 7 days), and a bot in a guild killed by
+#                     a real player it holds a grudge against calls its guild (at most every 30
+#                     minutes per killer and every 10 minutes per bot).
+#        Default:     0 - off
+#                     1 - on
+
+AiPlayerbot.CoaMemory.Revenge = 0
+
+#    AiPlayerbot.CoaMemory.RivalDuels
+#        Description: Bots accept duels from rivals, grudges and friends from 70 % health
+#                     (instead of 90 %), and refuse those of players they strongly dislike and of
+#                     players who fled two duels with them in a row within the last day.
+#        Default:     0 - off
+#                     1 - on
+
+AiPlayerbot.CoaMemory.RivalDuels = 0
+
+#    AiPlayerbot.CoaMemory.FriendInvites
+#        Description: A bot without a group whispers a friend nearby (a real player without a
+#                     group, within 5 levels) that it would join if invited, at most every 6
+#                     hours per friend. Players who opted out of bot replies never get it.
+#        Default:     0 - off
+#                     1 - on
+
+AiPlayerbot.CoaMemory.FriendInvites = 0
 
 # Quality a looted item must reach to be written to the "playerbots.loot" logger:
 # 3 rare (blue), 4 epic, 5 legendary. Nothing is written unless worldserver.conf
@@ -3382,6 +3639,8 @@ PlayerbotsDatabaseInfo = "127.0.0.1;3306;acore;acore;acore_playerbots"
 #        Description: The amount of worker threads spawned to handle asynchronous (delayed) MySQL
 #                     statements. Each worker thread is mirrored with its own connection to the
 #                     MySQL server and their own thread on the MySQL server.
+#                     AiPlayerbot.CoaMemory.Enable = 1 needs 1 (its writes must run in order):
+#                     with more, memory stays off.
 #        Default:     1 - (PlayerbotsDatabase.WorkerThreads)
 
 PlayerbotsDatabase.WorkerThreads     = 1

@@ -12,6 +12,8 @@
 #include "CharacterPackets.h"
 #include "ChatHelper.h"
 #include "CheckMountStateAction.h"
+#include "CoaEpoch.h"
+#include "CoaHooks.h"
 #include "CoaVoiceConfig.h"
 #include "Common.h"
 #include "CreatureData.h"
@@ -229,6 +231,9 @@ PlayerbotAI::PlayerbotAI(Player* bot)
       chatFilter(this),
       security(bot)  // reorder args - whipowill
 {
+    // This life of the bot: memory events and views of an older life are dropped (CoaEpoch.h).
+    coaEpoch = CoaEpoch::Next();
+
     if (!bot->isTaxiCheater() && HasCheat((BotCheatMask::taxi)))
         bot->SetTaxiCheater(true);
 
@@ -255,10 +260,16 @@ PlayerbotAI::PlayerbotAI(Player* bot)
     masterIncomingPacketHandlers.SetHandlers(registry[0]);
     botOutgoingPacketHandlers.SetHandlers(registry[1]);
     masterOutgoingPacketHandlers.SetHandlers(registry[2]);
+
+    // Memory on: a bot session's AI asks CoaMemoryMgr for its memory (BotLogin, loaded on the world thread).
+    CoaHooks::OnBotAiCreated(bot, coaEpoch);
 }
 
 PlayerbotAI::~PlayerbotAI()
 {
+    // Map or world thread: only a BotLogout is posted; the manager closes this life's memory on the world thread.
+    CoaHooks::OnBotAiDestroyed(bot ? bot->GetGUID() : ObjectGuid::Empty, coaEpoch);
+
     for (uint8 i = 0; i < BOT_STATE_MAX; i++)
     {
         if (engines[i])

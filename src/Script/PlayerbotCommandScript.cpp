@@ -11,6 +11,8 @@
 #include "BrainStateBuilder.h"
 #include "CharacterCache.h"
 #include "Chat.h"
+#include "CoaMemoryAdmin.h"
+#include "CoaMemoryMgr.h"
 #include "CoaPlayerPrefs.h"
 #include "CoaSpecialization.h"
 #include "CoaVoiceDirector.h"
@@ -68,6 +70,15 @@ public:
             {"probe", HandleBrainProbeCommand, SEC_GAMEMASTER, Console::Yes},
         };
 
+        static ChatCommandTable playerbotsMemoryCommandTable = {
+            {"show", HandleMemoryShowCommand, SEC_GAMEMASTER, Console::Yes},
+            {"forget", HandleMemoryForgetCommand, SEC_GAMEMASTER, Console::Yes},
+            {"wipe", HandleMemoryWipeCommand, SEC_GAMEMASTER, Console::Yes},
+            {"purge", HandleMemoryPurgeCommand, SEC_GAMEMASTER, Console::Yes},
+            {"stats", HandleMemoryStatsCommand, SEC_GAMEMASTER, Console::Yes},
+            {"mine", HandleMemoryMineCommand, SEC_PLAYER, Console::No},
+        };
+
         static ChatCommandTable playerbotsCommandTable = {
             {"bot", HandlePlayerbotCommand, SEC_PLAYER, Console::No},
             {"gtask", HandleGuildTaskCommand, SEC_GAMEMASTER, Console::Yes},
@@ -80,6 +91,7 @@ public:
             {"account", playerbotsAccountCommandTable},
             {"voice", playerbotsVoiceCommandTable},
             {"brain", playerbotsBrainCommandTable},
+            {"memory", playerbotsMemoryCommandTable},
         };
 
         static ChatCommandTable commandTable = {
@@ -338,6 +350,141 @@ public:
         return true;
     }
 
+    // .playerbots memory ...: what bots remember, CoaMemoryAdmin's. Chat and console commands run on the world
+    // thread. Answers read from the database arrive ticks later, printed by CoaWorldScript to the requester's
+    // account. Lines go through SendBrainLine for the same '|' escaping.
+    // show <bot> [player]: the bot name is the first word and the player the rest ("Kaelis Dawnfire"); quotes
+    // give a two-word bot name.
+    static bool HandleMemoryShowCommand(ChatHandler* handler, char const* args)
+    {
+        std::vector<std::string> const words = MemoryWords(args);
+        if (words.empty())
+            return SendMemoryUsage(handler);
+        return SendBrainLines(handler,
+                              CoaMemoryAdmin::Show(RequesterAccount(handler), words[0], JoinMemoryWords(words, 1)));
+    }
+
+    // forget <bot> <player>
+    static bool HandleMemoryForgetCommand(ChatHandler* handler, char const* args)
+    {
+        std::vector<std::string> const words = MemoryWords(args);
+        if (words.size() < 2)
+            return SendMemoryUsage(handler);
+        return SendBrainLines(handler, CoaMemoryAdmin::Forget(words[0], JoinMemoryWords(words, 1)));
+    }
+
+    // wipe <bot>
+    static bool HandleMemoryWipeCommand(ChatHandler* handler, char const* args)
+    {
+        std::vector<std::string> const words = MemoryWords(args);
+        if (words.empty())
+            return SendMemoryUsage(handler);
+        return SendBrainLines(handler, CoaMemoryAdmin::Wipe(JoinMemoryWords(words, 0)));
+    }
+
+    // purge <character or #account or account name>
+    static bool HandleMemoryPurgeCommand(ChatHandler* handler, char const* args)
+    {
+        std::vector<std::string> const words = MemoryWords(args);
+        if (words.empty())
+            return SendMemoryUsage(handler);
+        return SendBrainLines(handler, CoaMemoryAdmin::Purge(JoinMemoryWords(words, 0)));
+    }
+
+    static bool HandleMemoryStatsCommand(ChatHandler* handler, char const* /*args*/)
+    {
+        return SendBrainLines(handler, CoaMemoryAdmin::Stats(RequesterAccount(handler)));
+    }
+
+    // mine [page]: players see what bots keep about their own account, never another's.
+    static bool HandleMemoryMineCommand(ChatHandler* handler, char const* args)
+    {
+        WorldSession* const session = handler->GetSession();
+        if (!session)
+            return false;
+
+        std::vector<std::string> const words = MemoryWords(args);
+        uint32 page = 1;
+        if (words.size() > 1 || (words.size() == 1 && !ParseMemoryPage(words[0], page)))
+        {
+            SendBrainLine(handler, VoiceText("coa_mem_mine_usage", "Usage: .playerbots memory mine [page]"));
+            return true;
+        }
+        uint32 const accountId = session->GetAccountId();
+        return SendBrainLines(handler, CoaMemoryAdmin::Mine(accountId, accountId, page));
+    }
+
+    // Words split on blanks; a double-quoted span is one word with its blanks collapsed ("Jean  Dupont" gives
+    // "Jean Dupont"). An unclosed quote runs to the end.
+    static std::vector<std::string> MemoryWords(char const* args)
+    {
+        std::vector<std::string> words;
+        std::string const line = args ? args : "";
+        std::size_t i = 0;
+        while (i < line.size())
+        {
+            char const c = line[i];
+            if (c == ' ' || c == '\t')
+            {
+                ++i;
+                continue;
+            }
+            if (c != '"')
+            {
+                std::size_t const end = line.find_first_of(" \t", i);
+                words.push_back(line.substr(i, end == std::string::npos ? std::string::npos : end - i));
+                i = end == std::string::npos ? line.size() : end;
+                continue;
+            }
+
+            std::size_t const close = line.find('"', i + 1);
+            std::string const quoted =
+                line.substr(i + 1, close == std::string::npos ? std::string::npos : close - i - 1);
+            std::string const joined = JoinMemoryWords(BrainWords(quoted.c_str()), 0);
+            if (!joined.empty())
+                words.push_back(joined);
+            i = close == std::string::npos ? line.size() : close + 1;
+        }
+        return words;
+    }
+
+    static std::string JoinMemoryWords(std::vector<std::string> const& words, std::size_t from)
+    {
+        std::string joined;
+        for (std::size_t i = from; i < words.size(); ++i)
+        {
+            if (!joined.empty())
+                joined += ' ';
+            joined += words[i];
+        }
+        return joined;
+    }
+
+    // 1 to 100000, digits only.
+    static bool ParseMemoryPage(std::string const& word, uint32& page)
+    {
+        if (word.empty() || word.size() > 6)
+            return false;
+        uint32 value = 0;
+        for (char const c : word)
+        {
+            if (c < '0' || c > '9')
+                return false;
+            value = value * 10 + uint32(c - '0');
+        }
+        if (!value || value > 100000)
+            return false;
+        page = value;
+        return true;
+    }
+
+    static bool SendMemoryUsage(ChatHandler* handler)
+    {
+        SendBrainLine(handler, "Usage: .playerbots memory show <bot> [player]|forget <bot> <player>|wipe <bot>|"
+                               "purge <character or #account>|stats|mine [page]");
+        return true;
+    }
+
     static bool HandleCoaPrefsCommand(ChatHandler* handler, char const* args, bool optOut)
     {
         WorldSession* const session = handler->GetSession();
@@ -387,14 +534,17 @@ public:
                                               values));
             std::string const brainNotice = BrainDisclosure();
             if (!brainNotice.empty())
-            {
                 handler->SendSysMessage(brainNotice);
-                return true;
-            }
-            handler->SendSysMessage(VoiceText("coa_voice_disclosure",
-                                              "Bots may answer your messages with ready-made lines. Nothing leaves "
-                                              "the server and only your preferences are stored. .playerbots optout "
-                                              "voice makes them ignore you, .playerbots optout shows your settings."));
+            else
+                handler->SendSysMessage(VoiceText("coa_voice_disclosure",
+                                                  "Bots may answer your messages with ready-made lines. Nothing "
+                                                  "leaves the server and only your preferences are stored. "
+                                                  ".playerbots optout voice makes them ignore you, .playerbots "
+                                                  "optout shows your settings."));
+            // "" while memory is off.
+            std::string const memoryNotice = CoaMemoryAdmin::Disclosure();
+            if (!memoryNotice.empty())
+                handler->SendSysMessage(memoryNotice);
             return true;
         }
 
@@ -406,6 +556,13 @@ public:
         else
             handler->SendSysMessage(
                 VoiceText("coa_voice_optin_ack", "Preference saved: %topic back on for your account.", placeholders));
+
+        // What bots already remember goes now. PurgeAccount is false at once while memory is not running; an
+        // opt-out made then is purged when memory starts (CoaPlayerPrefs::MemoryOptOuts).
+        if (optOut && (*topic == CoaPrefTopic::Memory || *topic == CoaPrefTopic::All) &&
+            CoaMemoryMgr::Instance().PurgeAccount(accountId))
+            handler->SendSysMessage(
+                VoiceText("coa_mem_optout_purged", "The bots have forgotten everything about you."));
         return true;
     }
 

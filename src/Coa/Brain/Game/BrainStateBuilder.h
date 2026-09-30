@@ -13,6 +13,7 @@
 #include "CoaChatIntent.h"
 #include "CoaVoiceEvent.h"
 #include "Define.h"
+#include "MemoryTypes.h"
 #include <string>
 #include <string_view>
 #include <vector>
@@ -46,6 +47,11 @@ struct BrainChatFacts
     bool speakerGuilded = false;    // in a guild with one of the bots
     BrainMessageFeatures features;  // namedBots set
     std::vector<BrainBotFacts> bots;  // ballot order, at most CoaVoice.Shortlist; b0 first
+    // M3. askRating: ChatQuestions adds friendliness, insult and thanks (CoaMemoryConfig::UseBrainRating()).
+    // memory: the [memory] lines (CoaMemoryMgr::BrainLines: features only, no names), already within
+    // CoaMemory.StateTokenBudget; empty: no [memory] section.
+    bool askRating = false;
+    std::vector<std::string> memory;
 };
 
 // A line option of the line question.
@@ -69,8 +75,9 @@ struct BrainChatPlan
 namespace BrainStateBuilder
 {
 // Pure. Sections in this fixed order, so the prefix is byte-stable: [realm] (the question set's header),
-// [situation], [message], [bots]. At most maxChars bytes: bots lines are dropped from the end (b0 stays), then the
-// message's "also" line; the header is never cut. Layout: see the contract, section "State text".
+// [situation], [message], [bots], then [memory] when facts.memory is not empty. At most maxChars bytes: memory lines
+// are dropped from the end first, then bots lines from the end (b0 stays), then the message's "also" line; the
+// header is never cut. Layout: see the M2 contract, section "State text", and the M3 contract for [memory].
 std::string ChatState(BrainChatFacts const& facts, BrainQuestionSet const& questions, uint32 maxChars);
 
 // Pure. "level 23 Barbarian (Berserker), whisper receiver, named: no, same group: no, same guild: no, distance:
@@ -79,7 +86,8 @@ std::string DescribeBot(BrainBotFacts const& bot);
 
 // Pure. Questions in this order: reply (YesNo); who (Choice b0..bN-1, not cacheable) when askWho and more than one
 // bot; line (Choice: each plan line as "[TAG] <NeutralTokens(row)>" with group = replyName, then "silent" with group
-// "silent") when plan.lines is not empty; tone (Score, 5 levels); emote (Choice over QuestionRegistry::EmoteKeys()).
+// "silent") when plan.lines is not empty; tone (Score, 5 levels); emote (Choice over QuestionRegistry::EmoteKeys());
+// then, when facts.askRating (M3): friendliness (Score, 5 levels), insult (YesNo), thanks (YesNo), all cacheable.
 std::vector<BrainQuestion> ChatQuestions(BrainChatFacts const& facts, BrainChatPlan const& plan,
                                          BrainQuestionSet const& questions, bool askWho);
 
@@ -98,7 +106,8 @@ std::vector<BrainChatLine> ChatLines(CoaIntent intent, bool named, uint32 locale
 
 // World thread. The whole chat_reply job: use ChatReply, lane Player, situation "chat_reply", state (ChatState
 // with CoaBrain.StateMaxChars), playerText (the message: control characters and "<<<", ">>>" removed, cut to 255
-// bytes), questions (ChatQuestions), cacheKey (see the contract; "" unless BrainFeatures::CacheText is not empty).
+// bytes), questions (ChatQuestions), cacheKey (see the contract; "" unless BrainFeatures::CacheText is not empty;
+// M3: "|r" appended with askRating, "|m<16 hex digits of CoaHash::Bytes of the joined memory lines>" with memory).
 // The caller sets tag, epoch, botGuid and deadlineMs. False when there is nothing to ask.
 bool BuildChatJob(BrainChatFacts const& facts, std::string_view text, BrainChatPlan const& plan, bool askWho,
                   BrainJob& job);
@@ -117,6 +126,12 @@ uint32 EmoteFor(std::string_view key);
 
 // "hostile", "cold", "neutral", "friendly", "warm" for 0..4; "unknown" otherwise.
 char const* ToneName(int32 level);
+
+// Pure (M3). The rating answers of a chat_reply result over `sentiment`, which holds the heuristic: a valid
+// friendliness sets s = (level - 2) / 2 and c = its p when calibrated, else 0.3; a valid insult or thanks sets that
+// flag to (p >= 0.7). True, with source Brain, when at least one of the three was valid; false leaves `sentiment`
+// untouched.
+bool ReadRating(BrainResult const& result, MemorySentiment& sentiment);
 }  // namespace BrainStateBuilder
 
 #endif

@@ -16,6 +16,7 @@
 #include "CoaVoiceEvent.h"
 #include "CoaVoiceGovernor.h"
 #include "Define.h"
+#include "MemoryTypes.h"
 #include <array>
 #include <memory>
 #include <queue>
@@ -37,7 +38,8 @@ class Prepared;
 // members, guild or zone bucket of the candidate index) -> score -> heuristic reply roll (a named bot always
 // answers; past the scope's chance only named bots may) -> shortlist through the governor, named bots first ->
 // intent and template line -> schedule 4-12 s later (10-25 s in combat) -> send through the scope's route.
-// With CoaVoice.Enable = 0 Update returns at once.
+// With CoaVoice.Enable = 0 Update returns at once. M3: the bots a real player addresses remember the message
+// (CoaMemoryMgr::OnConversation, never the words), and CoaMemory.MemoryReplies picks warmer or colder lines.
 class CoaVoiceDirector
 {
 public:
@@ -72,6 +74,10 @@ private:
         uint64 botEvents = 0;
         uint64 denies = 0;       // refusals sent
         uint64 denyRepeats = 0;  // refusals held back by the repeat delay
+        // M3: conversations handed to the memory, those the brain rated, and memory lines composed per MemoryTone.
+        uint64 notesDelivered = 0;
+        uint64 notesBrainRated = 0;
+        std::array<uint64, 4> toneLines{};
     };
 
     // Per-event cost on the world thread, in microseconds: the last 1024 samples of each scope.
@@ -97,9 +103,11 @@ private:
     // Percent chance (0 to 100) that the event is answered; `named`: a bot's forced chance when it is named.
     double ReplyChance(CoaVoiceConfig const& config, CoaVoiceScopeKind kind, bool named, uint8 depth) const;
     // Picks and fills a line; false when every candidate is missing, rejected or a repeat (`why`: NoLine or
-    // Repetition). `named`: the bot's name is in the text.
+    // Repetition). `named`: the bot's name is in the text. `quiet` (M3): a cold or grudge memory line, said with
+    // no persona quirk and no emote.
     bool Compose(CoaVoiceConfig const& config, CoaVoiceScope const& scope, Player* bot, Player* sender,
-                 CoaIntent intent, bool named, uint32 textEmote, uint64 nowMs, CoaVoiceLine& line, CoaVoiceDrop& why);
+                 CoaIntent intent, bool named, uint32 textEmote, uint64 nowMs, CoaVoiceLine& line, CoaVoiceDrop& why,
+                 bool& quiet);
     void Schedule(CoaVoiceConfig const& config, CoaVoiceLine&& line);
     // A stranger's whisper the voice leaves unanswered: the localized refusal, as the legacy code would have sent.
     void ScheduleDeny(CoaVoiceConfig const& config, CoaVoiceScope const& scope, Player* bot, Player* sender,
@@ -110,6 +118,10 @@ private:
     // event handled next tick. Say and yell get theirs from the hook.
     void QueueBotEcho(CoaVoiceLine const& line, Player* bot);
     void CountDrop(CoaVoiceDrop drop) { ++stats.drops[size_t(drop)]; }
+    // M3: one MemoryConversation per mentioned nominee (at most 3) of a real player's message, into memoryNotes.
+    void NoteConversation(CoaEvent const& event, CoaVoiceScopeKind kind, Player* sender);
+    // M3: hands `notes` to CoaMemoryMgr::OnConversation, then clears them.
+    void DeliverMemoryNotes(std::vector<MemoryConversation>& notes);
 
     // M2: a human message waiting for its brain decision (CoaBrain.Enable = 1), keyed by event id.
     struct PendingDecision
@@ -128,6 +140,8 @@ private:
         bool namedOnly = false;
         bool forced = false;     // a nominee is named in party, raid, guild, say, yell or a channel (M1 answers)
         BrainChatPlan plan;
+        // M3: the event's conversation notes when the job also rates the message; delivered by ResumeDecision.
+        std::vector<MemoryConversation> memoryNotes;
     };
 
     // The brain's answers as the ballot uses them.
@@ -202,6 +216,9 @@ private:
     std::unordered_map<uint32, uint32> whisperBrainToday;   // speaker account -> whisper jobs today
     uint32 whisperBrainDay = 0;                             // UTC yyyymmdd of that map
     ObjectGuid lastResponder;                               // set by RunBallot: its first scheduled bot (ring)
+    // M3: the conversation notes of the event HandleEvent is on; delivered when it returns unless a rating job took
+    // them. Empty with CoaMemory.Enable = 0.
+    std::vector<MemoryConversation> memoryNotes;
 };
 
 #endif

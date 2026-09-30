@@ -70,6 +70,29 @@ void ReplacePairs(std::vector<std::pair<std::string, std::string>>& pairs, Brain
     }
 }
 
+// A scale of exactly 5 non-empty strings replaces `levels`; anything else is ignored.
+void ReplaceLevels(std::array<std::string, 5>& levels, BrainJsonValue const* array)
+{
+    if (!array || !array->IsArray() || array->items.size() != levels.size())
+        return;
+    for (BrainJsonValue const& level : array->items)
+        if (!level.IsString() || level.string.empty())
+            return;
+    for (std::size_t i = 0; i < levels.size(); ++i)
+        levels[i] = array->items[i].string;
+}
+
+// A yes/no question: "instructions" and "criteria": {"true", "false"}.
+void ReplaceYesNo(std::string& instructions, std::string& yes, std::string& no, BrainJsonValue const* question)
+{
+    if (!question)
+        return;
+    Replace(instructions, question, "instructions");
+    BrainJsonValue const* criteria = question->Find("criteria");
+    Replace(yes, criteria, "true");
+    Replace(no, criteria, "false");
+}
+
 bool ReadProbeCase(BrainJsonValue const& value, BrainProbeCase& out)
 {
     if (!value.IsObject())
@@ -145,22 +168,20 @@ void ApplyOverrides(BrainQuestionSet& set, BrainJsonValue const& root)
         if (BrainJsonValue const* tone = questions->Find("tone"))
         {
             Replace(set.toneInstructions, tone, "instructions");
-            BrainJsonValue const* levels = tone->Find("levels");
-            if (levels && levels->IsArray() && levels->items.size() == set.toneLevels.size())
-            {
-                bool allText = true;
-                for (BrainJsonValue const& level : levels->items)
-                    allText = allText && level.IsString() && !level.string.empty();
-                if (allText)
-                    for (std::size_t i = 0; i < set.toneLevels.size(); ++i)
-                        set.toneLevels[i] = levels->items[i].string;
-            }
+            ReplaceLevels(set.toneLevels, tone->Find("levels"));
         }
         if (BrainJsonValue const* emote = questions->Find("emote"))
         {
             Replace(set.emoteInstructions, emote, "instructions");
             ReplacePairs(set.emotes, emote->Find("criteria"));
         }
+        if (BrainJsonValue const* friendliness = questions->Find("friendliness"))
+        {
+            Replace(set.friendlinessInstructions, friendliness, "instructions");
+            ReplaceLevels(set.friendlinessLevels, friendliness->Find("levels"));
+        }
+        ReplaceYesNo(set.insultInstructions, set.insultTrue, set.insultFalse, questions->Find("insult"));
+        ReplaceYesNo(set.thanksInstructions, set.thanksTrue, set.thanksFalse, questions->Find("thanks"));
     }
 
     BrainJsonValue const* probe = root.Find("probe");
@@ -252,6 +273,17 @@ BrainQuestionSet BuiltIn()
         {"shrug", "shrug"},
         {"flex", "flex proudly"},
     };
+
+    // M3: asked only when the bots' memory wants the brain's rating (CoaBrain.Use.Rating).
+    set.friendlinessInstructions = "How friendly is the player's message toward the bot it is addressed to?";
+    set.friendlinessLevels = {"hostile or insulting", "cold or dismissive", "neutral", "friendly",
+                              "warm or grateful"};
+    set.insultInstructions = "Does the message insult, mock or threaten the bot it is addressed to?";
+    set.insultTrue = "it insults, mocks or threatens the bot";
+    set.insultFalse = "it does not";
+    set.thanksInstructions = "Does the message thank the bot it is addressed to?";
+    set.thanksTrue = "it thanks the bot";
+    set.thanksFalse = "it does not";
 
     set.probes = {
         {"fr-greet-1", "fr", "say", "salut tout le monde", true, "coa_reply_greet"},

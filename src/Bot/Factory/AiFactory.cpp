@@ -27,6 +27,8 @@
 #include "SharedDefines.h"
 #include "SpellInfo.h"
 #include "CoaAiObjectContext.h"
+#include "CoaMemoryConfig.h"
+#include "CoaMemoryMgr.h"
 #include "SpellMgr.h"
 #include "WarlockAiObjectContext.h"
 #include "WarriorAiObjectContext.h"
@@ -666,6 +668,10 @@ void AiFactory::AddDefaultNonCombatStrategies(Player* player, PlayerbotAI* const
         // let 25% of free bots start duels.
         if (!urand(0, 3))
             nonCombatEngine->addStrategy("start duel", false);
+
+        // CoA memory behaviours, each behind its own switch; nothing with memory off or not running, and no draw.
+        if (CoaMemoryConfig::AnyBehaviour() && CoaMemoryMgr::Running())
+            nonCombatEngine->addStrategy("coa memory", false);
 
         if (sPlayerbotAIConfig.randomBotJoinLfg)
             nonCombatEngine->addStrategy("lfg", false);

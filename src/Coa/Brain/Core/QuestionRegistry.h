@@ -56,6 +56,18 @@ struct BrainQuestionSet
 
     std::vector<BrainProbeCase> probes;
 
+    // M3 rating questions, asked with the voice decision only when AiPlayerbot.CoaMemory.Sentiment = 2 and
+    // AiPlayerbot.CoaBrain.Use.Rating = 1. Question file keys: "friendliness" {"instructions", "levels"},
+    // "insult" and "thanks" {"instructions", "criteria": {"true", "false"}}.
+    std::string friendlinessInstructions;
+    std::array<std::string, 5> friendlinessLevels;  // 0 = hostile ... 4 = warm
+    std::string insultInstructions;
+    std::string insultTrue;
+    std::string insultFalse;
+    std::string thanksInstructions;
+    std::string thanksTrue;
+    std::string thanksFalse;
+
     // The tag of a short reply name ("greet"), or the name itself upper-cased when the table has none.
     std::string LineTag(std::string_view shortName) const;
 };

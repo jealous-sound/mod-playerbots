@@ -88,6 +88,9 @@ public:
     // Any thread. Defaults for an account without a row.
     CoaPrefs Get(uint32 accountId) const;
     bool VoiceOptedOut(uint32 accountId) const;
+    // Any thread (shared lock). Every account whose memory column is COA_PREF_OUT, in no order. CoaMemoryMgr purges
+    // them once the preferences are loaded after memory starts: opt-outs made while memory was off.
+    std::vector<uint32> MemoryOptOuts() const;
 
     // World thread (chat commands). Updates the cache at once, then writes the whole row with an async
     // REPLACE INTO (integers only). optOut false opts back in. Topic All covers every topic.

@@ -25,6 +25,7 @@
 #include "WorldPacket.h"
 #include <atomic>
 #include <list>
+#include <memory>
 #include <mutex>
 #include <stack>
 #include <vector>
@@ -36,6 +37,7 @@ class ExternalEventHelper;
 class Group;
 class Gameobject;
 class Item;
+class MemoryView;
 class ObjectGuid;
 class Player;
 class PlayerbotMgr;
@@ -411,6 +413,24 @@ public:
     // thread as well as the bot's own.
     time_t GetChatPausedUntil() const { return chatPausedUntil.load(std::memory_order_relaxed); }
     void SetChatPausedUntil(time_t until) { chatPausedUntil.store(until, std::memory_order_relaxed); }
+    // CoA memory (M3). The epoch (CoaEpoch::Next(), taken by the constructor) names this life of the bot: events and
+    // snapshots of an older life are dropped. GetMemoryView: any thread (the bot's map thread in practice); null while
+    // memory is off, still loading, or when this bot keeps none. SetMemoryView: world thread, CoaMemoryMgr only,
+    // inside CoaWorldScript::OnUpdate while the map threads are idle; the lock only makes the swap formally safe.
+    uint64 GetCoaEpoch() const { return coaEpoch; }
+    std::shared_ptr<MemoryView const> GetMemoryView() const
+    {
+        std::lock_guard<std::mutex> guard(memoryViewLock);
+        return memoryView;
+    }
+    void SetMemoryView(std::shared_ptr<MemoryView const> view)
+    {
+        {
+            std::lock_guard<std::mutex> guard(memoryViewLock);
+            memoryView.swap(view);
+        }
+        // `view` holds the previous snapshot now: released here, outside the lock.
+    }
     void HandleBotOutgoingPacket(WorldPacket const& packet);
     void HandleMasterIncomingPacket(WorldPacket const& packet);
     void HandleMasterOutgoingPacket(WorldPacket const& packet);
@@ -668,6 +688,9 @@ protected:
     std::list<ChatCommandHolder> chatCommands;
     std::list<ChatQueuedReply> chatReplies;
     std::atomic<time_t> chatPausedUntil{0};
+    uint64 coaEpoch = 0;                              // CoaEpoch::Next() in PlayerbotAI(Player*); 0 otherwise
+    mutable std::mutex memoryViewLock;                // guards memoryView only
+    std::shared_ptr<MemoryView const> memoryView;    // CoaMemoryMgr's latest snapshot of this bot's memory
     PacketHandlingHelper botOutgoingPacketHandlers;
     PacketHandlingHelper masterIncomingPacketHandlers;
     PacketHandlingHelper masterOutgoingPacketHandlers;

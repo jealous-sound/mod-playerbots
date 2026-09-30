@@ -9,6 +9,8 @@
 #include "ArenaTeamMgr.h"
 #include "CharacterCache.h"
 #include "CoaBotNames.h"
+#include "CoaMemoryConfig.h"
+#include "CoaMemoryRepository.h"
 #include "ObjectAccessor.h"
 #include "Player.h"
 #include "DatabaseEnv.h"
@@ -522,6 +524,11 @@ void RandomPlayerbotFactory::CreateRandomBots()
         PlayerbotsDatabase.Execute("DELETE FROM playerbots_db_store WHERE guid NOT IN (SELECT guid FROM " + characterDBName + ".characters WHERE account IN (SELECT id FROM " + loginDBName + ".account WHERE username NOT LIKE '{}%%'))",
             sPlayerbotAIConfig.randomBotAccountPrefix.c_str());
 
+        // CoA memory rows of the deleted bots, whatever CoaMemory.Enable says: their guids may be reused, and a later
+        // memory start would give new characters the old bots' memories. Nothing is sent when the tables are
+        // missing; the wait loop below covers the async deletes.
+        CoaMemoryRepository::DeleteOrphans();
+
         // Clean up orphaned records in character-related tables
         CharacterDatabase.Execute("DELETE FROM arena_team_member WHERE guid NOT IN (SELECT guid FROM characters)");
         CharacterDatabase.Execute("DELETE FROM arena_team WHERE arenaTeamId NOT IN (SELECT arenaTeamId FROM arena_team_member)");
@@ -662,6 +669,12 @@ void RandomPlayerbotFactory::CreateRandomBots()
         }
         LOG_INFO("playerbots", ">> {} Accounts loaded into database in {} ms", account_creation, GetMSTimeDiffToNow(timer));
     }
+
+    // CoA memory: rows of characters deleted while memory was off go before any guid is handed out again, or a new
+    // bot would inherit an old character's memories. Synchronous, once per process; memory off: one relaxed load.
+    if (CoaMemoryConfig::Enabled() && CoaMemoryConfig::Current()->orphanSweepOnStartup &&
+        !CoaMemoryRepository::StartupSwept())
+        CoaMemoryRepository::SweepOrphansSync();
 
     LOG_INFO("playerbots", "Creating random bot characters...");
     uint32 totalRandomBotChars = 0;

@@ -229,6 +229,16 @@ bool CoaPlayerPrefs::VoiceOptedOut(uint32 accountId) const
     return found != prefs.end() && found->second.VoiceOptedOut();
 }
 
+std::vector<uint32> CoaPlayerPrefs::MemoryOptOuts() const
+{
+    std::vector<uint32> accounts;
+    std::shared_lock<std::shared_mutex> guard(lock);
+    for (auto const& [accountId, row] : prefs)
+        if (row.MemoryOptedOut())
+            accounts.push_back(accountId);
+    return accounts;
+}
+
 void CoaPlayerPrefs::SetOptOut(uint32 accountId, CoaPrefTopic topic, bool optOut)
 {
     COA_ASSERT_WORLD_THREAD();

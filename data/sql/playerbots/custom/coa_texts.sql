@@ -1,4 +1,5 @@
--- CoA voice (M1): the lines bots answer players with, and the texts of the opt-out commands.
+-- CoA voice (M1) and memory (M3): the lines bots answer players with, the lines of the bots' memory, and the
+-- texts of the opt-out and memory commands.
 --
 -- Director rows (coa_reply_*, coa_deny_*, coa_emote_*): 8 per name, English in `text`, French in
 -- `text_loc2`. They are read only when AiPlayerbot.CoaVoice.Enable = 1; the director picks the rows of
@@ -9,18 +10,32 @@
 --   coa_emote_*          %player
 -- System rows (coa_voice_*): 1 per name, sent by .playerbots optout/optin; %topic, %ai %voice %memory
 -- %duels %hostile, and %host (the brain engine's host) in coa_voice_disclosure_brain*.
+-- Memory rows (coa_mem_*, M3), read only when AiPlayerbot.CoaMemory.Enable = 1; the bot lines also need their
+-- behaviour's switch:
+--   coa_mem_greet_*        8 per name, %player (GreetByMemory)
+--   coa_mem_reply_*        8 per name, %player, optional in coa_mem_reply_cold (MemoryReplies)
+--   coa_mem_revenge_call   8, %player and %zone in every row (Revenge, said in guild chat)
+--   coa_mem_invite_offer   8, %player (FriendInvites, whispered)
+--   coa_mem_disclosure, coa_mem_optout_purged, coa_mem_off, coa_mem_mine_*, coa_mem_label_*, coa_mem_kind_*:
+--   1 per name, sent by .playerbots optout and .playerbots memory mine; %events %relations (days kept) in
+--   coa_mem_disclosure, %page, %next, %bot %character %label, the ten feelings (%affinity .. %camaraderie),
+--   the counters (%meetings %chats %helped_me %helped_them %killed_me %killed_them %duels_won %duels_lost
+--   %groups %trades), and %events (the list of dated kinds) in coa_mem_mine_events.
+--   coa_mem_mine_axes and coa_mem_mine_counters, ten placeholders each, are the only rows over 160 bytes
+--   before filling (system lines, never said in chat); filled with numbers they are shorter.
 --
 -- Rules for new lines: utf8 (3-byte) characters only, no emoji; plain apostrophes doubled; no pipe, no
 -- at sign, no link; never start a line with . ! + - #; under 160 bytes before filling. French avoids
 -- gendered agreement for the speaker and the listener (neither gender is known here), and no line
 -- says or implies that the speaker is a program or promises something the bot will not do.
 --
--- Ids 30000-30449 (reply 30000-30159, deny 30160-30239, emote 30240-30399, system 30400-30449),
--- 30450-30499 spare. Re-runnable: the deletes below touch only coa_* rows, by id block (to drop renamed or
--- removed lines) and by name. The file ends by moving the table's AUTO_INCREMENT to 30500, so an insert
--- without an id gets 30500 or above and never lands in this block.
+-- Ids 30000-30799: voice 30000-30449 (reply 30000-30159, deny 30160-30239, emote 30240-30399, system
+-- 30400-30449), 30450-30499 spare; memory bot lines 30500-30563, 30564-30599 spare; memory system rows
+-- 30600-30635, 30636-30799 spare. Re-runnable: the deletes below touch only coa_* rows, by id block (to drop
+-- renamed or removed lines) and by name. The file ends by moving the table's AUTO_INCREMENT to 30800, so
+-- an insert without an id gets 30800 or above and never lands in this block.
 
-DELETE FROM ai_playerbot_texts WHERE id BETWEEN 30000 AND 30499 AND LEFT(name, 4) = 'coa_';
+DELETE FROM ai_playerbot_texts WHERE id BETWEEN 30000 AND 30799 AND LEFT(name, 4) = 'coa_';
 DELETE FROM ai_playerbot_texts WHERE name IN (
     'coa_reply_greet',
     'coa_reply_bye',
@@ -72,7 +87,51 @@ DELETE FROM ai_playerbot_texts WHERE name IN (
     'coa_voice_topic_memory',
     'coa_voice_topic_duels',
     'coa_voice_topic_hostile',
-    'coa_voice_topic_all'
+    'coa_voice_topic_all',
+    'coa_mem_greet_friend',
+    'coa_mem_greet_known',
+    'coa_mem_greet_grudge',
+    'coa_mem_reply_friend',
+    'coa_mem_reply_cold',
+    'coa_mem_reply_grudge',
+    'coa_mem_revenge_call',
+    'coa_mem_invite_offer',
+    'coa_mem_disclosure',
+    'coa_mem_optout_purged',
+    'coa_mem_off',
+    'coa_mem_mine_usage',
+    'coa_mem_mine_header',
+    'coa_mem_mine_empty',
+    'coa_mem_mine_bot',
+    'coa_mem_mine_axes',
+    'coa_mem_mine_counters',
+    'coa_mem_mine_events',
+    'coa_mem_mine_more',
+    'coa_mem_label_stranger',
+    'coa_mem_label_acquaintance',
+    'coa_mem_label_friend',
+    'coa_mem_label_rival',
+    'coa_mem_label_disliked',
+    'coa_mem_label_grudge',
+    'coa_mem_kind_met',
+    'coa_mem_kind_chat_friendly',
+    'coa_mem_kind_chat_hostile',
+    'coa_mem_kind_thanked',
+    'coa_mem_kind_insulted',
+    'coa_mem_kind_emote_friendly',
+    'coa_mem_kind_emote_hostile',
+    'coa_mem_kind_duel_won',
+    'coa_mem_kind_duel_lost',
+    'coa_mem_kind_duel_fled',
+    'coa_mem_kind_killed_by',
+    'coa_mem_kind_killed',
+    'coa_mem_kind_helped',
+    'coa_mem_kind_helped_them',
+    'coa_mem_kind_grouped',
+    'coa_mem_kind_kicked_by',
+    'coa_mem_kind_traded',
+    'coa_mem_kind_boss_kill',
+    'coa_mem_kind_leader_kill'
 );
 
 INSERT INTO `ai_playerbot_texts`
@@ -728,7 +787,225 @@ VALUES
     (30415, 'coa_voice_disclosure_brain', 'Bots may reply with ready-made lines picked via %host, which gets a description of your messages, never your words or name. Opt out: .playerbots optout ai', 0, 0,
      '', 'Les bots répondent en phrases types choisies via %host, qui reçoit une description de vos messages, sans vos mots ni votre nom. Refus : .playerbots optout ai', '', '', '', '', '', ''),
     (30416, 'coa_voice_disclosure_brain_text', 'Bots may reply with ready-made lines picked via %host, which gets the messages they may answer, without your name. Opt out: .playerbots optout ai', 0, 0,
-     '', 'Les bots répondent en phrases types choisies via %host, qui reçoit les messages auxquels ils peuvent répondre, sans votre nom. Refus : .playerbots optout ai', '', '', '', '', '', '');
+     '', 'Les bots répondent en phrases types choisies via %host, qui reçoit les messages auxquels ils peuvent répondre, sans votre nom. Refus : .playerbots optout ai', '', '', '', '', '', ''),
 
--- The explicit ids push the counter to 30417, inside the block; move it past (never below max(id) + 1).
-ALTER TABLE `ai_playerbot_texts` AUTO_INCREMENT = 30500;
+    -- coa_mem_greet_friend
+    (30500, 'coa_mem_greet_friend', 'Hey %player, good to see you again!', 0, 0,
+     '', 'Rebonjour %player ! Ça fait plaisir de te revoir.', '', '', '', '', '', ''),
+    (30501, 'coa_mem_greet_friend', '%player! Been a while, how are you?', 0, 0,
+     '', '%player ! Ça faisait longtemps, comment ça va ?', '', '', '', '', '', ''),
+    (30502, 'coa_mem_greet_friend', 'Look who''s here! Hi %player.', 0, 0,
+     '', 'Tiens, qui voilà ! Salut %player.', '', '', '', '', '', ''),
+    (30503, 'coa_mem_greet_friend', 'Hi %player, always a pleasure.', 0, 0,
+     '', 'Salut %player, toujours un plaisir.', '', '', '', '', '', ''),
+    (30504, 'coa_mem_greet_friend', 'There you are, %player! All good?', 0, 0,
+     '', 'Ah, te voilà %player ! Tout roule ?', '', '', '', '', '', ''),
+    (30505, 'coa_mem_greet_friend', 'Hey %player, how''s the adventure going?', 0, 0,
+     '', 'Coucou %player, l''aventure se passe bien ?', '', '', '', '', '', ''),
+    (30506, 'coa_mem_greet_friend', 'Good to see a familiar face, %player.', 0, 0,
+     '', 'Ça fait du bien de voir une tête connue, %player.', '', '', '', '', '', ''),
+    (30507, 'coa_mem_greet_friend', 'Oh, %player! Perfect timing, hello!', 0, 0,
+     '', 'Oh, %player ! Pile au bon moment, salut !', '', '', '', '', '', ''),
+
+    -- coa_mem_greet_known
+    (30508, 'coa_mem_greet_known', 'Hello again, %player.', 0, 0,
+     '', 'Re, %player.', '', '', '', '', '', ''),
+    (30509, 'coa_mem_greet_known', 'Oh, %player. Hi.', 0, 0,
+     '', 'Oh, %player. Salut.', '', '', '', '', '', ''),
+    (30510, 'coa_mem_greet_known', 'We meet again, %player.', 0, 0,
+     '', 'On se recroise, %player.', '', '', '', '', '', ''),
+    (30511, 'coa_mem_greet_known', '%player, right? Hello.', 0, 0,
+     '', '%player, c''est ça ? Salut.', '', '', '', '', '', ''),
+    (30512, 'coa_mem_greet_known', 'Hi %player, small world.', 0, 0,
+     '', 'Salut %player, le monde est petit.', '', '', '', '', '', ''),
+    (30513, 'coa_mem_greet_known', 'Hey, I know you. Hi %player.', 0, 0,
+     '', 'Tiens, je te reconnais. Salut %player.', '', '', '', '', '', ''),
+    (30514, 'coa_mem_greet_known', 'Hi again %player, all good?', 0, 0,
+     '', 'Re %player, ça va ?', '', '', '', '', '', ''),
+    (30515, 'coa_mem_greet_known', 'Hello %player, fancy meeting you here.', 0, 0,
+     '', 'Bonjour %player, on se retrouve.', '', '', '', '', '', ''),
+
+    -- coa_mem_greet_grudge
+    (30516, 'coa_mem_greet_grudge', 'Ah, %player. Of course.', 0, 0,
+     '', 'Ah, %player. Évidemment.', '', '', '', '', '', ''),
+    (30517, 'coa_mem_greet_grudge', 'Oh. It''s you.', 0, 0,
+     '', 'Ah. C''est toi.', '', '', '', '', '', ''),
+    (30518, 'coa_mem_greet_grudge', 'I remember you, %player.', 0, 0,
+     '', 'Je me souviens de toi, %player.', '', '', '', '', '', ''),
+    (30519, 'coa_mem_greet_grudge', '%player. I haven''t forgotten.', 0, 0,
+     '', '%player. Je n''ai pas oublié.', '', '', '', '', '', ''),
+    (30520, 'coa_mem_greet_grudge', 'Keep walking, %player.', 0, 0,
+     '', 'Passe ton chemin, %player.', '', '', '', '', '', ''),
+    (30521, 'coa_mem_greet_grudge', 'Well, well. Look who it is.', 0, 0,
+     '', 'Tiens, tiens. Regarde qui voilà.', '', '', '', '', '', ''),
+    (30522, 'coa_mem_greet_grudge', 'You again, %player?', 0, 0,
+     '', 'Encore toi, %player ?', '', '', '', '', '', ''),
+    (30523, 'coa_mem_greet_grudge', 'I''ve got my eye on you, %player.', 0, 0,
+     '', 'Je t''ai à l''œil, %player.', '', '', '', '', '', ''),
+
+    -- coa_mem_reply_friend
+    (30524, 'coa_mem_reply_friend', 'Always a pleasure, %player!', 0, 0,
+     '', 'Toujours un plaisir, %player !', '', '', '', '', '', ''),
+    (30525, 'coa_mem_reply_friend', 'Ha, you never change, %player.', 0, 0,
+     '', 'Haha, tu changes pas, %player.', '', '', '', '', '', ''),
+    (30526, 'coa_mem_reply_friend', 'Good to hear from you, %player!', 0, 0,
+     '', 'Ça fait plaisir d''avoir de tes nouvelles, %player !', '', '', '', '', '', ''),
+    (30527, 'coa_mem_reply_friend', 'Ah, %player! How have you been?', 0, 0,
+     '', 'Ah, %player ! Comment ça va depuis le temps ?', '', '', '', '', '', ''),
+    (30528, 'coa_mem_reply_friend', 'You always brighten my day, %player.', 0, 0,
+     '', 'Tu illumines toujours ma journée, %player.', '', '', '', '', '', ''),
+    (30529, 'coa_mem_reply_friend', 'Hehe, nice to cross paths again.', 0, 0,
+     '', 'Hihi, chouette de te recroiser.', '', '', '', '', '', ''),
+    (30530, 'coa_mem_reply_friend', 'Right back at you, %player!', 0, 0,
+     '', 'Pareil pour toi, %player !', '', '', '', '', '', ''),
+    (30531, 'coa_mem_reply_friend', 'You''re good company, %player.', 0, 0,
+     '', 'T''es de bonne compagnie, %player.', '', '', '', '', '', ''),
+
+    -- coa_mem_reply_cold
+    (30532, 'coa_mem_reply_cold', 'Hm.', 0, 0,
+     '', 'Mouais.', '', '', '', '', '', ''),
+    (30533, 'coa_mem_reply_cold', 'If you say so.', 0, 0,
+     '', 'Si tu le dis.', '', '', '', '', '', ''),
+    (30534, 'coa_mem_reply_cold', 'Right.', 0, 0,
+     '', 'Ouais.', '', '', '', '', '', ''),
+    (30535, 'coa_mem_reply_cold', 'Noted, %player.', 0, 0,
+     '', 'C''est noté, %player.', '', '', '', '', '', ''),
+    (30536, 'coa_mem_reply_cold', 'Whatever.', 0, 0,
+     '', 'Comme tu veux.', '', '', '', '', '', ''),
+    (30537, 'coa_mem_reply_cold', 'Sure, sure.', 0, 0,
+     '', 'Oui, oui.', '', '', '', '', '', ''),
+    (30538, 'coa_mem_reply_cold', 'I''ve got things to do, %player.', 0, 0,
+     '', 'J''ai à faire, %player.', '', '', '', '', '', ''),
+    (30539, 'coa_mem_reply_cold', 'Yeah. Bye.', 0, 0,
+     '', 'Ouais. Salut.', '', '', '', '', '', ''),
+
+    -- coa_mem_reply_grudge
+    (30540, 'coa_mem_reply_grudge', 'You again, %player?', 0, 0,
+     '', 'Encore toi, %player ?', '', '', '', '', '', ''),
+    (30541, 'coa_mem_reply_grudge', 'I haven''t forgotten what you did, %player.', 0, 0,
+     '', 'J''ai pas oublié ce que tu as fait, %player.', '', '', '', '', '', ''),
+    (30542, 'coa_mem_reply_grudge', 'Talk all you want, I remember.', 0, 0,
+     '', 'Cause toujours, je me souviens.', '', '', '', '', '', ''),
+    (30543, 'coa_mem_reply_grudge', 'You''ve got some nerve talking to me, %player.', 0, 0,
+     '', 'T''as du culot de venir me parler, %player.', '', '', '', '', '', ''),
+    (30544, 'coa_mem_reply_grudge', 'I''m not in the mood, %player.', 0, 0,
+     '', 'Pas d''humeur, %player.', '', '', '', '', '', ''),
+    (30545, 'coa_mem_reply_grudge', 'Oh, now you want to talk?', 0, 0,
+     '', 'Ah, maintenant tu veux discuter ?', '', '', '', '', '', ''),
+    (30546, 'coa_mem_reply_grudge', 'Don''t act like nothing happened, %player.', 0, 0,
+     '', 'Fais pas comme si de rien n''était, %player.', '', '', '', '', '', ''),
+    (30547, 'coa_mem_reply_grudge', 'Save it, %player.', 0, 0,
+     '', 'Épargne-moi ça, %player.', '', '', '', '', '', ''),
+
+    -- coa_mem_revenge_call
+    (30548, 'coa_mem_revenge_call', '%player just killed me near %zone. Anyone around?', 0, 0,
+     '', '%player vient de me tuer vers %zone. Quelqu''un dans le coin ?', '', '', '', '', '', ''),
+    (30549, 'coa_mem_revenge_call', 'Heads up: %player is roaming around %zone. They just got me.', 0, 0,
+     '', 'Attention, %player rôde vers %zone. Je viens d''y passer.', '', '', '', '', '', ''),
+    (30550, 'coa_mem_revenge_call', 'Got taken down by %player in %zone. Careful out there.', 0, 0,
+     '', 'Je me suis fait avoir par %player du côté de %zone. Prudence.', '', '', '', '', '', ''),
+    (30551, 'coa_mem_revenge_call', 'Watch out for %player around %zone, I just lost to them.', 0, 0,
+     '', 'Méfiez-vous de %player vers %zone, je viens de me faire battre.', '', '', '', '', '', ''),
+    (30552, 'coa_mem_revenge_call', 'Anyone near %zone? %player just got me.', 0, 0,
+     '', 'Quelqu''un vers %zone ? %player vient de m''avoir.', '', '', '', '', '', ''),
+    (30553, 'coa_mem_revenge_call', 'Careful in %zone, %player is looking for trouble.', 0, 0,
+     '', 'Faites gaffe du côté de %zone, %player cherche la bagarre.', '', '', '', '', '', ''),
+    (30554, 'coa_mem_revenge_call', '%player caught me off guard in %zone. Grr.', 0, 0,
+     '', '%player vient de me surprendre vers %zone. Grr.', '', '', '', '', '', ''),
+    (30555, 'coa_mem_revenge_call', 'Down again. %player, near %zone. If anyone is close...', 0, 0,
+     '', 'Encore à terre. %player, vers %zone. Si quelqu''un est dans le coin...', '', '', '', '', '', ''),
+
+    -- coa_mem_invite_offer
+    (30556, 'coa_mem_invite_offer', 'Hey %player, want to group up? Invite me if you like.', 0, 0,
+     '', 'Hé %player, on groupe ? Invite-moi si tu veux.', '', '', '', '', '', ''),
+    (30557, 'coa_mem_invite_offer', 'Up for a duo, %player? Send me an invite.', 0, 0,
+     '', 'Un duo, ça te dit, %player ? Envoie-moi une invitation.', '', '', '', '', '', ''),
+    (30558, 'coa_mem_invite_offer', 'Fancy teaming up, %player? Just invite me.', 0, 0,
+     '', 'On fait équipe, %player ? Invite-moi.', '', '', '', '', '', ''),
+    (30559, 'coa_mem_invite_offer', '%player, if you want a hand, invite me.', 0, 0,
+     '', '%player, si tu veux un coup de main, invite-moi.', '', '', '', '', '', ''),
+    (30560, 'coa_mem_invite_offer', 'Want to adventure together for a bit? Invite me, %player.', 0, 0,
+     '', 'On part à l''aventure un moment ? Invite-moi, %player.', '', '', '', '', '', ''),
+    (30561, 'coa_mem_invite_offer', 'Feel like some company, %player? I''m free if you invite me.', 0, 0,
+     '', 'Envie de compagnie, %player ? Je suis dispo si tu m''invites.', '', '', '', '', '', ''),
+    (30562, 'coa_mem_invite_offer', 'Two is better than one, %player. Invite me if you want.', 0, 0,
+     '', 'À deux c''est mieux, %player. Invite-moi si tu veux.', '', '', '', '', '', ''),
+    (30563, 'coa_mem_invite_offer', 'I''m around if you want to group, %player.', 0, 0,
+     '', 'Je suis dans le coin si tu veux grouper, %player.', '', '', '', '', '', ''),
+
+    -- coa_mem_* system rows: .playerbots optout (disclosure, purge) and .playerbots memory mine, 1 row each
+    (30600, 'coa_mem_disclosure', 'Bots remember how you treat them, never your words, for %events to %relations days. See: .playerbots memory mine. Erase: .playerbots optout memory', 0, 0,
+     '', 'Les bots retiennent votre attitude, jamais vos mots, de %events à %relations jours. Voir : .playerbots memory mine. Effacer : .playerbots optout memory', '', '', '', '', '', ''),
+    (30601, 'coa_mem_optout_purged', 'The bots have forgotten everything about you.', 0, 0,
+     '', 'Les bots ont tout oublié à votre sujet.', '', '', '', '', '', ''),
+    (30602, 'coa_mem_off', 'Bot memory is off on this realm.', 0, 0,
+     '', 'La mémoire des bots est désactivée sur ce royaume.', '', '', '', '', '', ''),
+    (30603, 'coa_mem_mine_usage', 'Usage: .playerbots memory mine [page]', 0, 0,
+     '', 'Usage : .playerbots memory mine [page]', '', '', '', '', '', ''),
+    (30604, 'coa_mem_mine_header', 'What bots remember about your characters, page %page:', 0, 0,
+     '', 'Ce que les bots retiennent de vos personnages, page %page :', '', '', '', '', '', ''),
+    (30605, 'coa_mem_mine_empty', 'No bot remembers any of your characters.', 0, 0,
+     '', 'Aucun bot ne se souvient de vos personnages.', '', '', '', '', '', ''),
+    (30606, 'coa_mem_mine_bot', '%bot, about %character: %label', 0, 0,
+     '', '%bot, à propos de %character : %label', '', '', '', '', '', ''),
+    (30607, 'coa_mem_mine_axes', 'Feelings: affinity %affinity, trust %trust, respect %respect, rivalry %rivalry, gratitude %gratitude, grudge %grudge, fear %fear, annoyance %annoyance, familiarity %familiarity, camaraderie %camaraderie', 0, 0,
+     '', 'Sentiments : affinité %affinity, confiance %trust, respect %respect, rivalité %rivalry, gratitude %gratitude, rancune %grudge, peur %fear, agacement %annoyance, familiarité %familiarity, camaraderie %camaraderie', '', '', '', '', '', ''),
+    (30608, 'coa_mem_mine_counters', 'Met %meetings, chats %chats, groups %groups, trades %trades. You/it: helped %helped_me/%helped_them, killed %killed_me/%killed_them, won duels %duels_lost/%duels_won', 0, 0,
+     '', 'Rencontres %meetings, messages %chats, groupes %groups, échanges %trades. Vous/le bot : aides %helped_me/%helped_them, kills %killed_me/%killed_them, duels gagnés %duels_lost/%duels_won', '', '', '', '', '', ''),
+    (30609, 'coa_mem_mine_events', 'Events: %events', 0, 0,
+     '', 'Événements : %events', '', '', '', '', '', ''),
+    (30610, 'coa_mem_mine_more', 'More: .playerbots memory mine %next', 0, 0,
+     '', 'Suite : .playerbots memory mine %next', '', '', '', '', '', ''),
+    (30611, 'coa_mem_label_stranger', 'no bond', 0, 0,
+     '', 'aucun lien', '', '', '', '', '', ''),
+    (30612, 'coa_mem_label_acquaintance', 'acquaintance', 0, 0,
+     '', 'connaissance', '', '', '', '', '', ''),
+    (30613, 'coa_mem_label_friend', 'friendship', 0, 0,
+     '', 'amitié', '', '', '', '', '', ''),
+    (30614, 'coa_mem_label_rival', 'rivalry', 0, 0,
+     '', 'rivalité', '', '', '', '', '', ''),
+    (30615, 'coa_mem_label_disliked', 'dislike', 0, 0,
+     '', 'antipathie', '', '', '', '', '', ''),
+    (30616, 'coa_mem_label_grudge', 'grudge', 0, 0,
+     '', 'rancune', '', '', '', '', '', ''),
+    (30617, 'coa_mem_kind_met', 'you met', 0, 0,
+     '', 'rencontre', '', '', '', '', '', ''),
+    (30618, 'coa_mem_kind_chat_friendly', 'friendly chat', 0, 0,
+     '', 'échange amical', '', '', '', '', '', ''),
+    (30619, 'coa_mem_kind_chat_hostile', 'hostile chat', 0, 0,
+     '', 'échange hostile', '', '', '', '', '', ''),
+    (30620, 'coa_mem_kind_thanked', 'you thanked it', 0, 0,
+     '', 'vos remerciements', '', '', '', '', '', ''),
+    (30621, 'coa_mem_kind_insulted', 'you insulted it', 0, 0,
+     '', 'votre insulte', '', '', '', '', '', ''),
+    (30622, 'coa_mem_kind_emote_friendly', 'friendly gesture', 0, 0,
+     '', 'geste amical', '', '', '', '', '', ''),
+    (30623, 'coa_mem_kind_emote_hostile', 'rude gesture', 0, 0,
+     '', 'geste grossier', '', '', '', '', '', ''),
+    (30624, 'coa_mem_kind_duel_won', 'it beat you in a duel', 0, 0,
+     '', 'votre défaite en duel', '', '', '', '', '', ''),
+    (30625, 'coa_mem_kind_duel_lost', 'you beat it in a duel', 0, 0,
+     '', 'votre victoire en duel', '', '', '', '', '', ''),
+    (30626, 'coa_mem_kind_duel_fled', 'you fled a duel', 0, 0,
+     '', 'votre fuite en duel', '', '', '', '', '', ''),
+    (30627, 'coa_mem_kind_killed_by', 'you killed it', 0, 0,
+     '', 'sa mort de votre main', '', '', '', '', '', ''),
+    (30628, 'coa_mem_kind_killed', 'it killed you', 0, 0,
+     '', 'votre mort de sa main', '', '', '', '', '', ''),
+    (30629, 'coa_mem_kind_helped', 'you helped it in a fight', 0, 0,
+     '', 'votre aide en combat', '', '', '', '', '', ''),
+    (30630, 'coa_mem_kind_helped_them', 'it helped you in a fight', 0, 0,
+     '', 'son aide en combat', '', '', '', '', '', ''),
+    (30631, 'coa_mem_kind_grouped', 'you grouped together', 0, 0,
+     '', 'partie en groupe', '', '', '', '', '', ''),
+    (30632, 'coa_mem_kind_kicked_by', 'you kicked it from a group', 0, 0,
+     '', 'son renvoi du groupe', '', '', '', '', '', ''),
+    (30633, 'coa_mem_kind_traded', 'you traded', 0, 0,
+     '', 'échange d''objets', '', '', '', '', '', ''),
+    (30634, 'coa_mem_kind_boss_kill', 'a boss beaten together', 0, 0,
+     '', 'boss vaincu ensemble', '', '', '', '', '', ''),
+    (30635, 'coa_mem_kind_leader_kill', 'a faction leader beaten together', 0, 0,
+     '', 'chef de faction vaincu ensemble', '', '', '', '', '', '');
+
+-- The explicit ids push the counter to 30636, inside the block; move it past (never below max(id) + 1).
+ALTER TABLE `ai_playerbot_texts` AUTO_INCREMENT = 30800;

@@ -5,6 +5,7 @@
  */
 
 #include "TradeStatusAction.h"
+#include "CoaHooks.h"
 #include "CraftValue.h"
 #include "Event.h"
 #include "GuildTaskMgr.h"
@@ -97,6 +98,9 @@ bool TradeStatusAction::Execute(Event event)
                 sRandomPlayerbotMgr.SetTradeDiscount(bot, trader, discount);
                 return false;
             }
+
+            // The trade completed: memory on, the bot remembers it (givenItemIds is what the trader gave the bot).
+            CoaHooks::OnTradeCompleted(bot, trader, uint32(givenItemIds.size()), uint32(takenItemIds.size()));
 
             for (std::map<uint32, uint32>::iterator i = givenItemIds.begin(); i != givenItemIds.end(); ++i)
             {
