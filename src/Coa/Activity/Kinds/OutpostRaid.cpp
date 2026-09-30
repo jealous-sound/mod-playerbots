@@ -461,8 +461,8 @@ bool ChooseLineKey(ActivityServices& services, Activity const& activity, Outpost
     return true;
 }
 
-// The leader's LFM post when one is due: "in %minutes min, %count/%max" in the zone channels it is on or World,
-// within Chat.MaxPosts, Chat.MinGapSeconds and Chat.RecruitEverySeconds.
+// The leader's LFM post when one is due: "in %minutes min, %count/%max" in the zone channels of the real player nearest
+// to it (joined), else those it is on, or World, within Chat.MaxPosts, Chat.MinGapSeconds and Chat.RecruitEverySeconds.
 void Post(ActivityServices& services, Activity& activity, OutpostRaidState& state)
 {
     ActivityConfig const& config = services.config;
@@ -481,9 +481,13 @@ void Post(ActivityServices& services, Activity& activity, OutpostRaidState& stat
                                     {"%minutes", std::to_string(MinutesLeft(state.recruitUntilMs, now))},
                                     {"%count", std::to_string(count)},
                                     {"%max", std::to_string(std::max(config.raidMaxBots, count))}}));
-    ActivityOpResult const result = config.chatChannel == ActivityChatChannel::Zone
-                                        ? services.ops.PostToChannels(activity.leader, config.chatChannels, text)
-                                        : services.ops.PostToChannel(activity.leader, ActivityChatTarget::World, text);
+    // The zone channels of the real player nearest to the leader, the outpost's zone when that player is on none.
+    ActivityOpResult const result =
+        config.chatChannel == ActivityChatChannel::Zone
+            ? services.ops.PostToChannels(
+                  activity.leader, config.chatChannels, text, state.spawn.point.zoneId,
+                  ActivityWorld::NearestAudience(services.realPlayers, activity.team, activity.leader))
+            : services.ops.PostToChannel(activity.leader, ActivityChatTarget::World, text);
     LOG_DEBUG(LOG, "activity #{} raid: LFM {} {}", activity.id, state.lineKey, ActivityOpResultName(result));
     if (result == ActivityOpResult::Deferred)
         return;

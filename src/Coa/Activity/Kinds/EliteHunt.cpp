@@ -354,8 +354,8 @@ bool ChooseLineKey(ActivityServices& services, Activity const& activity, EliteHu
     return true;
 }
 
-// The leader's LFM post when one is due: the zone channels it is on (Chat.Channels) or World, within Chat.MaxPosts,
-// Chat.MinGapSeconds and Chat.RecruitEverySeconds.
+// The leader's LFM post when one is due: the zone channels (Chat.Channels) of the real player nearest to it, which it
+// joins, else those it is on, or World, within Chat.MaxPosts, Chat.MinGapSeconds and Chat.RecruitEverySeconds.
 void Post(ActivityServices& services, Activity& activity, EliteHuntState& state)
 {
     ActivityConfig const& config = services.config;
@@ -370,9 +370,13 @@ void Post(ActivityServices& services, Activity& activity, EliteHuntState& state)
     std::string const text = Spoken(ActivityWorld::Line(
         LFM_KEYS[index], LFM_ENGLISH[index],
         {{"%target", activity.name}, {"%zone", ActivityWorld::AreaName(state.spawn.point.zoneId)}}));
-    ActivityOpResult const result = config.chatChannel == ActivityChatChannel::Zone
-                                        ? services.ops.PostToChannels(activity.leader, config.chatChannels, text)
-                                        : services.ops.PostToChannel(activity.leader, ActivityChatTarget::World, text);
+    // The zone channels of the real player nearest to the leader, the hunt's zone when that player is on none.
+    ActivityOpResult const result =
+        config.chatChannel == ActivityChatChannel::Zone
+            ? services.ops.PostToChannels(
+                  activity.leader, config.chatChannels, text, state.spawn.point.zoneId,
+                  ActivityWorld::NearestAudience(services.realPlayers, activity.team, activity.leader))
+            : services.ops.PostToChannel(activity.leader, ActivityChatTarget::World, text);
     LOG_DEBUG(LOG, "activity #{} hunt: LFM {} {}", activity.id, state.lineKey, ActivityOpResultName(result));
     if (result == ActivityOpResult::Deferred)
         return;

@@ -10,9 +10,11 @@
 #include "ActivityTypes.h"
 #include "Define.h"
 #include "ObjectGuid.h"
+#include <map>
 #include <string>
 #include <vector>
 
+class Channel;
 class Player;
 
 enum class ActivityOpResult : uint8
@@ -68,16 +70,29 @@ public:
     ActivityOpResult PostToChannel(ObjectGuid bot, ActivityChatTarget target, std::string const& text,
                                    ObjectGuid whisperTo = ObjectGuid::Empty);
 
-    // M5 recruitment posts (Chat.Channel = zone): the bot says `text` (cut to 255 bytes) in the chat channels of its
-    // team's ChannelMgr that it is really on (CoaChannels::IsOn) and whose name starts with one of `prefixes` (lower
-    // case, compared case-insensitively, as CoaLfgChannels and CoaVoice.Channels), at most two channels. A channel
-    // named after a place (id AiPlayerbot.ZoneChannelId, General or LocalDefense) must also carry the name of the
-    // zone `zoneId` (AreaTable id), or, when `zoneId` is 0 or the bot is on no such channel of it, of the zone the
-    // bot stands in (or its area there); never another place's. One budget unit. Done when it spoke in one at least;
-    // Failed when none qualifies (or `text` is empty); Refused in combat; Gone when the bot is not in the world;
+    // M5 recruitment posts (Chat.Channel = zone): the bot says `text` (cut to 255 bytes) in at most two chat channels
+    // of its team's ChannelMgr whose name starts with one of `prefixes` (lower case, compared case-insensitively, as
+    // CoaLfgChannels and CoaVoice.Channels). Channels named after a place (id AiPlayerbot.ZoneChannelId, General or
+    // LocalDefense) are chosen by who the post is for, first match wins:
+    //  - `audience`, the real player it is meant for (empty: nobody; ignored when not in the world), is really on such
+    //    channels (CoaChannels::Joined) that carry the name of the zone it stands in or of its area there: the bot
+    //    speaks in those, joining the ones it is not on yet (Channel::JoinChannel on an existing channel, never a new
+    //    one) and staying on them until LeaveActivityChannels;
+    //  - else the channels the bot is really on (CoaChannels::IsOn) that carry the name of the zone `zoneId` (AreaTable
+    //    id), or, when `zoneId` is 0 or the bot is on none of them, of the zone the bot stands in (or its area there);
+    //    never another place's.
+    // Channels of no place (Trade, LookingForGroup, a custom one) the bot is really on follow. One budget unit. Done
+    // when it spoke in one channel at least; Failed when none qualifies (or `text` is empty): nothing was said, so the
+    // caller does not count the post (Activity::NotePost); Refused in combat; Gone when the bot is not in the world;
     // Deferred without budget.
     ActivityOpResult PostToChannels(ObjectGuid bot, std::vector<std::string> const& prefixes, std::string const& text,
-                                    uint32 zoneId = 0);
+                                    uint32 zoneId = 0, ObjectGuid audience = ObjectGuid::Empty);
+
+    // Takes the bot off the channels PostToChannels joined it to (not the ones it was on already, nor the channel of
+    // the place it stands in now). Idempotent, never budgeted, no result: the director calls it when the bot leaves
+    // an activity and for every bot of an activity that ends. A bot that logged out since (another CoaEpoch) has
+    // nothing left to leave: the core dropped its channels with the session.
+    void LeaveActivityChannels(ObjectGuid bot);
 
     // Group::SetTargetIcon(icon, setter, target) on the setter's group (M5 objectives).
     ActivityOpResult SetIcon(ObjectGuid setter, uint8 icon, ObjectGuid target);
@@ -116,11 +131,22 @@ public:
     ActivityOpResult Disband(ObjectGuid groupGuid);
 
 private:
+    // What PostToChannels joined a bot to: channel names (looked up again when leaving, never a pointer) and the
+    // bot's CoaEpoch when it joined them.
+    struct ChannelJoins
+    {
+        uint64 epoch = 0;
+        std::vector<std::string> names;
+    };
+
     bool Spend(uint32 amount = 1);  // false (nothing spent) when the budget is short
+    // True when `bot` is on `channel`: joins it when it was not, and records that join for LeaveActivityChannels.
+    bool EnterChannel(Player* bot, Channel* channel);
 
     uint32 budget = 0;
     uint32 used = 0;
     std::vector<Player*> const* realPlayers = nullptr;
+    std::map<ObjectGuid, ChannelJoins> joined;  // bot -> channels joined for a post; world thread only
 };
 
 #endif

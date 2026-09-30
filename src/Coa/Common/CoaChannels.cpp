@@ -28,3 +28,11 @@ bool CoaChannels::IsOn(Player const* player, Channel const* channel)
     auto const& joined = JoinedChannels::Of(player);
     return std::find(joined.begin(), joined.end(), channel) != joined.end();
 }
+
+std::vector<Channel*> CoaChannels::Joined(Player const* player)
+{
+    if (!player)
+        return {};
+    auto const& joined = JoinedChannels::Of(player);
+    return std::vector<Channel*>(joined.begin(), joined.end());
+}

@@ -301,6 +301,32 @@ bool RealPlayerNear(std::vector<Player*> const& realPlayers, ActivityPoint const
     return false;
 }
 
+ObjectGuid NearestAudience(std::vector<Player*> const& realPlayers, uint8 team, ActivityPoint const& point)
+{
+    if (!point.set)
+        return ObjectGuid::Empty;
+    ObjectGuid best;
+    float bestSq = 0.0f;
+    for (Player* player : realPlayers)
+    {
+        if (!player || !player->IsInWorld() || player->GetMapId() != point.mapId || uint8(player->GetTeamId()) != team)
+            continue;
+        float const sq = point.SqDist2d(player->GetPositionX(), player->GetPositionY());
+        if (best.IsEmpty() || sq < bestSq)
+        {
+            best = player->GetGUID();
+            bestSq = sq;
+        }
+    }
+    return best;
+}
+
+ObjectGuid NearestAudience(std::vector<Player*> const& realPlayers, uint8 team, ObjectGuid bot)
+{
+    Player* const player = bot.IsEmpty() ? nullptr : ObjectAccessor::FindConnectedPlayer(bot);
+    return NearestAudience(realPlayers, team, PointOf(player));
+}
+
 std::string Line(char const* name, char const* english, std::map<std::string, std::string> const& placeholders)
 {
     return PlayerbotTextMgr::instance().GetBotTextOrDefault(name, english, placeholders);

@@ -89,6 +89,44 @@ std::size_t PlaceRank(std::string const& name, std::vector<std::string> const& p
             return i;
     return places.size();
 }
+
+// A channel whose name, lower-cased, starts with one of `prefixes` (lower case): the ones Chat.Channels lists.
+bool Listed(Channel const* channel, std::vector<std::string> const& prefixes)
+{
+    std::string name = channel->GetName();
+    std::transform(name.begin(), name.end(), name.begin(), [](unsigned char c) { return char(std::tolower(c)); });
+    return std::any_of(prefixes.begin(), prefixes.end(), [&name](std::string const& prefix)
+                       { return !prefix.empty() && name.rfind(prefix, 0) == 0; });
+}
+
+// The place-bound channels of the place `audience` stands in, the zone's name before the area's: listed by
+// `prefixes`, held by `mgr` (the bot's team's manager: a channel of another team's is never joined), and really joined
+// by the player (CoaChannels::Joined). The client leaves the channels of a zone it left, but a name that matches
+// neither the zone nor the area the player stands in is not its place's channel and is never taken.
+std::vector<Channel*> AudienceChannels(ChannelMgr* mgr, Player const* audience,
+                                       std::vector<std::string> const& prefixes)
+{
+    AreaTableEntry const* const zone = sAreaTableStore.LookupEntry(audience->GetZoneId());
+    AreaTableEntry const* const area = sAreaTableStore.LookupEntry(audience->GetAreaId());
+    std::vector<std::string> const places = PlaceNames(zone, zone, area);
+
+    std::vector<std::pair<std::size_t, Channel*>> found;
+    for (Channel* const channel : CoaChannels::Joined(audience))
+    {
+        if (!channel || channel->GetName().empty() || !PlaceBound(channel) || !Listed(channel, prefixes))
+            continue;
+        if (mgr->GetChannel(channel->GetName(), nullptr, false) != channel)
+            continue;
+        if (std::size_t const rank = PlaceRank(channel->GetName(), places); rank < places.size())
+            found.emplace_back(rank, channel);
+    }
+
+    std::stable_sort(found.begin(), found.end(), [](auto const& a, auto const& b) { return a.first < b.first; });
+    std::vector<Channel*> channels;
+    for (auto const& entry : found)
+        channels.push_back(entry.second);
+    return channels;
+}
 }  // namespace
 
 char const* ActivityOpResultName(ActivityOpResult result)
@@ -302,8 +340,30 @@ ActivityOpResult ActivityOperations::PostToChannel(ObjectGuid botGuid, ActivityC
     return Report("post", botGuid, said ? ActivityOpResult::Done : ActivityOpResult::Failed);
 }
 
+bool ActivityOperations::EnterChannel(Player* bot, Channel* channel)
+{
+    if (CoaChannels::IsOn(bot, channel))
+        return true;
+
+    // The same call JoinBotChannels makes for the channels of a zone; a banned or password-protected channel leaves
+    // the bot outside.
+    channel->JoinChannel(bot, "");
+    if (!CoaChannels::IsOn(bot, channel))
+        return false;
+
+    ChannelJoins& entry = joined[bot->GetGUID()];
+    uint64 const epoch = GET_PLAYERBOT_AI(bot)->GetCoaEpoch();
+    if (entry.epoch != epoch)
+    {
+        entry.epoch = epoch;  // an earlier life's channels went with its session
+        entry.names.clear();
+    }
+    entry.names.push_back(channel->GetName());
+    return true;
+}
+
 ActivityOpResult ActivityOperations::PostToChannels(ObjectGuid botGuid, std::vector<std::string> const& prefixes,
-                                                    std::string const& text, uint32 zoneId)
+                                                    std::string const& text, uint32 zoneId, ObjectGuid audienceGuid)
 {
     COA_ASSERT_WORLD_THREAD();
     if (!Spend())
@@ -325,8 +385,15 @@ ActivityOpResult ActivityOperations::PostToChannels(ObjectGuid botGuid, std::vec
     CoaText::CutUtf8Bytes(line, 255);
     PlayerbotAI* const ai = GET_PLAYERBOT_AI(bot);
 
-    // The places a place-bound channel may name: the activity's zone, else (no zone given, or the bot is on no
-    // channel of it) the zone the bot stands in. Never another place whose channel the bot is still on.
+    // The player the post is for: the place channels it is on come first, whether the bot is on them or not.
+    Player* const audience = audienceGuid.IsEmpty() ? nullptr : ObjectAccessor::FindConnectedPlayer(audienceGuid);
+    std::vector<Channel*> const reach = audience && audience != bot && audience->IsInWorld()
+                                            ? AudienceChannels(mgr, audience, prefixes)
+                                            : std::vector<Channel*>();
+
+    // Otherwise the places a place-bound channel of the bot's own may name: the activity's zone, else (no zone given,
+    // or the bot is on no channel of it) the zone the bot stands in. Never another place whose channel the bot is
+    // still on.
     AreaTableEntry const* const here = ai->GetCurrentZone();
     AreaTableEntry const* const area = ai->GetCurrentArea();
     AreaTableEntry const* const target = zoneId ? sAreaTableStore.LookupEntry(zoneId) : here;
@@ -343,12 +410,7 @@ ActivityOpResult ActivityOperations::PostToChannels(ObjectGuid botGuid, std::vec
     {
         if (!channel || channel->GetName().empty())
             continue;
-        std::string name = channel->GetName();
-        std::transform(name.begin(), name.end(), name.begin(),
-                       [](unsigned char c) { return char(std::tolower(c)); });
-        bool const listed = std::any_of(prefixes.begin(), prefixes.end(), [&name](std::string const& prefix)
-                                        { return !prefix.empty() && name.rfind(prefix, 0) == 0; });
-        if (!listed || !CoaChannels::IsOn(bot, channel))
+        if (!Listed(channel, prefixes) || !CoaChannels::IsOn(bot, channel))
             continue;
         if (!PlaceBound(channel))
             placeless.push_back(channel);
@@ -361,27 +423,87 @@ ActivityOpResult ActivityOperations::PostToChannels(ObjectGuid botGuid, std::vec
     // The place's own channels first (the zone's name before the area's), then the listed channels of no place.
     std::vector<std::pair<std::size_t, Channel*>>& chosen = placed.empty() ? placedHere : placed;
     std::stable_sort(chosen.begin(), chosen.end(), [](auto const& a, auto const& b) { return a.first < b.first; });
-    std::vector<Channel*> targets;
-    for (auto const& entry : chosen)
-        targets.push_back(entry.second);
-    targets.insert(targets.end(), placeless.begin(), placeless.end());
 
     std::string spoken;
     uint32 said = 0;
-    for (Channel* const channel : targets)
+    uint32 joinedNow = 0;
+    auto speak = [&](Channel* channel)
     {
-        if (said >= 2)
-            break;
         channel->Say(bot->GetGUID(), line, LANG_UNIVERSAL);
         ai->LogChat("tells channel " + channel->GetName(), line);
         spoken += (said ? ", " : "") + channel->GetName();
         ++said;
+    };
+
+    // The audience's channels: joined now when the bot is not on them. A channel that refuses the bot is skipped.
+    for (Channel* const channel : reach)
+    {
+        if (said >= 2)
+            break;
+        bool const wasOn = CoaChannels::IsOn(bot, channel);
+        if (!EnterChannel(bot, channel))
+            continue;
+        joinedNow += wasOn ? 0 : 1;
+        speak(channel);
+    }
+    // None reached (no audience, none of its place channels listed or joinable): the bot's own place channels.
+    if (!said)
+        for (auto const& entry : chosen)
+        {
+            if (said >= 2)
+                break;
+            speak(entry.second);
+        }
+    for (Channel* const channel : placeless)
+    {
+        if (said >= 2)
+            break;
+        speak(channel);
     }
 
     if (!said)
         return Report("post channels", botGuid, ActivityOpResult::Failed);
-    LOG_DEBUG(LOGGER, "activity op post channels {} (zone {}): {}", botGuid.GetCounter(), zoneId, spoken);
+    LOG_DEBUG(LOGGER, "activity op post channels {} (zone {}, audience {}, {} of its channels, {} joined): {}",
+              botGuid.GetCounter(), zoneId, audience ? audience->GetGUID().GetCounter() : 0, reach.size(), joinedNow,
+              spoken);
     return ActivityOpResult::Done;
+}
+
+void ActivityOperations::LeaveActivityChannels(ObjectGuid botGuid)
+{
+    COA_ASSERT_WORLD_THREAD();
+    auto const it = joined.find(botGuid);
+    if (it == joined.end())
+        return;
+    ChannelJoins const entry = std::move(it->second);
+    joined.erase(it);
+
+    Player* const bot = ObjectAccessor::FindConnectedPlayer(botGuid);
+    PlayerbotAI* const ai = bot ? GET_PLAYERBOT_AI(bot) : nullptr;
+    ChannelMgr* const mgr = bot ? ChannelMgr::forTeam(bot->GetTeamId()) : nullptr;
+    if (!ai || !mgr || ai->GetCoaEpoch() != entry.epoch)
+        return;
+
+    // The channel of the place the bot stands in now stays: JoinBotChannels put it there (or would have, when the bot
+    // walked in while it was on this one already) and nothing else brings it back. GetCurrentZone needs the bot's map,
+    // so a bot in a far teleport or loading screen has no place: every recorded channel is left, and JoinBotChannels
+    // joins the landing zone's channel on arrival.
+    std::vector<std::string> places;
+    if (bot->IsInWorld() && !bot->IsDuringRemoveFromWorld())
+    {
+        AreaTableEntry const* const here = ai->GetCurrentZone();
+        places = PlaceNames(here, here, ai->GetCurrentArea());
+    }
+    uint32 left = 0;
+    for (std::string const& name : entry.names)
+    {
+        Channel* const channel = mgr->GetChannel(name, nullptr, false);
+        if (!channel || !CoaChannels::IsOn(bot, channel) || PlaceRank(channel->GetName(), places) < places.size())
+            continue;
+        channel->LeaveChannel(bot);
+        ++left;
+    }
+    LOG_DEBUG(LOGGER, "activity op leave channels {}: {} of {} left", botGuid.GetCounter(), left, entry.names.size());
 }
 
 ActivityOpResult ActivityOperations::SetIcon(ObjectGuid setter, uint8 icon, ObjectGuid target)

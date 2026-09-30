@@ -3365,8 +3365,11 @@ AiPlayerbot.CoaActivity.Chat.MinGapSeconds = 60
 #        Description: With Chat.Channel = zone, the channels where recruiting leaders and the bots
 #                     of inn parties and booty runs post: the beginnings of their names, separated
 #                     by commas, case ignored ("Zone,Trade" for example). A bot posts in at most
-#                     two channels it is on whose name begins with one of them. Empty: Zone, with
-#                     an error in the log.
+#                     two channels whose name begins with one of them: the zone channels of the
+#                     player it recruits for (it joins them when it stands elsewhere, and leaves
+#                     them when its activity ends or it leaves it), else the ones it is on in the
+#                     zone of the activity or its own; Trade and the like only when it is on
+#                     them. Empty: Zone, with an error in the log.
 #        Default:     Zone - the zone channel ("Zone - <place>" on Conquest of Azeroth)
 
 AiPlayerbot.CoaActivity.Chat.Channels = Zone

@@ -689,7 +689,8 @@ void Offer(ActivityServices& services, Activity& activity, DungeonRunState& stat
               ActivityOpResultName(result));
 }
 
-// Recruit: the LFM in the recruitment channels (Chat.Channel), its text name from the brain or the dice.
+// Recruit: the LFM in the recruitment channels (Chat.Channel: the trigger player's zone channels, or World), its text
+// name from the brain or the dice.
 void Post(ActivityServices& services, Activity& activity, DungeonRunState& state)
 {
     ActivityConfig const& config = services.config;
@@ -737,10 +738,14 @@ void Post(ActivityServices& services, Activity& activity, DungeonRunState& state
         {{"%dungeon", activity.name},
          {"%role", RoleWords(open)},
          {"%count", Acore::StringFormat("{}/{}", activity.BotsIn() + activity.PlayersIn(), PARTY_SIZE)}}));
+    // The zone channels of the player the run was planned for, which the leader joins when it stands elsewhere (that
+    // player's zone is the first choice when it is on none: the leader's own channels then).
+    Player const* const trigger = InWorld(state.trigger);
     ActivityOpResult const result =
         config.chatChannel == ActivityChatChannel::World
             ? services.ops.PostToChannel(activity.leader, ActivityChatTarget::World, text)
-            : services.ops.PostToChannels(activity.leader, config.chatChannels, text);
+            : services.ops.PostToChannels(activity.leader, config.chatChannels, text,
+                                          trigger ? trigger->GetZoneId() : 0, state.trigger);
     if (result == ActivityOpResult::Deferred)
         return;
     state.postTried = true;

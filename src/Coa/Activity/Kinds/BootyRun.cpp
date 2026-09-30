@@ -104,13 +104,18 @@ void Call(ActivityServices& services, Activity& activity, BootyRunState& state)
     std::string const text = Spoken(ActivityWorld::Line("coa_act_booty_call",
                                                         "The Gurubashi chest is up for grabs, see you in the arena!",
                                                         {{"%area", ActivityWorld::AreaName(state.areaId)}}));
+    // In the zone channels of the real player of the team nearest to the arena, which the speaker joins when it is not
+    // on them.
+    ObjectGuid const audience =
+        zone ? ActivityWorld::NearestAudience(services.realPlayers, activity.team, state.arena) : ObjectGuid::Empty;
     ActivityOpResult result = ActivityOpResult::Gone;
     uint32 tries = 0;
     for (Player* bot : Participants(activity, state.arena, ARENA_LEASH, zone ? state.arena.zoneId : 0))
     {
         if (tries++ >= MAX_SPEAKER_TRIES)
             break;
-        result = zone ? services.ops.PostToChannels(bot->GetGUID(), config.chatChannels, text)
+        result = zone ? services.ops.PostToChannels(bot->GetGUID(), config.chatChannels, text, state.arena.zoneId,
+                                                    audience)
                       : services.ops.PostToChannel(bot->GetGUID(), ActivityChatTarget::World, text);
         if (result == ActivityOpResult::Done || result == ActivityOpResult::Deferred)
             break;

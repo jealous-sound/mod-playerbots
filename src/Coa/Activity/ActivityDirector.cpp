@@ -1130,6 +1130,8 @@ void ActivityDirector::HandleLeaves(Activity& activity, uint32 nowUnix)
         if (member.isBot)
         {
             RestoreRuleset(member);
+            // The zone channels it joined to recruit (PostToChannels): it keeps none of another place's.
+            ops.LeaveActivityChannels(member.guid);
             // Offline members too: a bot that logged out must not come back into the activity's group.
             if (ActivityKindIsGroup(activity.kind) && !activity.groupGuid.IsEmpty())
                 ops.Leave(activity.groupGuid, member.guid);
@@ -1206,7 +1208,11 @@ void ActivityDirector::EndActivity(Activity& activityRef, ActivityOutcome outcom
             member.leftHandled = true;
         }
         if (member.isBot)
+        {
+            // Every bot of the activity, also one that left since HandleLeaves last ran (a repeat finds nothing).
+            ops.LeaveActivityChannels(member.guid);
             botCooldownUntilMs[member.guid.GetCounter()] = nowMs + uint64(config->botCooldownMinutes) * 60000;
+        }
     }
 
     if (!activity.groupGuid.IsEmpty())

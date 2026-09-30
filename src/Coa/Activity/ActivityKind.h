@@ -287,6 +287,12 @@ ActivityPoint PointOf(Player* player);
 ActivityPoint GroundNear(ActivityPoint const& center, float spread);
 // Any of `realPlayers` within `range` yards of the point (same map; instance ignored for the overworld).
 bool RealPlayerNear(std::vector<Player*> const& realPlayers, ActivityPoint const& point, float range);
+// The audience of a recruitment post (ActivityOperations::PostToChannels): the guid of the real player of `team`
+// nearest to `point` among `realPlayers`, on the point's map and in the world; empty when there is none or the point
+// is not set. Only the guid is kept: the post looks the player up again.
+ObjectGuid NearestAudience(std::vector<Player*> const& realPlayers, uint8 team, ActivityPoint const& point);
+// The same around a bot (looked up again): the audience of a post the bot makes. Empty when it is not in the world.
+ObjectGuid NearestAudience(std::vector<Player*> const& realPlayers, uint8 team, ObjectGuid bot);
 // PlayerbotTextMgr::GetBotTextOrDefault(name, english, placeholders).
 std::string Line(char const* name, char const* english, std::map<std::string, std::string> const& placeholders = {});
 // The localized name of a zone or area (PlayerbotAI::GetLocalizedAreaName), "" when unknown.

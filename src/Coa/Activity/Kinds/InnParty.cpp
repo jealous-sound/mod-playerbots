@@ -78,18 +78,21 @@ std::vector<ObjectGuid> Speakers(Activity const& activity, uint32 zoneId)
     return speakers;
 }
 
-// The Chat.Channel post by the first participant that can make it (Deferred: the budget ran out first).
+// The Chat.Channel post by the first participant that can make it (Deferred: the budget ran out first). In the zone
+// channels of the real player of the team nearest to the inn, which the speaker joins when it is not on them.
 ActivityOpResult Post(ActivityServices& services, Activity const& activity, std::string const& text)
 {
     ActivityConfig const& config = services.config;
     bool const zone = config.chatChannel == ActivityChatChannel::Zone;
+    ObjectGuid const audience =
+        zone ? ActivityWorld::NearestAudience(services.realPlayers, activity.team, activity.center) : ObjectGuid::Empty;
     ActivityOpResult last = ActivityOpResult::Gone;
     uint32 tries = 0;
     for (ObjectGuid const& speaker : Speakers(activity, zone ? activity.center.zoneId : 0))
     {
         if (tries++ >= MAX_SPEAKER_TRIES)
             break;
-        last = zone ? services.ops.PostToChannels(speaker, config.chatChannels, text)
+        last = zone ? services.ops.PostToChannels(speaker, config.chatChannels, text, activity.center.zoneId, audience)
                     : services.ops.PostToChannel(speaker, ActivityChatTarget::World, text);
         if (last == ActivityOpResult::Done || last == ActivityOpResult::Deferred)
             break;
