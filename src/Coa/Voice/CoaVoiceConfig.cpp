@@ -129,6 +129,24 @@ uint32 CoaVoiceConfig::ChanceFor(CoaVoiceScopeKind kind) const
     }
 }
 
+float CoaVoiceConfig::ThresholdFor(CoaVoiceScopeKind kind) const
+{
+    switch (kind)
+    {
+        case CoaVoiceScopeKind::Whisper:
+            return thresholdWhisper;
+        case CoaVoiceScopeKind::Party:
+        case CoaVoiceScopeKind::Raid:
+            return thresholdParty;
+        case CoaVoiceScopeKind::Guild:
+            return thresholdGuild;
+        case CoaVoiceScopeKind::Channel:
+            return thresholdChannel;
+        default:
+            return thresholdSay;
+    }
+}
+
 std::shared_ptr<CoaVoiceConfig const> CoaVoiceConfig::Load()
 {
     auto config = std::make_shared<CoaVoiceConfig>();
@@ -192,6 +210,20 @@ std::shared_ptr<CoaVoiceConfig const> CoaVoiceConfig::Load()
     config->maxEmitsPerTick = Int("MaxEmitsPerTick", 20, 1, 200);
     config->replyEmotes = sConfigMgr->GetOption<bool>(Prefix + "ReplyEmotes", true);
     config->denyFallback = sConfigMgr->GetOption<bool>(Prefix + "DenyFallback", true);
+
+    config->decisionTimeoutMs = Int("DecisionTimeoutMs", 1500, 200, 10000);
+    config->thresholdWhisper = Fraction("Threshold.Whisper", 0.35f);
+    config->thresholdParty = Fraction("Threshold.Party", 0.4f);
+    config->thresholdGuild = Fraction("Threshold.Guild", 0.5f);
+    config->thresholdSay = Fraction("Threshold.Say", 0.5f);
+    config->thresholdChannel = Fraction("Threshold.Channel", 0.65f);
+    config->whisperBrainPerSenderPerDay = Int("WhisperBrainPerSenderPerDay", 50, 0, 100000);
+    // The reply delay hides the brain's latency; a longer wait shows as a slower answer.
+    if (config->decisionTimeoutMs > config->replyDelayMinMs)
+        LOG_WARN("playerbots",
+                 "CoA voice: DecisionTimeoutMs ({} ms) is longer than ReplyDelayMin ({} ms); with the brain on, "
+                 "some answers will come later than the configured delay",
+                 config->decisionTimeoutMs, config->replyDelayMinMs);
 
     std::string channels;
     for (std::string const& channel : config->channels)

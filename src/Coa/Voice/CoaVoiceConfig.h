@@ -67,11 +67,24 @@ struct CoaVoiceConfig
     bool replyEmotes = true;   // bots may play an emote with their answer
     bool denyFallback = true;  // a stranger's whisper the voice leaves unanswered gets a localized refusal
 
+    // Used only with AiPlayerbot.CoaBrain.Enable = 1.
+    uint32 decisionTimeoutMs = 1500;  // a message waits this long for the brain, then the heuristic answers
+    // A calibrated engine's reply p (times ChainDecay per hop) must reach the scope's threshold for a bot to answer.
+    float thresholdWhisper = 0.35f;
+    float thresholdParty = 0.4f;  // party and raid
+    float thresholdGuild = 0.5f;
+    float thresholdSay = 0.5f;  // say, yell and emotes
+    float thresholdChannel = 0.65f;
+    uint32 whisperBrainPerSenderPerDay = 50;  // brain decisions per speaker account and UTC day for whispers; 0: no cap
+
     // Whether a channel of that name is answered (case-insensitive prefix match on `channels`).
     bool ListensTo(std::string_view channelName) const;
 
     // Percent chance for an unnamed event of that scope (chanceSay for Yell, chanceParty for Raid...).
     uint32 ChanceFor(CoaVoiceScopeKind kind) const;
+
+    // The brain's reply threshold for that scope (thresholdSay for Yell and the emotes, thresholdParty for Raid).
+    float ThresholdFor(CoaVoiceScopeKind kind) const;
 
     // World thread. Reads every key through sConfigMgr->GetOption and clamps the values (see the contract).
     static std::shared_ptr<CoaVoiceConfig const> Load();

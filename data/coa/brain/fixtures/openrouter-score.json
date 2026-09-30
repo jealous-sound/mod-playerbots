@@ -1,0 +1,45 @@
+{
+  "fixture": "openrouter-score",
+  "source": "documentation",
+  "note": "Built by hand from OpenRouter's documented Decisions API (2026-09-30), not recorded from a live call. Replace it with a recorded fixture (see ../README.md).",
+  "dialect": "openrouter",
+  "url": "https://openrouter.ai/api/alpha/decisions",
+  "status": 200,
+  "request": {
+    "model": "~typesafe/jev-latest",
+    "state": "[realm]\nWorld of Warcraft 3.3.5 private server \"Conquest of Azeroth\" (custom classes). The bots are computer-controlled adventurers of level 1 to 60 who live in the world like players. Players chat mostly in French. A real player's message is described below by its features; the words themselves are shared only when a [player text] section is present. Answer only with the options given.\n[situation]\nplace: say, heard by the bots nearby\nspeaker: a real player, level 40-49\n[message]\nlanguage: english\nintent: insult\nalso: none\nlength: medium (4 words)\nquestion: no\nexclamation: no\nshouting: no\nlaughter: no\nnumber: no\nnames a bot: no\n[bots]\nb0: level 44 Felsworn (Tyrant), named: no, same group: no, same guild: no, distance: close, fighting: yes, answered in the last minute: no, chattiness: medium",
+    "questions": {
+      "tone": {
+        "type": "score",
+        "instructions": "How warm should the bot's answer be to this message?",
+        "criteria": ["hostile or mocking", "cold and curt", "neutral", "friendly", "warm and enthusiastic"]
+      }
+    }
+  },
+  "response": {
+    "id": "dec-01JSCOREXXXXXXXXXXXX",
+    "model": "typesafe/jev-1.13",
+    "provider": "TypeSafe",
+    "answers": {
+      "tone": {
+        "type": "score",
+        "score": 0.7,
+        "confidence": 0.55,
+        "probabilities": {"0": 0.55, "1": 0.30, "2": 0.10, "3": 0.04, "4": 0.01},
+        "legend": {
+          "0": "hostile or mocking",
+          "1": "cold and curt",
+          "2": "neutral",
+          "3": "friendly",
+          "4": "warm and enthusiastic"
+        }
+      }
+    },
+    "usage": {"input_tokens": 389, "output_tokens": 0, "cost": 0.0000163}
+  },
+  "expect": {
+    "error": "none",
+    "answers": {"tone": {"valid": true, "level": 0, "p": 0.55, "score": 0.7}},
+    "usage": {"input_tokens": 389, "output_tokens": 0, "usd_micros": 17}
+  }
+}

@@ -8,7 +8,7 @@
 --   coa_deny_*           %player, %level %theirlevel (coa_deny_level), %leader (coa_deny_not_leader)
 --   coa_emote_*          %player
 -- System rows (coa_voice_*): 1 per name, sent by .playerbots optout/optin; %topic, %ai %voice %memory
--- %duels %hostile.
+-- %duels %hostile, and %host (the brain engine's host) in coa_voice_disclosure_brain*.
 --
 -- Rules for new lines: utf8 (3-byte) characters only, no emoji; plain apostrophes doubled; no pipe, no
 -- at sign, no link; never start a line with . ! + - #; under 160 bytes before filling. French avoids
@@ -57,6 +57,8 @@ DELETE FROM ai_playerbot_texts WHERE name IN (
     'coa_emote_sad',
     'coa_emote_apology',
     'coa_voice_disclosure',
+    'coa_voice_disclosure_brain',
+    'coa_voice_disclosure_brain_text',
     'coa_voice_optout_ack',
     'coa_voice_optin_ack',
     'coa_voice_prefs_status',
@@ -720,7 +722,13 @@ VALUES
     (30413, 'coa_voice_topic_hostile', 'hostile bot behaviour', 0, 0,
      '', 'l''hostilité des bots', '', '', '', '', '', ''),
     (30414, 'coa_voice_topic_all', 'everything (AI, replies, memory, duels, hostility)', 0, 0,
-     '', 'tout (IA, réponses, mémoire, duels, hostilité)', '', '', '', '', '', '');
+     '', 'tout (IA, réponses, mémoire, duels, hostilité)', '', '', '', '', '', ''),
 
--- The explicit ids push the counter to 30415, inside the block; move it past (never below max(id) + 1).
+    -- shown instead of coa_voice_disclosure while a hosted brain engine is asked: features only, then with words
+    (30415, 'coa_voice_disclosure_brain', 'Bots may reply with ready-made lines picked via %host, which gets a description of your messages, never your words or name. Opt out: .playerbots optout ai', 0, 0,
+     '', 'Les bots répondent en phrases types choisies via %host, qui reçoit une description de vos messages, sans vos mots ni votre nom. Refus : .playerbots optout ai', '', '', '', '', '', ''),
+    (30416, 'coa_voice_disclosure_brain_text', 'Bots may reply with ready-made lines picked via %host, which gets the messages they may answer, without your name. Opt out: .playerbots optout ai', 0, 0,
+     '', 'Les bots répondent en phrases types choisies via %host, qui reçoit les messages auxquels ils peuvent répondre, sans votre nom. Refus : .playerbots optout ai', '', '', '', '', '', '');
+
+-- The explicit ids push the counter to 30417, inside the block; move it past (never below max(id) + 1).
 ALTER TABLE `ai_playerbot_texts` AUTO_INCREMENT = 30500;

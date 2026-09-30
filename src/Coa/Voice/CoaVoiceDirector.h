@@ -7,6 +7,9 @@
 #ifndef PLAYERBOTS_COAVOICEDIRECTOR_H
 #define PLAYERBOTS_COAVOICEDIRECTOR_H
 
+#include "BrainSink.h"
+#include "BrainStateBuilder.h"
+#include "BrainTypes.h"
 #include "CoaEventBus.h"
 #include "CoaVoiceCandidateIndex.h"
 #include "CoaVoiceConfig.h"
@@ -108,6 +111,70 @@ private:
     void QueueBotEcho(CoaVoiceLine const& line, Player* bot);
     void CountDrop(CoaVoiceDrop drop) { ++stats.drops[size_t(drop)]; }
 
+    // M2: a human message waiting for its brain decision (CoaBrain.Enable = 1), keyed by event id.
+    struct PendingDecision
+    {
+        uint64 jobId = 0;
+        uint32 epoch = 0;        // brainEpoch at submit
+        uint64 eventId = 0;
+        uint64 eventMs = 0;      // tickNowMs of the event: the reply delay counts from here
+        uint64 deadlineMs = 0;   // eventMs + CoaVoice.DecisionTimeoutMs
+        uint64 submitMs = 0;
+        CoaEvent event;          // copy: sender, target, text, chain depth
+        CoaVoiceScope scope;
+        std::vector<CoaVoiceCandidate> nominees;  // ballot order, cut to the shortlist, only bots found at submit
+        CoaIntent intent = CoaIntent::None;
+        bool anyHit = false;     // the heuristic draw made at event time
+        bool namedOnly = false;
+        bool forced = false;     // a nominee is named in party, raid, guild, say, yell or a channel (M1 answers)
+        BrainChatPlan plan;
+    };
+
+    // The brain's answers as the ballot uses them.
+    struct BrainPick
+    {
+        bool fromBrain = false;    // a result with at least one valid answer
+        bool calibrated = false;   // result.calibrated
+        bool replyKnown = false;   // a calibrated reply answer, or a calibrated line answer topped by silent
+        bool silent = false;       // with replyKnown: nobody answers
+        float replyP = -1.0f;
+        int32 whoIndex = -1;       // index into PendingDecision::nominees (calibrated only)
+        std::vector<uint32> lineOrder;  // indexes into plan.lines, best first, silent removed
+        std::string lineKey;       // the top line key (ring)
+        float lineP = -1.0f;
+        int32 tone = -1;           // 0..4
+        int32 emote = -1;          // TextEmotes id, 0 = none, -1 = not answered (persona roll)
+        std::string emoteKey;
+        bool fromCache = false;
+    };
+
+    // Returns true when the event is now the brain's (waiting, or answered from the cache and resumed).
+    bool TrySubmitDecision(CoaVoiceConfig const& config, CoaEvent const& event, CoaVoiceScope const& scope,
+                           Player* sender, CoaIntent intent, bool anyHit, bool namedOnly, bool forced, uint64 nowMs);
+    // Results first (stale ones counted and dropped), then the decisions past their deadline (Cancel, timeout).
+    void DrainDecisions(CoaVoiceConfig const& config, uint64 nowMs);
+    // result null: timed out.
+    void ResumeDecision(CoaVoiceConfig const& config, PendingDecision& decision, BrainResult const* result,
+                        uint64 nowMs);
+    BrainPick ReadDecision(CoaVoiceConfig const& config, PendingDecision const& decision,
+                           BrainResult const& result) const;
+    // The M1 ballot on sorted candidates: shortlist gates, compose, schedule. pick and plan null: exactly M1.
+    // Returns the responders; `why` gets the reason when there is none.
+    uint32 RunBallot(CoaVoiceConfig const& config, CoaEvent const& event, CoaVoiceScope const& scope, Player* sender,
+                     std::vector<CoaVoiceCandidate>& candidates, CoaIntent intent, bool namedOnly, uint64 eventMs,
+                     uint64 nowMs, BrainPick const* pick, BrainChatPlan const* plan, CoaVoiceDrop& why);
+    // The gate RunBallot would drop the event on: the first one of the shortlisted bots it tries (only the
+    // mentioned ones under namedOnly), when every one of them is held back; CoaVoiceDrop::Count when one may answer.
+    CoaVoiceDrop BallotGate(CoaVoiceConfig const& config, std::vector<CoaVoiceCandidate> const& candidates,
+                            CoaVoiceScope const& scope, ObjectGuid sender, bool namedOnly, uint64 nowMs) const;
+    // A brain-ranked line for `bot`, or false (then M1 Compose runs).
+    bool ComposeFromBrain(CoaVoiceConfig const& config, CoaVoiceScope const& scope, Player* bot, Player* sender,
+                          CoaIntent intent, BrainPick const& pick, BrainChatPlan const& plan, uint64 nowMs,
+                          CoaVoiceLine& line);
+    // M1's `drop` + `fail` lambdas as a member: counts, logs, and sends the whisper refusal when due.
+    void FailEvent(CoaVoiceConfig const& config, CoaEvent const& event, CoaVoiceScope const& scope, CoaVoiceDrop why,
+                   uint64 nowMs);
+
     std::shared_ptr<CoaVoiceConfig const> config;  // snapshot of the current tick
     bool active = false;                           // state exists and must be dropped if voice turns off
     uint32 locale = 0;                             // PlayerbotTextMgr::GetLocalePriority() of the current tick
@@ -127,6 +194,14 @@ private:
     std::unordered_set<std::string> botFirstNames;  // folded first names of the indexed bots (vocative test)
     // Folded first names of the online players -> how many players have each (vocative test).
     std::unordered_map<std::string, uint32> humanFirstNames;
+
+    std::unordered_map<uint64, PendingDecision> decisions;  // event id -> decision
+    std::shared_ptr<BrainSink> brainSink;                   // created at the first submit, closed at Shutdown
+    std::vector<BrainResult> brainResults;                  // reused by DrainDecisions
+    uint32 brainEpoch = 1;                                  // ++ at Reset and Shutdown
+    std::unordered_map<uint32, uint32> whisperBrainToday;   // speaker account -> whisper jobs today
+    uint32 whisperBrainDay = 0;                             // UTC yyyymmdd of that map
+    ObjectGuid lastResponder;                               // set by RunBallot: its first scheduled bot (ring)
 };
 
 #endif

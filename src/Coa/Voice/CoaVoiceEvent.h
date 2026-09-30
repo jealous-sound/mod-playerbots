@@ -53,6 +53,7 @@ enum class CoaVoiceDrop : uint8
     Combat,           // at send time: the bot fights, and the line was public
     Filtered,         // at send time: the realm's chat filter matched the line
     SendFailed,       // at send time: the route refused (no channel, no guild right...)
+    BrainSilent,      // the brain (calibrated) decided nobody answers
     Count
 };
 

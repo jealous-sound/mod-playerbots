@@ -1625,7 +1625,8 @@ AiPlayerbot.CoaLfgAnnounceText =
 #    named coa_reply_*, coa_emote_* and coa_deny_* of data/sql/playerbots/custom/coa_texts.sql).
 #    One bot at most answers a message, a few seconds later, in whispers, say, yell, party, raid,
 #    guild and the channels below, and to text emotes (/wave, /hug...) aimed at a bot. Nothing is
-#    sent outside the server. Players can stop it for their account with .playerbots optout voice.
+#    sent outside the server unless the CoA brain below is on. Players can stop it for their
+#    account with .playerbots optout voice.
 #    The lines are written in French (text_loc2) and English: set AiPlayerbot.BotTextLocale = 2 for
 #    French lines whatever the players' client language.
 #    Every AiPlayerbot.CoaVoice.* and AiPlayerbot.CoaHooks.* setting is read again by .reload config.
@@ -1826,6 +1827,45 @@ AiPlayerbot.CoaVoice.ReplyEmotes = 1
 
 AiPlayerbot.CoaVoice.DenyFallback = 1
 
+#    AiPlayerbot.CoaVoice.DecisionTimeoutMs
+#        Description: With AiPlayerbot.CoaBrain.Enable = 1 only. How long a player's message waits
+#                     for the brain's decision, in milliseconds (200 to 10000). Past it the bots
+#                     answer it as they would without the brain. The reply delay counts from the
+#                     message, so a decision that comes within ReplyDelayMin changes nothing
+#                     players see; a timeout longer than ReplyDelayMin logs a warning.
+#        Default:     1500
+
+AiPlayerbot.CoaVoice.DecisionTimeoutMs = 1500
+
+#    AiPlayerbot.CoaVoice.Threshold.Whisper, .Party, .Guild, .Say, .Channel
+#        Description: With AiPlayerbot.CoaBrain.Enable = 1 and an engine that gives real
+#                     probabilities (AiPlayerbot.CoaBrain.Engine.<name>.Calibrated = 1) only.
+#                     The brain's probability (0 to 1) that a message deserves an answer must
+#                     reach this for a bot to answer; below it nobody answers (a whisper gets the
+#                     DenyFallback refusal). For the messages the brain decides, it takes the
+#                     place of HeuristicChance both ways. A bot named in party, raid, guild, say,
+#                     yell or channel chat still answers whatever the brain says. Party also
+#                     covers raid chat, Say also covers yell and /e lines. With an engine that
+#                     gives no real probabilities, HeuristicChance decides and the brain only
+#                     picks the line, tone and emote.
+#        Default:     0.35, 0.4, 0.5, 0.5, 0.65
+
+AiPlayerbot.CoaVoice.Threshold.Whisper = 0.35
+AiPlayerbot.CoaVoice.Threshold.Party = 0.4
+AiPlayerbot.CoaVoice.Threshold.Guild = 0.5
+AiPlayerbot.CoaVoice.Threshold.Say = 0.5
+AiPlayerbot.CoaVoice.Threshold.Channel = 0.65
+
+#    AiPlayerbot.CoaVoice.WhisperBrainPerSenderPerDay
+#        Description: With AiPlayerbot.CoaBrain.Enable = 1 only. How many whispers of one account
+#                     are sent to the brain per UTC day (0 to 100000); past it, that account's
+#                     whispers are answered as without the brain. It bounds what one player
+#                     whispering the bots over and over can cost.
+#        Default:     50
+#                     0 - no limit
+
+AiPlayerbot.CoaVoice.WhisperBrainPerSenderPerDay = 50
+
 #    AiPlayerbot.CoaHooks.BusMax
 #        Description: Chat events waiting between the chat hooks and the next world update, at
 #                     most. Past it the newest events are dropped and counted (.playerbots voice
@@ -1833,6 +1873,350 @@ AiPlayerbot.CoaVoice.DenyFallback = 1
 #        Default:     20000
 
 AiPlayerbot.CoaHooks.BusMax = 20000
+
+#
+#    CoA brain: a decision model helps the voice director above. For a real player's message it
+#    answers typed questions: should a bot answer, which one, which of the bots' ready-made lines,
+#    how warm, which emote. It only chooses among lines the bots already have and never writes
+#    chat itself. The model is Jev (TypeSafe's decision model), asked through OpenRouter's
+#    Decisions API (engine openrouter), TypeSafe directly (typesafe, keys are waitlisted), a
+#    server on this machine (jevlocal) or recorded answers (mock). A decision that does not come
+#    within AiPlayerbot.CoaVoice.DecisionTimeoutMs, or any error, leaves the message to the usual
+#    rules: a slow or failing engine never silences the bots.
+#    Off by default. With Enable = 0 no thread is started, no connection is opened and the voice
+#    director works exactly as without it. It needs AiPlayerbot.CoaVoice.Enable = 1 to be used.
+#    Privacy: hosted engines (openrouter, typesafe) get features of a message only (language,
+#    intent, length, level bands, the bots' class and level), never a player's name or words,
+#    unless Privacy.SendPlayerText = 1 and the engine's own SendPlayerText = 1. Players can stop
+#    it for their account with .playerbots optout ai.
+#    API keys are best given as environment variables rather than in this file (a key written
+#    here logs a warning at every load; keys are only ever shown masked):
+#        AC_AI_PLAYERBOT_COA_BRAIN_ENGINE_OPENROUTER_API_KEY for openrouter,
+#        AC_AI_PLAYERBOT_COA_BRAIN_ENGINE_TYPESAFE_API_KEY for typesafe.
+#    Apply data/sql/playerbots/updates/2026_09_30_01_coa_brain_usage.sql: the day's spend is kept
+#    there so the budgets survive a restart (without the table it is kept in memory only).
+#    Every AiPlayerbot.CoaBrain.* setting is read again by .reload config, which also ends a
+#    .playerbots brain on or off. GMs: .playerbots brain status shows the engines, the budget and
+#    the counters; .playerbots brain probe [engine] checks an engine with canned messages;
+#    .playerbots brain test <bot> <message> shows what the brain would decide.
+#    Money is in US dollars, days are UTC days.
+#
+
+#    AiPlayerbot.CoaBrain.Enable
+#        Description: Master switch. .playerbots brain on or off overrides it until the next
+#                     .reload config (on reads the keys below even when this is 0).
+#        Default:     0 - off
+#                     1 - on
+
+AiPlayerbot.CoaBrain.Enable = 0
+
+#    AiPlayerbot.CoaBrain.Decision.Chain
+#        Description: Comma separated engine names, tried in this order until one answers. Each
+#                     is set up by the AiPlayerbot.CoaBrain.Engine.<name>.* keys below. An engine
+#                     without a key or with a bad URL is skipped (.playerbots brain status says
+#                     why), as is one that is out of credit, failing, or past its own caps.
+#        Default:     openrouter
+
+AiPlayerbot.CoaBrain.Decision.Chain = openrouter
+
+#    AiPlayerbot.CoaBrain.MaxUsdPerDay
+#        Description: The most the brain may spend per UTC day, every engine and probe together
+#                     (0 to 1000 dollars). Past it, or past a lane's share (LaneStopAt), the bots
+#                     answer the usual way until midnight UTC. Each engine also has its own cap.
+#                     At the default price a decision costs about 0.00004 dollar.
+#        Default:     1.50
+
+AiPlayerbot.CoaBrain.MaxUsdPerDay = 1.50
+
+#    AiPlayerbot.CoaBrain.Workers
+#        Description: Threads that call the engines (2 to 16). They never touch the game.
+#                     A change restarts the brain at .reload config.
+#        Default:     2
+
+AiPlayerbot.CoaBrain.Workers = 2
+
+#    AiPlayerbot.CoaBrain.ConnectTimeoutMs, AiPlayerbot.CoaBrain.ReadTimeoutMs
+#        Description: Milliseconds allowed to connect to an engine (100 to 30000), and for a
+#                     whole call (200 to 60000); always cut to the time the decision has left.
+#        Default:     2000, 4000
+
+AiPlayerbot.CoaBrain.ConnectTimeoutMs = 2000
+AiPlayerbot.CoaBrain.ReadTimeoutMs = 4000
+
+#    AiPlayerbot.CoaBrain.DnsRefreshSeconds
+#        Description: How often the engines' host names are looked up again (30 to 86400 s).
+#                     Lookups run on a thread of their own: a call never waits for DNS.
+#        Default:     300
+
+AiPlayerbot.CoaBrain.DnsRefreshSeconds = 300
+
+#    AiPlayerbot.CoaBrain.Shutdown.WorkerDeadlineMs
+#        Description: At shutdown, milliseconds (0 to 30000) left to the calls in flight before
+#                     the worker threads are abandoned, so a hung connection never holds the
+#                     server.
+#        Default:     2000
+
+AiPlayerbot.CoaBrain.Shutdown.WorkerDeadlineMs = 2000
+
+#    AiPlayerbot.CoaBrain.MaxRequestsPerMinute
+#        Description: Decisions asked per minute at most, every engine together (1 to 100000);
+#                     past it the bots answer the usual way.
+#        Default:     120
+
+AiPlayerbot.CoaBrain.MaxRequestsPerMinute = 120
+
+#    AiPlayerbot.CoaBrain.LaneStopAt
+#        Description: Three percentages of MaxUsdPerDay (0 to 100 each) for the Player, Organizer
+#                     and Ambient lanes: a lane gets no new call once the day's spend reaches its
+#                     share. Player: players' messages and .playerbots brain test; Organizer:
+#                     .playerbots brain probe; Ambient: not used yet.
+#        Default:     100,80,50
+
+AiPlayerbot.CoaBrain.LaneStopAt = 100,80,50
+
+#    AiPlayerbot.CoaBrain.Breaker.Failures, AiPlayerbot.CoaBrain.Breaker.OpenSeconds
+#        Description: After Failures failures in a row of an engine (1 to 100; timeouts, network
+#                     and server errors, answers that cannot be read), or 10 of its last 20
+#                     calls, the engine is left alone for OpenSeconds (1 to 3600), then tried with
+#                     one call. Other errors are not retried: HTTP 402, 429 or a spend limit
+#                     message stops the engine until midnight UTC; 401 or 403 (bad key) and 404
+#                     (wrong URL) stop it, and 400 stops that kind of question for it, until
+#                     .reload config. .playerbots brain reset clears all of these at once.
+#        Default:     5, 30
+
+AiPlayerbot.CoaBrain.Breaker.Failures = 5
+AiPlayerbot.CoaBrain.Breaker.OpenSeconds = 30
+
+#    AiPlayerbot.CoaBrain.CacheSize, AiPlayerbot.CoaBrain.CacheTtlSeconds
+#        Description: Decisions remembered, in memory only, for short messages that recur
+#                     ("salut", "merci"...): at most CacheSize (0 to 1000000) for CacheTtlSeconds
+#                     each (0 to 86400). The kind of line picked is kept, not the line, so a
+#                     cached answer still varies; one lookup in 20 asks the engine anyway.
+#        Default:     20000, 600
+#                     CacheSize 0 - no cache
+
+AiPlayerbot.CoaBrain.CacheSize = 20000
+AiPlayerbot.CoaBrain.CacheTtlSeconds = 600
+
+#    AiPlayerbot.CoaBrain.StateMaxChars
+#        Description: Longest description of a situation sent to an engine, in bytes (500 to
+#                     24000), the player's words included for engines allowed to receive them.
+#        Default:     3000
+
+AiPlayerbot.CoaBrain.StateMaxChars = 3000
+
+#    AiPlayerbot.CoaBrain.Privacy.SendPlayerText
+#        Description: Whether hosted engines may receive what players write. Both this and the
+#                     engine's own SendPlayerText must be 1; a loopback engine (jevlocal) needs
+#                     only its own. Players are not told of it at login yet: keep 0 on a public
+#                     realm. Turning it on logs a warning naming the host.
+#        Default:     0 - hosted engines get features of the message only
+#                     1 - hosted engines with SendPlayerText = 1 get the words too
+
+AiPlayerbot.CoaBrain.Privacy.SendPlayerText = 0
+
+#    AiPlayerbot.CoaBrain.Use.ChatReply
+#        Description: Whether the voice director asks the brain about players' messages.
+#        Default:     1 - yes
+#                     0 - no: the brain serves .playerbots brain test and probe only
+
+AiPlayerbot.CoaBrain.Use.ChatReply = 1
+
+#    AiPlayerbot.CoaBrain.QuestionFile
+#        Description: A JSON file rewording the questions (in English; the options stay the
+#                     code's), relative to the config directory unless absolute. Its "version"
+#                     is part of every cache key. A missing or broken file logs an error and the
+#                     compiled-in wording is used.
+#        Default:     (empty) - the compiled-in wording, "voice-v1"
+
+AiPlayerbot.CoaBrain.QuestionFile =
+
+#    AiPlayerbot.CoaBrain.DialectFile
+#        Description: A JSON file correcting the engines' wire format (field names, status codes,
+#                     default URLs) without a new build, should a provider rename something;
+#                     relative to the config directory unless absolute. What it does not name
+#                     keeps its compiled-in value.
+#        Default:     (empty) - the compiled-in table
+
+AiPlayerbot.CoaBrain.DialectFile =
+
+#    AiPlayerbot.CoaBrain.FixtureDir
+#        Description: A directory of recorded engine answers (JSON) replayed by the mock engine
+#                     and checked by .playerbots brain test selftest. They are not installed:
+#                     point it at data/coa/brain/fixtures in the module's source. Relative to the
+#                     config directory unless absolute.
+#        Default:     (empty) - the mock answers at random, the self-test uses built-in fixtures
+
+AiPlayerbot.CoaBrain.FixtureDir =
+
+#    AiPlayerbot.CoaBrain.Probe.MaxPerDay
+#        Description: Calls .playerbots brain probe may make per UTC day, every engine together
+#                     (0 to 100000). They also count toward MaxUsdPerDay.
+#        Default:     300
+
+AiPlayerbot.CoaBrain.Probe.MaxPerDay = 300
+
+#    AiPlayerbot.CoaBrain.Probe.RecordDir
+#        Description: An absolute directory the worldserver can write, where .playerbots brain
+#                     probe <engine> record saves each call (the request and response bodies,
+#                     never a key) as a fixture file to review (see data/coa/brain/README.md).
+#        Default:     (empty) - record is refused
+
+AiPlayerbot.CoaBrain.Probe.RecordDir =
+
+#    AiPlayerbot.CoaBrain.CaBundle
+#        Description: A PEM file of trusted root certificates for https engines, relative to the
+#                     config directory unless absolute. Empty: the system's roots (on Windows
+#                     the certificate store; OpenSSL 3's libssl-3-x64.dll and libcrypto-3-x64.dll
+#                     must sit beside worldserver.exe). A change restarts the brain at .reload
+#                     config.
+#        Default:     (empty)
+
+AiPlayerbot.CoaBrain.CaBundle =
+
+#    AiPlayerbot.CoaBrain.TlsVerify
+#        Description: Whether the engines' https certificates are checked. 0 is for tests only:
+#                     anyone on the way could read the API key. Logged at every start when 0.
+#        Default:     1 - checked
+#                     0 - not checked
+
+AiPlayerbot.CoaBrain.TlsVerify = 1
+
+#
+#    AiPlayerbot.CoaBrain.Engine.<name>.*: every engine named in Decision.Chain is set up by keys
+#    of this form. openrouter, typesafe, jevlocal and mock follow with their defaults; any other
+#    name (a to z, 0 to 9, - and _, up to 32 characters) works the same way once its Dialect is
+#    set, e.g. two OpenRouter models chained under two names. Keys left out take the defaults of
+#    the dialect.
+#
+
+#    AiPlayerbot.CoaBrain.Engine.<name>.Dialect
+#        Description: The engine's wire format and defaults: openrouter, typesafe, jevlocal or
+#                     mock. openai-constrained (llama.cpp, vLLM) comes with a later version and is
+#                     refused for now.
+#        Default:     the engine's name, when it is one of those
+
+#    AiPlayerbot.CoaBrain.Engine.<name>.Url
+#        Description: Where decisions are asked. Hosted engines need https; jevlocal must use a
+#                     loopback address (127.0.0.1, ::1, localhost).
+#        Default:     the dialect's
+
+#    AiPlayerbot.CoaBrain.Engine.<name>.Model
+#        Description: The model name sent with each request.
+#        Default:     the dialect's
+
+#    AiPlayerbot.CoaBrain.Engine.<name>.ApiKey, AiPlayerbot.CoaBrain.Engine.<name>.ApiKeyEnv
+#        Description: The key, sent as "Authorization: Bearer <key>". Prefer the environment
+#                     variable AC_AI_PLAYERBOT_COA_BRAIN_ENGINE_<NAME>_API_KEY, which the server
+#                     reads in place of ApiKey (.playerbots brain status spells it out when no key
+#                     is found); a key written here logs a warning at every load. ApiKeyEnv names
+#                     another environment variable holding the key, used first when set.
+#                     openrouter and typesafe need a key, jevlocal and mock none.
+#        Default:     (empty), (empty)
+
+#    AiPlayerbot.CoaBrain.Engine.<name>.SendPlayerText
+#        Description: Whether the engine may receive the player's words; hosted engines also
+#                     need Privacy.SendPlayerText = 1.
+#        Default:     1 for loopback addresses, 0 otherwise
+
+#    AiPlayerbot.CoaBrain.Engine.<name>.Calibrated, .UncalibratedConfidence
+#        Description: Calibrated 1: the engine's probabilities are real (the provider's), so it
+#                     may decide whether a bot answers (AiPlayerbot.CoaVoice.Threshold.*) and
+#                     which one. 0: it only picks the line, tone and emote once the usual rules
+#                     decided to answer, its answers being worth UncalibratedConfidence (0 to 1),
+#                     under every threshold.
+#        Default:     1, 0.3
+
+#    AiPlayerbot.CoaBrain.Engine.<name>.PriceInPerMTok, .PriceOutPerMTok
+#        Description: Dollars per million input and output tokens (0 to 1000), used when a
+#                     response does not report its cost.
+#        Default:     0.042, 0 for hosted engines; 0, 0 otherwise
+
+#    AiPlayerbot.CoaBrain.Engine.<name>.MaxUsdPerDay, .MaxRequestsPerDay
+#        Description: The engine's own daily caps (0 to 1000 dollars, 0 to 10000000 calls),
+#                     under the global MaxUsdPerDay.
+#        Default:     1.00, 20000
+
+#    openrouter: Jev through OpenRouter's Decisions API. Its path is documented two ways: when
+#    .playerbots brain probe openrouter reports HTTP 404, try the other one,
+#    https://openrouter.ai/api/v1/api/alpha/decisions. The model ~typesafe/jev-latest follows the
+#    newest Jev; a version such as typesafe/jev-1.13 pins one.
+
+AiPlayerbot.CoaBrain.Engine.openrouter.Dialect = openrouter
+AiPlayerbot.CoaBrain.Engine.openrouter.Url = https://openrouter.ai/api/alpha/decisions
+AiPlayerbot.CoaBrain.Engine.openrouter.Model = ~typesafe/jev-latest
+AiPlayerbot.CoaBrain.Engine.openrouter.ApiKey =
+AiPlayerbot.CoaBrain.Engine.openrouter.ApiKeyEnv =
+AiPlayerbot.CoaBrain.Engine.openrouter.SendPlayerText = 0
+AiPlayerbot.CoaBrain.Engine.openrouter.Calibrated = 1
+AiPlayerbot.CoaBrain.Engine.openrouter.UncalibratedConfidence = 0.3
+AiPlayerbot.CoaBrain.Engine.openrouter.PriceInPerMTok = 0.042
+AiPlayerbot.CoaBrain.Engine.openrouter.PriceOutPerMTok = 0
+AiPlayerbot.CoaBrain.Engine.openrouter.MaxUsdPerDay = 1.00
+AiPlayerbot.CoaBrain.Engine.openrouter.MaxRequestsPerDay = 20000
+
+#    typesafe: Jev from TypeSafe directly, same questions and answers. Its API keys are
+#    waitlisted: add typesafe to Decision.Chain once you have one.
+
+AiPlayerbot.CoaBrain.Engine.typesafe.Dialect = typesafe
+AiPlayerbot.CoaBrain.Engine.typesafe.Url = https://api.typesafe.ai/v1/systemone
+AiPlayerbot.CoaBrain.Engine.typesafe.Model = jev-latest
+AiPlayerbot.CoaBrain.Engine.typesafe.ApiKey =
+AiPlayerbot.CoaBrain.Engine.typesafe.ApiKeyEnv =
+AiPlayerbot.CoaBrain.Engine.typesafe.SendPlayerText = 0
+AiPlayerbot.CoaBrain.Engine.typesafe.Calibrated = 1
+AiPlayerbot.CoaBrain.Engine.typesafe.UncalibratedConfidence = 0.3
+AiPlayerbot.CoaBrain.Engine.typesafe.PriceInPerMTok = 0.042
+AiPlayerbot.CoaBrain.Engine.typesafe.PriceOutPerMTok = 0
+AiPlayerbot.CoaBrain.Engine.typesafe.MaxUsdPerDay = 1.00
+AiPlayerbot.CoaBrain.Engine.typesafe.MaxRequestsPerDay = 20000
+
+#    jevlocal: the same questions to a server on this machine (loopback only, no key); nothing
+#    leaves the machine, so it gets the players' words by default. The server itself comes with
+#    a later version.
+
+AiPlayerbot.CoaBrain.Engine.jevlocal.Dialect = jevlocal
+AiPlayerbot.CoaBrain.Engine.jevlocal.Url = http://127.0.0.1:8090/v1/systemone
+AiPlayerbot.CoaBrain.Engine.jevlocal.Model = jev-latest
+AiPlayerbot.CoaBrain.Engine.jevlocal.SendPlayerText = 1
+AiPlayerbot.CoaBrain.Engine.jevlocal.Calibrated = 1
+AiPlayerbot.CoaBrain.Engine.jevlocal.UncalibratedConfidence = 0.3
+AiPlayerbot.CoaBrain.Engine.jevlocal.PriceInPerMTok = 0
+AiPlayerbot.CoaBrain.Engine.jevlocal.PriceOutPerMTok = 0
+AiPlayerbot.CoaBrain.Engine.jevlocal.MaxUsdPerDay = 1.00
+AiPlayerbot.CoaBrain.Engine.jevlocal.MaxRequestsPerDay = 20000
+
+#    mock: no network, for tests (Decision.Chain = mock). It replays the fixtures of FixtureDir
+#    and draws at random the answers they lack. Calibrated, UncalibratedConfidence, MaxUsdPerDay
+#    and MaxRequestsPerDay work as for the other engines; its own keys follow.
+
+AiPlayerbot.CoaBrain.Engine.mock.Dialect = mock
+AiPlayerbot.CoaBrain.Engine.mock.Calibrated = 1
+
+#    AiPlayerbot.CoaBrain.Engine.mock.LatencyMs
+#        Description: Milliseconds before each answer (0 to 30000).
+#        Default:     150
+
+AiPlayerbot.CoaBrain.Engine.mock.LatencyMs = 150
+
+#    AiPlayerbot.CoaBrain.Engine.mock.ErrorPercent
+#        Description: Percent of the calls that fail (0 to 100).
+#        Default:     0
+
+AiPlayerbot.CoaBrain.Engine.mock.ErrorPercent = 0
+
+#    AiPlayerbot.CoaBrain.Engine.mock.FailStatus
+#        Description: HTTP status of those failures (100 to 599): 402 or 429 test an engine out
+#                     of credit, 401 a bad key, 404 a wrong URL, 400 a refused question.
+#        Default:     0 - 500, a server error
+
+AiPlayerbot.CoaBrain.Engine.mock.FailStatus = 0
+
+#    AiPlayerbot.CoaBrain.Engine.mock.UsdPerCall
+#        Description: The cost each answer reports (0 to 10 dollars), to test the budgets.
+#        Default:     0
+
+AiPlayerbot.CoaBrain.Engine.mock.UsdPerCall = 0
 
 # Quality a looted item must reach to be written to the "playerbots.loot" logger:
 # 3 rare (blue), 4 epic, 5 legendary. Nothing is written unless worldserver.conf

@@ -5,6 +5,9 @@
  */
 
 #include "CoaVoiceDirector.h"
+#include "BrainDecisionRing.h"
+#include "BrainService.h"
+#include "BrainStats.h"
 #include "CharacterCache.h"
 #include "Channel.h"
 #include "ChannelMgr.h"
@@ -26,6 +29,7 @@
 #include "ObjectMgr.h"
 #include "Player.h"
 #include "Playerbots.h"
+#include "QuestionRegistry.h"
 #include "Random.h"
 #include "ServerFacade.h"
 #include "StringFormat.h"
@@ -36,6 +40,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <ctime>
 #include <limits>
 
 namespace
@@ -45,6 +50,7 @@ constexpr uint64 PRUNE_PERIOD_MS = MINUTE_MS;
 constexpr uint64 DENY_MEMORY_MS = 10 * MINUTE_MS;
 constexpr uint32 DENY_DELAY_MIN_MS = 1000;
 constexpr uint32 DENY_DELAY_MAX_MS = 2500;
+constexpr std::size_t MAX_DECISIONS = 256;  // human messages waiting for the brain at once
 
 thread_local uint8 EmitDepth = 0;
 
@@ -106,6 +112,13 @@ bool IsLocal(CoaVoiceScopeKind kind)
 bool IsEmoteScope(CoaVoiceScopeKind kind)
 {
     return kind == CoaVoiceScopeKind::CustomEmote || kind == CoaVoiceScopeKind::TextEmote;
+}
+
+// The kinds in which a named bot always answers (ReplyChance forces 100): the brain may not silence them.
+bool IsForcedKind(CoaVoiceScopeKind kind)
+{
+    return kind == CoaVoiceScopeKind::Party || kind == CoaVoiceScopeKind::Raid || kind == CoaVoiceScopeKind::Guild ||
+           kind == CoaVoiceScopeKind::Say || kind == CoaVoiceScopeKind::Yell || kind == CoaVoiceScopeKind::Channel;
 }
 
 float ListenRange(CoaVoiceScopeKind kind)
@@ -361,6 +374,8 @@ char const* CoaVoiceDropName(CoaVoiceDrop drop)
             return "filtered";
         case CoaVoiceDrop::SendFailed:
             return "send-failed";
+        case CoaVoiceDrop::BrainSilent:
+            return "brain-silent";
         default:
             return "unknown";
     }
@@ -442,6 +457,10 @@ void CoaVoiceDirector::Update(uint32 /*diff*/, std::vector<CoaEvent>& events)
 
     locale = PlayerbotTextMgr::instance().GetLocalePriority();
 
+    // Brain off: no sink and no decision, so no call.
+    if (!decisions.empty() || (brainSink && !brainSink->Empty()))
+        DrainDecisions(cfg, now);
+
     if (!botEchoes.empty())
     {
         events.insert(events.begin(), std::make_move_iterator(botEchoes.begin()),
@@ -481,6 +500,8 @@ void CoaVoiceDirector::Shutdown()
     if (!pending.empty())
         LOG_DEBUG("playerbots.voice", "CoA voice shutdown: {} lines dropped", pending.size());
     Reset();
+    if (brainSink)
+        brainSink->Close();
     closed = true;
 }
 
@@ -496,6 +517,21 @@ void CoaVoiceDirector::Reset()
     nominees.clear();
     nextPruneMs = 0;
     active = false;
+
+    // Decisions still waiting end here (counted as Disabled, so the events add up); a result that comes back
+    // later carries an older epoch and is dropped as stale.
+    if (!decisions.empty())
+    {
+        std::shared_ptr<IBrain> const brain = BrainService::Current();
+        for (auto const& [eventId, decision] : decisions)
+        {
+            brain->Cancel(decision.jobId);
+            CountDrop(CoaVoiceDrop::Disabled);
+        }
+        decisions.clear();
+    }
+    ++brainEpoch;
+    whisperBrainToday.clear();
 }
 
 bool CoaVoiceDirector::HandleEvent(CoaVoiceConfig const& config, CoaEvent& event, uint64 nowMs)
@@ -557,14 +593,7 @@ bool CoaVoiceDirector::HandleEvent(CoaVoiceConfig const& config, CoaEvent& event
     // to stay quiet about it). Not after this conversation's own limits (the bot's whisper cooldown, the scope's
     // cooldown and rate): the player just got an answer, or is flooding. The realm-wide cap is spent by other
     // people, so it does refuse; denyRepeat keeps refusals at the legacy rate.
-    auto const fail = [&](CoaVoiceDrop why)
-    {
-        drop(why);
-        if (kind == CoaVoiceScopeKind::Whisper && !event.fromBot && config.denyFallback &&
-            (why == CoaVoiceDrop::NoCandidate || why == CoaVoiceDrop::Chance || why == CoaVoiceDrop::NoLine ||
-             why == CoaVoiceDrop::Repetition || why == CoaVoiceDrop::GlobalRate))
-            ScheduleDeny(config, scope, ObjectAccessor::FindPlayer(event.target), sender, nowMs);
-    };
+    auto const fail = [&](CoaVoiceDrop why) { FailEvent(config, event, scope, why, nowMs); };
 
     if (!event.fromBot)
         governor.NoteHumanSpoke(scope.key, nowMs);
@@ -601,7 +630,11 @@ bool CoaVoiceDirector::HandleEvent(CoaVoiceConfig const& config, CoaEvent& event
     double const roll = rand_chance();
     bool const anyHit = roll < ReplyChance(config, kind, false, event.chainDepth);
     bool const namedOnly = !anyHit && anyNamed && roll < ReplyChance(config, kind, true, event.chainDepth);
-    if (!anyHit && !namedOnly)
+    // M2. One relaxed load when the brain is off; bots and text emotes never go to the brain. A calibrated chain
+    // may still make a bot answer what the draw left silent, so such an event goes on to ask it.
+    bool const brainRoute = !event.fromBot && event.kind == CoaEventKind::Chat && BrainService::ChatActive();
+    bool const brainMayGate = brainRoute && BrainService::Current()->ChainCalibrated();
+    if (!anyHit && !namedOnly && !brainMayGate)
     {
         fail(CoaVoiceDrop::Chance);
         return true;
@@ -641,20 +674,53 @@ bool CoaVoiceDirector::HandleEvent(CoaVoiceConfig const& config, CoaEvent& event
                       return a.mentioned;
                   return a.score > b.score;
               });
-    std::size_t const shortlist = std::min<std::size_t>(nominees.size(), config.shortlist);
+
+    if (brainRoute)
+    {
+        bool const forced = anyNamed && IsForcedKind(kind);
+        if (TrySubmitDecision(config, event, scope, sender, intent, anyHit, namedOnly, forced, nowMs))
+            return true;
+        // The brain could have said yes; it was not asked.
+        if (!anyHit && !namedOnly)
+        {
+            fail(CoaVoiceDrop::Chance);
+            return true;
+        }
+    }
+
+    CoaVoiceDrop why = CoaVoiceDrop::NoCandidate;
+    if (!RunBallot(config, event, scope, sender, nominees, intent, namedOnly, nowMs, nowMs, nullptr, nullptr, why))
+        fail(why);
+    return true;
+}
+
+uint32 CoaVoiceDirector::RunBallot(CoaVoiceConfig const& config, CoaEvent const& event, CoaVoiceScope const& scope,
+                                   Player* sender, std::vector<CoaVoiceCandidate>& candidates, CoaIntent intent,
+                                   bool namedOnly, uint64 eventMs, uint64 nowMs, BrainPick const* pick,
+                                   BrainChatPlan const* plan, CoaVoiceDrop& why)
+{
+    CoaVoiceScopeKind const kind = scope.kind;
+    lastResponder = ObjectGuid::Empty;
+    std::size_t const shortlist = std::min<std::size_t>(candidates.size(), config.shortlist);
+
+    // M2: the bot a calibrated brain picked goes first, the others keep their order. Never ahead of a mentioned
+    // bot (candidates are sorted mentioned first): a named, whispered or emoted bot keeps its turn.
+    if (pick && pick->whoIndex > 0 && std::size_t(pick->whoIndex) < shortlist &&
+        (candidates[std::size_t(pick->whoIndex)].mentioned || (!namedOnly && !candidates.front().mentioned)))
+        std::rotate(candidates.begin(), candidates.begin() + pick->whoIndex, candidates.begin() + pick->whoIndex + 1);
 
     // Every shortlisted bot is checked against the state before this event: the first responder's reservation
     // must not refuse a second one when MaxResponders > 1.
     std::array<CoaVoiceDrop, 10> gates{};
     for (std::size_t i = 0; i < shortlist && i < gates.size(); ++i)
-        gates[i] = governor.PreCheck(config, nominees[i].guid, scope, event.sender, nowMs);
+        gates[i] = governor.PreCheck(config, candidates[i].guid, scope, event.sender, nowMs);
 
     CoaVoiceDrop gateReason = CoaVoiceDrop::Count;
     CoaVoiceDrop lineReason = CoaVoiceDrop::Count;
     uint32 responders = 0;
     for (std::size_t i = 0; i < shortlist && i < gates.size(); ++i)
     {
-        CoaVoiceCandidate const& candidate = nominees[i];
+        CoaVoiceCandidate const& candidate = candidates[i];
         if ((responders || namedOnly) && !candidate.mentioned)
             continue;
 
@@ -670,13 +736,21 @@ bool CoaVoiceDirector::HandleEvent(CoaVoiceConfig const& config, CoaEvent& event
             continue;
 
         CoaVoiceLine line;
-        CoaVoiceDrop why = CoaVoiceDrop::NoLine;
-        if (!Compose(config, scope, bot, sender, intent, candidate.named, event.textEmote, nowMs, line, why))
+        CoaVoiceDrop lineWhy = CoaVoiceDrop::NoLine;
+        bool const composed =
+            (pick && plan && !pick->lineOrder.empty() &&
+             ComposeFromBrain(config, scope, bot, sender, intent, *pick, *plan, nowMs, line)) ||
+            Compose(config, scope, bot, sender, intent, candidate.named, event.textEmote, nowMs, line, lineWhy);
+        if (!composed)
         {
-            if (lineReason == CoaVoiceDrop::Count || why == CoaVoiceDrop::Repetition)
-                lineReason = why;
+            if (lineReason == CoaVoiceDrop::Count || lineWhy == CoaVoiceDrop::Repetition)
+                lineReason = lineWhy;
             continue;
         }
+
+        // The brain's emote (0: none) replaces the persona's roll.
+        if (pick && pick->emote >= 0 && config.replyEmotes && kind != CoaVoiceScopeKind::TextEmote)
+            line.emote = uint32(pick->emote);
 
         uint32 delayMin = config.replyDelayMinMs;
         uint32 delayMax = config.replyDelayMaxMs;
@@ -691,7 +765,10 @@ bool CoaVoiceDirector::HandleEvent(CoaVoiceConfig const& config, CoaEvent& event
             delayMax = config.combatDelayMaxMs;
         }
 
-        line.dueMs = nowMs + urand(delayMin, delayMax);
+        // From the event, not from now: the reply delay hides the time the brain took.
+        line.dueMs = eventMs + urand(delayMin, delayMax);
+        if (line.dueMs < nowMs)
+            line.dueMs = nowMs;
         line.eventId = currentEventId;
         line.scope = scope;
         line.bot = candidate.guid;
@@ -702,6 +779,8 @@ bool CoaVoiceDirector::HandleEvent(CoaVoiceConfig const& config, CoaEvent& event
         governor.Reserve(config, candidate.guid, scope, event.sender, line.text, nowMs);
         LOG_DEBUG("playerbots.voice", "event {} {}: {} answers ({}) in {} ms", currentEventId, CoaVoiceScopeName(kind),
                   bot->GetName(), CoaChatIntent::IntentName(intent), line.dueMs - nowMs);
+        if (lastResponder.IsEmpty())
+            lastResponder = candidate.guid;
         Schedule(config, std::move(line));
 
         if (++responders >= config.maxResponders)
@@ -709,10 +788,494 @@ bool CoaVoiceDirector::HandleEvent(CoaVoiceConfig const& config, CoaEvent& event
     }
 
     if (!responders)
-        fail(gateReason != CoaVoiceDrop::Count   ? gateReason
-             : lineReason != CoaVoiceDrop::Count ? lineReason
-                                                 : CoaVoiceDrop::NoCandidate);
+        why = gateReason != CoaVoiceDrop::Count   ? gateReason
+              : lineReason != CoaVoiceDrop::Count ? lineReason
+                                                  : CoaVoiceDrop::NoCandidate;
+    return responders;
+}
+
+CoaVoiceDrop CoaVoiceDirector::BallotGate(CoaVoiceConfig const& config,
+                                          std::vector<CoaVoiceCandidate> const& candidates, CoaVoiceScope const& scope,
+                                          ObjectGuid sender, bool namedOnly, uint64 nowMs) const
+{
+    std::size_t const shortlist = std::min<std::size_t>(candidates.size(), config.shortlist);
+    CoaVoiceDrop first = CoaVoiceDrop::Count;
+    for (std::size_t i = 0; i < shortlist; ++i)
+    {
+        if (namedOnly && !candidates[i].mentioned)
+            continue;
+        CoaVoiceDrop const gate = governor.PreCheck(config, candidates[i].guid, scope, sender, nowMs);
+        if (gate == CoaVoiceDrop::Count)
+            return CoaVoiceDrop::Count;
+        if (first == CoaVoiceDrop::Count)
+            first = gate;
+    }
+    return first;
+}
+
+void CoaVoiceDirector::FailEvent(CoaVoiceConfig const& config, CoaEvent const& event, CoaVoiceScope const& scope,
+                                 CoaVoiceDrop why, uint64 nowMs)
+{
+    CountDrop(why);
+    LOG_DEBUG("playerbots.voice", "event {} {}: {}", currentEventId, CoaVoiceScopeName(scope.kind),
+              CoaVoiceDropName(why));
+    if (scope.kind == CoaVoiceScopeKind::Whisper && !event.fromBot && config.denyFallback &&
+        (why == CoaVoiceDrop::NoCandidate || why == CoaVoiceDrop::Chance || why == CoaVoiceDrop::NoLine ||
+         why == CoaVoiceDrop::Repetition || why == CoaVoiceDrop::GlobalRate || why == CoaVoiceDrop::BrainSilent))
+        ScheduleDeny(config, scope, ObjectAccessor::FindPlayer(event.target), ObjectAccessor::FindPlayer(event.sender),
+                     nowMs);
+}
+
+bool CoaVoiceDirector::TrySubmitDecision(CoaVoiceConfig const& config, CoaEvent const& event,
+                                         CoaVoiceScope const& scope, Player* sender, CoaIntent intent, bool anyHit,
+                                         bool namedOnly, bool forced, uint64 nowMs)
+{
+    std::shared_ptr<IBrain> const brain = BrainService::Current();
+    if (!brain->Active(BrainUse::ChatReply))
+        return false;
+
+    // The conversation's own limits hold back every bot whatever the brain says: M1's ballot drops the event on
+    // them (silently, but for GlobalRate) and no call is paid for.
+    if (CoaVoiceDrop const gate = BallotGate(config, nominees, scope, event.sender, false, nowMs);
+        gate != CoaVoiceDrop::Count)
+    {
+        LOG_DEBUG("playerbots.voice", "event {} {}: {} holds every bot, not asked", currentEventId,
+                  CoaVoiceScopeName(scope.kind), CoaVoiceDropName(gate));
+        return false;
+    }
+
+    BrainStats& brainStats = BrainStats::Instance();
+    uint32 const account = sender->GetSession()->GetAccountId();
+    if (CoaPlayerPrefs::Instance().Get(account).AiOptedOut())
+    {
+        brainStats.Count(BrainFallback::AiOptOut);
+        return false;
+    }
+
+    if (decisions.size() >= MAX_DECISIONS)
+    {
+        brainStats.Count(BrainFallback::Busy);
+        return false;
+    }
+
+    bool const whisper = scope.kind == CoaVoiceScopeKind::Whisper;
+    bool const whisperCapped = whisper && config.whisperBrainPerSenderPerDay;
+    if (whisperCapped)
+    {
+        if (uint32 const today = BrainClock::UtcDayNow(); whisperBrainDay != today)
+        {
+            whisperBrainToday.clear();
+            whisperBrainDay = today;
+        }
+        if (auto const used = whisperBrainToday.find(account);
+            used != whisperBrainToday.end() && used->second >= config.whisperBrainPerSenderPerDay)
+        {
+            brainStats.Count(BrainFallback::WhisperCap);
+            return false;
+        }
+    }
+
+    // The shortlist in ballot order; a bot gone since the nomination is left out.
+    std::size_t const shortlist = std::min<std::size_t>(nominees.size(), config.shortlist);
+    std::vector<CoaVoiceCandidate> kept;
+    kept.reserve(shortlist);
+    BrainChatFacts facts;
+    for (std::size_t i = 0; i < shortlist; ++i)
+    {
+        CoaVoiceCandidate const& candidate = nominees[i];
+        Player* const bot = ObjectAccessor::FindPlayer(candidate.guid);
+        if (!bot)
+            continue;
+
+        uint64 const last = governor.LastAnswerMs(candidate.guid);
+        BrainBotFacts botFacts = BrainStateBuilder::BotFacts(bot, sender, scope.kind, whisper, candidate.named,
+                                                             last && tickNowMs < last + MINUTE_MS);
+        facts.speakerGrouped |= botFacts.sameGroup;
+        facts.speakerGuilded |= botFacts.sameGuild;
+        facts.bots.push_back(std::move(botFacts));
+        kept.push_back(candidate);
+    }
+    if (kept.empty())
+        return false;
+
+    facts.kind = scope.kind;
+    facts.chainDepth = event.chainDepth;
+    facts.speakerLevel = sender->GetLevel();
+    facts.features = BrainFeatures::Extract(event.text);
+    facts.features.namedBots =
+        uint32(std::count_if(kept.begin(), kept.end(), [](CoaVoiceCandidate const& c) { return c.named; }));
+
+    BrainChatPlan plan;
+    plan.lines = BrainStateBuilder::ChatLines(intent, kept.front().named, locale);
+    // "who" picks among the bots M1 puts first: the mentioned ones (sorted first) when there are any, so an unnamed
+    // bot never takes a named, whispered or emoted bot's turn; an answer past them is ignored.
+    std::size_t const mentioned = std::size_t(
+        std::count_if(kept.begin(), kept.end(), [](CoaVoiceCandidate const& c) { return c.mentioned; }));
+    std::size_t const whoChoices = mentioned ? mentioned : kept.size();
+    bool const askWho = brain->ChainCalibrated() && whoChoices > 1;
+    plan.whoCount = askWho ? uint32(whoChoices) : 0;
+
+    BrainJob job;
+    if (!BrainStateBuilder::BuildChatJob(facts, event.text, plan, askWho, job))
+        return false;
+    job.tag = currentEventId;
+    job.epoch = brainEpoch;
+    job.botGuid = kept.front().guid.GetRawValue();
+    job.deadlineMs = nowMs + config.decisionTimeoutMs;
+
+    if (!brainSink)
+        brainSink = std::make_shared<BrainSink>(1024);
+
+    BrainResult hit;
+    BrainTicket const ticket = brain->Submit(std::move(job), brainSink, &hit);
+    if (ticket.status != BrainSubmit::Queued && ticket.status != BrainSubmit::Answered)
+    {
+        brainStats.Count(BrainFallback::Submit);
+        LOG_DEBUG("playerbots.voice", "event {} {}: brain refused ({}), heuristic", currentEventId,
+                  CoaVoiceScopeName(scope.kind), BrainSubmitName(ticket.status));
+        return false;
+    }
+
+    PendingDecision decision;
+    decision.jobId = ticket.jobId;
+    decision.epoch = brainEpoch;
+    decision.eventId = currentEventId;
+    decision.eventMs = nowMs;
+    decision.deadlineMs = nowMs + config.decisionTimeoutMs;
+    decision.submitMs = nowMs;
+    decision.event = event;
+    decision.scope = scope;
+    decision.nominees = std::move(kept);
+    decision.intent = intent;
+    decision.anyHit = anyHit;
+    decision.namedOnly = namedOnly;
+    decision.forced = forced;
+    decision.plan = std::move(plan);
+
+    if (whisperCapped)
+        ++whisperBrainToday[account];
+    brainStats.deferred.fetch_add(1, std::memory_order_relaxed);
+
+    if (ticket.status == BrainSubmit::Queued)
+    {
+        LOG_DEBUG("playerbots.voice", "event {} {}: waits for the brain", currentEventId,
+                  CoaVoiceScopeName(scope.kind));
+        decisions.emplace(currentEventId, std::move(decision));
+        return true;
+    }
+
+    ResumeDecision(config, decision, &hit, nowMs);
     return true;
+}
+
+void CoaVoiceDirector::DrainDecisions(CoaVoiceConfig const& config, uint64 nowMs)
+{
+    if (brainSink)
+    {
+        brainSink->Drain(brainResults);
+        for (BrainResult const& result : brainResults)
+        {
+            auto const found = decisions.find(result.tag);
+            if (result.epoch != brainEpoch || found == decisions.end() || found->second.jobId != result.jobId)
+            {
+                BrainStats::Instance().stale.fetch_add(1, std::memory_order_relaxed);
+                continue;
+            }
+
+            PendingDecision decision = std::move(found->second);
+            decisions.erase(found);
+            ResumeDecision(config, decision, &result, nowMs);
+        }
+        brainResults.clear();
+    }
+
+    if (decisions.empty())
+        return;
+
+    std::vector<uint64> late;
+    for (auto const& [eventId, decision] : decisions)
+        if (decision.deadlineMs <= nowMs)
+            late.push_back(eventId);
+    if (late.empty())
+        return;
+
+    // Oldest event first. A job a worker already holds still posts its result, which then counts as stale.
+    std::sort(late.begin(), late.end());
+    std::shared_ptr<IBrain> const brain = BrainService::Current();
+    for (uint64 const eventId : late)
+    {
+        auto const found = decisions.find(eventId);
+        brain->Cancel(found->second.jobId);
+        PendingDecision decision = std::move(found->second);
+        decisions.erase(found);
+        ResumeDecision(config, decision, nullptr, nowMs);
+    }
+}
+
+void CoaVoiceDirector::ResumeDecision(CoaVoiceConfig const& config, PendingDecision& decision,
+                                      BrainResult const* result, uint64 nowMs)
+{
+    currentEventId = decision.eventId;
+    CoaVoiceScopeKind const kind = decision.scope.kind;
+    BrainStats& brainStats = BrainStats::Instance();
+    (result ? brainStats.byAnswer : brainStats.byTimeout).fetch_add(1, std::memory_order_relaxed);
+
+    // ReadDecision is pure: its answers are shown by .playerbots brain explain whatever happens next.
+    BrainPick const pick = result ? ReadDecision(config, decision, *result) : BrainPick{};
+
+    BrainDecisionEntry entry;
+    entry.atUnix = uint64(std::time(nullptr));
+    entry.eventId = decision.eventId;
+    entry.botGuid = decision.nominees.empty() ? 0 : decision.nominees.front().guid.GetRawValue();
+    entry.scope = CoaVoiceScopeName(kind);
+    entry.ms = uint32(std::min<uint64>(nowMs - std::min(nowMs, decision.submitMs), std::numeric_limits<uint32>::max()));
+    entry.calibrated = pick.calibrated;
+    entry.replyP = pick.replyP;
+    if (pick.whoIndex >= 0)
+        entry.who = "b" + std::to_string(pick.whoIndex);
+    entry.line = pick.lineKey;
+    entry.lineP = pick.lineP;
+    entry.tone = pick.tone;
+    entry.emote = pick.emoteKey;
+    if (result)
+        entry.engine = result->engine;
+
+    auto const finish = [&entry](std::string outcome)
+    {
+        entry.outcome = std::move(outcome);
+        BrainDecisionRing::Instance().Add(std::move(entry));
+    };
+    auto const drop = [&](CoaVoiceDrop why)
+    {
+        CountDrop(why);
+        LOG_DEBUG("playerbots.voice", "event {} {}: {}", currentEventId, CoaVoiceScopeName(kind),
+                  CoaVoiceDropName(why));
+        finish(std::string("drop:") + CoaVoiceDropName(why));
+    };
+
+    // The speaker as HandleEvent found them: still here, still a real player, still listening.
+    Player* const sender = ObjectAccessor::FindPlayer(decision.event.sender);
+    if (!sender || !sender->GetSession() || sender->IsDuringRemoveFromWorld() || GET_PLAYERBOT_AI(sender))
+    {
+        drop(CoaVoiceDrop::SenderGone);
+        return;
+    }
+    if (CoaPlayerPrefs::Instance().VoiceOptedOut(sender->GetSession()->GetAccountId()))
+    {
+        drop(CoaVoiceDrop::OptOut);
+        return;
+    }
+
+    if (!pick.fromBrain)
+    {
+        if (!result)
+        {
+            brainStats.Count(BrainFallback::Timeout);
+            entry.reason = "timeout";
+        }
+        else if (result->error != BrainError::None)
+        {
+            brainStats.Count(BrainFallback::Error);
+            entry.reason = std::string("error:") + BrainErrorName(result->error);
+        }
+        else
+        {
+            brainStats.Count(BrainFallback::Invalid);
+            entry.reason = "invalid";
+        }
+    }
+
+    // A calibrated engine decides whether anyone answers, except where M1 always answers a named bot.
+    // Otherwise the draw made at event time decides, and the brain only ranks lines, tone and emote.
+    bool reply = false;
+    bool namedOnly = decision.namedOnly;
+    bool const brainDecides = pick.fromBrain && pick.calibrated && pick.replyKnown && !decision.forced;
+    if (brainDecides)
+    {
+        reply = !pick.silent;
+        if (reply)
+            namedOnly = false;
+        (reply ? brainStats.brainReplied : brainStats.brainSilent).fetch_add(1, std::memory_order_relaxed);
+    }
+    else
+    {
+        reply = decision.anyHit || decision.namedOnly;
+        if (pick.fromBrain && !pick.calibrated)
+            brainStats.ranked.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    LOG_DEBUG("playerbots.voice", "event {} {}: brain {} after {} ms ({}), reply p {:.2f}, {}", currentEventId,
+              CoaVoiceScopeName(kind), result ? BrainErrorName(result->error) : "timeout", entry.ms,
+              result ? result->engine : std::string("-"), pick.replyP,
+              brainDecides ? (reply ? "the brain answers" : "the brain stays silent")
+                           : (reply ? "the draw answers" : "the draw stays silent"));
+
+    if (!reply)
+    {
+        CoaVoiceDrop why = pick.replyKnown ? CoaVoiceDrop::BrainSilent : CoaVoiceDrop::Chance;
+        // As in M1's ballot, the conversation's own limits come first: a bot that just answered, or a flooded
+        // scope, drops the event silently (GlobalRate still refuses) rather than with the brain's refusal.
+        if (why == CoaVoiceDrop::BrainSilent)
+            if (CoaVoiceDrop const gate = BallotGate(config, decision.nominees, decision.scope, decision.event.sender,
+                                                     decision.namedOnly, nowMs);
+                gate != CoaVoiceDrop::Count)
+                why = gate;
+        FailEvent(config, decision.event, decision.scope, why, nowMs);
+        finish(why == CoaVoiceDrop::BrainSilent ? std::string("brain-silent")
+                                                 : std::string("drop:") + CoaVoiceDropName(why));
+        return;
+    }
+
+    if (pending.size() >= config.maxPending)
+    {
+        drop(CoaVoiceDrop::PendingFull);
+        return;
+    }
+
+    CoaVoiceDrop why = CoaVoiceDrop::NoCandidate;
+    if (!RunBallot(config, decision.event, decision.scope, sender, decision.nominees, decision.intent, namedOnly,
+                   decision.eventMs, nowMs, pick.fromBrain ? &pick : nullptr, &decision.plan, why))
+    {
+        FailEvent(config, decision.event, decision.scope, why, nowMs);
+        finish(std::string("drop:") + CoaVoiceDropName(why));
+        return;
+    }
+
+    entry.botGuid = lastResponder.GetRawValue();
+    finish(pick.fromCache ? "cache" : brainDecides ? "brain" : pick.fromBrain ? "ranked" : "heuristic");
+}
+
+CoaVoiceDirector::BrainPick CoaVoiceDirector::ReadDecision(CoaVoiceConfig const& config,
+                                                           PendingDecision const& decision,
+                                                           BrainResult const& result) const
+{
+    BrainPick pick;
+    if (result.error != BrainError::None)
+        return pick;
+
+    auto const valid = [&result](std::string_view name) -> BrainAnswer const*
+    {
+        BrainAnswer const* const answer = result.Find(name);
+        return answer && answer->valid ? answer : nullptr;
+    };
+    BrainAnswer const* const reply = valid("reply");
+    BrainAnswer const* const who = valid("who");
+    BrainAnswer const* const line = valid("line");
+    BrainAnswer const* const tone = valid("tone");
+    BrainAnswer const* const emote = valid("emote");
+    if (!reply && !who && !line && !tone && !emote)
+        return pick;
+
+    pick.fromBrain = true;
+    pick.calibrated = result.calibrated;
+    pick.fromCache = result.fromCache;
+
+    // Uncalibrated engines never decide reply or who: their p is UncalibratedConfidence, under every threshold.
+    if (reply && reply->calibrated && pick.calibrated)
+    {
+        float decay = 1.0f;
+        for (uint8 hop = 0; hop < decision.event.chainDepth; ++hop)
+            decay *= config.chainDecay;
+        pick.replyP = reply->p;
+        pick.replyKnown = true;
+        pick.silent = reply->p * decay < config.ThresholdFor(decision.scope.kind);
+    }
+
+    if (line)
+    {
+        // The choice leads: a cache hit samples it from the stored distribution, whose keys are reply names.
+        std::vector<std::string_view> keys;
+        keys.reserve(line->dist.size() + 1);
+        keys.emplace_back(line->choice);
+        for (auto const& [key, p] : line->dist)
+            if (key != line->choice)
+                keys.emplace_back(key);
+
+        std::vector<BrainChatLine> const& lines = decision.plan.lines;
+        for (std::size_t k = 0; k < keys.size(); ++k)
+        {
+            std::string_view const key = keys[k];
+            if (key == "silent")
+            {
+                if (k == 0 && pick.calibrated && !pick.replyKnown)
+                    pick.replyKnown = pick.silent = true;
+                continue;
+            }
+
+            for (uint32 i = 0; i < lines.size(); ++i)
+            {
+                if ((pick.fromCache ? lines[i].replyName : lines[i].key) != key)
+                    continue;
+                if (std::find(pick.lineOrder.begin(), pick.lineOrder.end(), i) == pick.lineOrder.end())
+                    pick.lineOrder.push_back(i);
+            }
+        }
+        pick.lineKey = line->choice;
+        pick.lineP = line->p;
+    }
+
+    if (who && who->calibrated && pick.calibrated && decision.plan.whoCount > 1 && who->choice.size() >= 2 &&
+        who->choice[0] == 'b')
+    {
+        uint32 index = 0;
+        bool digits = true;
+        for (std::size_t i = 1; i < who->choice.size() && digits; ++i)
+        {
+            char const c = who->choice[i];
+            digits = c >= '0' && c <= '9' && index < 1000;
+            index = index * 10 + uint32(c - '0');
+        }
+        if (digits && index < decision.plan.whoCount && index < decision.nominees.size())
+            pick.whoIndex = int32(index);
+    }
+
+    if (tone && tone->level >= 0 && tone->level <= 4)
+        pick.tone = tone->level;
+
+    if (emote)
+    {
+        std::vector<std::string> const& keys = QuestionRegistry::EmoteKeys();
+        if (std::find(keys.begin(), keys.end(), emote->choice) != keys.end())
+        {
+            pick.emoteKey = emote->choice;
+            pick.emote = int32(BrainStateBuilder::EmoteFor(emote->choice));
+        }
+    }
+    return pick;
+}
+
+bool CoaVoiceDirector::ComposeFromBrain(CoaVoiceConfig const& config, CoaVoiceScope const& scope, Player* bot,
+                                        Player* sender, CoaIntent intent, BrainPick const& pick,
+                                        BrainChatPlan const& plan, uint64 nowMs, CoaVoiceLine& line)
+{
+    CoaVoicePersona const persona = CoaVoicePersona::For(bot->GetGUID());
+    CoaVoiceTemplates::Placeholders const placeholders = PlaceholdersFor(bot, sender);
+
+    CoaVoiceSanitizeOptions options;
+    options.maxBytes = config.maxBytes;
+    options.blockedWords = &config.blockedWords;
+
+    for (uint32 const index : pick.lineOrder)
+    {
+        if (index >= plan.lines.size())
+            continue;
+
+        std::string text = placeholders.Fill(plan.lines[index].row);
+        // Cold and hostile tones get no smiley, "lol" or ellipsis.
+        if (pick.tone < 0 || pick.tone >= 2)
+            text = persona.ApplyQuirks(std::move(text), intent);
+        if (!CoaVoiceSanitizer::Clean(text, options))
+            continue;
+        if (governor.IsRepeat(config, bot->GetGUID(), scope.key, text, nowMs))
+            continue;
+
+        line.text = std::move(text);
+        // With an emote answered, RunBallot sets it; otherwise the persona rolls as in Compose.
+        if (pick.emote < 0 && config.replyEmotes && rand_chance() < persona.emoteChance * 100.0)
+            line.emote = CoaVoiceTemplates::ReplyEmoteFor(intent, persona);
+        return true;
+    }
+    return false;
 }
 
 bool CoaVoiceDirector::ResolveScope(CoaEvent const& event, Player* sender, CoaVoiceScope& scope)
@@ -1378,6 +1941,18 @@ std::string CoaVoiceDirector::FormatStats() const
     uint32 allP50 = 0;
     uint32 allP95 = 0;
     SamplePercentiles(all, allP50, allP95);
+
+    BrainStats const& brain = BrainStats::Instance();
+    auto const load = [](std::atomic<uint64> const& counter) { return counter.load(std::memory_order_relaxed); };
+    out += Acore::StringFormat(
+        "brain: {} waiting={} deferred={} answered={} timed-out={} replied={} silent={} ranked={} stale={} fallbacks:",
+        BrainService::ChatActive() ? "on" : "off", decisions.size(), load(brain.deferred), load(brain.byAnswer),
+        load(brain.byTimeout), load(brain.brainReplied), load(brain.brainSilent), load(brain.ranked),
+        load(brain.stale));
+    for (std::size_t fallback = 0; fallback < brain.fallbacks.size(); ++fallback)
+        out += Acore::StringFormat(" {}={}", BrainFallbackName(BrainFallback(fallback)),
+                                   load(brain.fallbacks[fallback]));
+    out += "\n";
 
     out +=
         Acore::StringFormat("cost us p50/p95: channel={} say={} whisper={} all={}/{}", cost(CoaVoiceScopeKind::Channel),
