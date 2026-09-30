@@ -81,13 +81,15 @@ std::string PlayerbotTextMgr::GetBotText(std::string name)
         return "";
     }
 
-    if (botTexts[name].empty())
+    // Several map threads read the texts at the same time: look up only, never insert.
+    auto const found = botTexts.find(name);
+    if (found == botTexts.end() || found->second.empty())
     {
         LOG_ERROR("playerbots", "Can't get bot text {}! No bots texts for this name!", name);
         return "";
     }
 
-    std::vector<BotTextEntry>& list = botTexts[name];
+    std::vector<BotTextEntry> const& list = found->second;
     BotTextEntry textEntry = list[urand(0, list.size() - 1)];
     return !textEntry.m_text[GetLocalePriority()].empty() ? textEntry.m_text[GetLocalePriority()] : textEntry.m_text[0];
 }
@@ -129,13 +131,14 @@ std::string PlayerbotTextMgr::GetBotText(ChatReplyType replyType, std::map<std::
         LOG_ERROR("playerbots", "Can't get bot text reply {}! No bots texts loaded!", replyType);
         return "";
     }
-    if (botTexts["reply"].empty())
+    auto const found = botTexts.find("reply");
+    if (found == botTexts.end() || found->second.empty())
     {
         LOG_ERROR("playerbots", "Can't get bot text reply {}! No bots texts replies!", replyType);
         return "";
     }
 
-    std::vector<BotTextEntry>& list = botTexts["reply"];
+    std::vector<BotTextEntry> const& list = found->second;
     std::vector<BotTextEntry> proper_list;
     for (auto text : list)
     {
@@ -167,10 +170,11 @@ std::string PlayerbotTextMgr::GetBotText(ChatReplyType replyType, std::string na
 
 bool PlayerbotTextMgr::rollTextChance(std::string name)
 {
-    if (!botTextChance[name])
+    auto const found = botTextChance.find(name);
+    if (found == botTextChance.end() || !found->second)
         return true;
 
-    return urand(0, 100) < botTextChance[name];
+    return urand(0, 100) < found->second;
 }
 
 bool PlayerbotTextMgr::GetBotText(std::string name, std::string& text)
@@ -199,7 +203,7 @@ void PlayerbotTextMgr::AddLocalePriority(uint32 locale)
         return;
     }
 
-    botTextLocalePriority[locale]++;
+    botTextLocalePriority[locale].fetch_add(1, std::memory_order_relaxed);
 }
 
 uint32 PlayerbotTextMgr::GetLocalePriority()
@@ -221,7 +225,8 @@ uint32 PlayerbotTextMgr::GetLocalePriority()
     uint32 topLocale = 0;
     for (uint8 i = 0; i < TOTAL_LOCALES; ++i)
     {
-        if (botTextLocalePriority[i] > botTextLocalePriority[topLocale])
+        if (botTextLocalePriority[i].load(std::memory_order_relaxed) >
+            botTextLocalePriority[topLocale].load(std::memory_order_relaxed))
             topLocale = i;
     }
 
@@ -232,6 +237,6 @@ void PlayerbotTextMgr::ResetLocalePriority()
 {
     for (uint8 i = 0; i < TOTAL_LOCALES; ++i)
     {
-        botTextLocalePriority[i] = 0;
+        botTextLocalePriority[i].store(0, std::memory_order_relaxed);
     }
 }

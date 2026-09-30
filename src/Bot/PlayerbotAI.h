@@ -23,6 +23,9 @@
 #include "SpellAuras.h"
 #include "Util.h"
 #include "WorldPacket.h"
+#include <atomic>
+#include <list>
+#include <mutex>
 #include <stack>
 #include <vector>
 
@@ -365,22 +368,23 @@ class ChatCommandHolder
 public:
     ChatCommandHolder(std::string const command, Player* owner = nullptr, uint32 type = CHAT_MSG_WHISPER,
                       time_t time = 0)
-        : command(command), owner(owner), type(type), time(time)
+        : command(command), ownerGuid(owner ? owner->GetGUID() : ObjectGuid::Empty), type(type), time(time)
     {
     }
     ChatCommandHolder(ChatCommandHolder const& other)
-        : command(other.command), owner(other.owner), type(other.type), time(other.time)
+        : command(other.command), ownerGuid(other.ownerGuid), type(other.type), time(other.time)
     {
     }
 
     std::string const& GetCommand() { return command; }
-    Player* GetOwner() { return owner; }
+    ObjectGuid GetOwnerGuid() const { return ownerGuid; }
     uint32& GetType() { return type; }
     time_t& GetTime() { return time; }
 
 private:
     std::string const command;
-    Player* owner;
+    // A GUID, not a Player*: a queued command can run after its sender logged out and was deleted.
+    ObjectGuid ownerGuid;
     uint32 type;
     time_t time;
 };
@@ -401,6 +405,10 @@ public:
     std::string const HandleRemoteCommand(std::string const command);
     void HandleCommand(uint32 type, std::string const text, Player* fromPlayer);
     void QueueChatResponse(const ChatQueuedReply reply);
+    // Until when this bot ignores what other random bots say in chat. Read and written on the speaker's
+    // thread as well as the bot's own.
+    time_t GetChatPausedUntil() const { return chatPausedUntil.load(std::memory_order_relaxed); }
+    void SetChatPausedUntil(time_t until) { chatPausedUntil.store(until, std::memory_order_relaxed); }
     void HandleBotOutgoingPacket(WorldPacket const& packet);
     void HandleMasterIncomingPacket(WorldPacket const& packet);
     void HandleMasterOutgoingPacket(WorldPacket const& packet);
@@ -563,7 +571,7 @@ public:
     bool HasPlayerNearby(float range = sPlayerbotAIConfig.reactDistance);
     bool AllowActive(ActivityType activityType);
     bool AllowActivity(ActivityType activityType = ALL_ACTIVITY, bool checkNow = false);
-    bool IsActivityAllowedCached() const { return allowActive[ALL_ACTIVITY]; }
+    bool IsActivityAllowedCached() const { return allowActive[ALL_ACTIVITY].load(std::memory_order_relaxed); }
     uint32 AutoScaleActivity(uint32 mod);
 
     // Check if player is safe to use.
@@ -630,6 +638,7 @@ private:
     void UpdateAIGroupMaster();
     Item* FindItemInInventory(std::function<bool(ItemTemplate const*)> checkItem) const;
     void HandleCommands();
+    void QueueChatCommand(ChatCommandHolder const& command);
     void HandleCommand(uint32 type, std::string const& text, Player& fromPlayer, const uint32 lang = LANG_UNIVERSAL);
     inline bool IsValidUnit(Unit const* unit) const
     {
@@ -649,8 +658,12 @@ protected:
     Engine* engines[BOT_STATE_MAX];
     BotState currentState;
     ChatHelper chatHelper;
+    // chatCommands and chatReplies are filled from the world thread and other bots' map threads too: chatMutex
+    // guards both, and is never held while a command or a reply runs.
+    std::mutex chatMutex;
     std::list<ChatCommandHolder> chatCommands;
     std::list<ChatQueuedReply> chatReplies;
+    std::atomic<time_t> chatPausedUntil{0};
     PacketHandlingHelper botOutgoingPacketHandlers;
     PacketHandlingHelper masterIncomingPacketHandlers;
     PacketHandlingHelper masterOutgoingPacketHandlers;
@@ -664,8 +677,9 @@ protected:
     time_t lastCommandAt = 0;
     bool greeting = false;
     bool MasterWantsThis();
-    static std::set<std::string> unsecuredCommands;
-    bool allowActive[MAX_ACTIVITY_TYPE];
+    static std::set<std::string> const unsecuredCommands;
+    // Atomic: other threads read the cached answer (IsActivityAllowedCached) while this bot refreshes it.
+    std::atomic<bool> allowActive[MAX_ACTIVITY_TYPE];
     time_t allowActiveCheckTimer[MAX_ACTIVITY_TYPE];
     bool inCombat = false;
     BotCheatMask cheatMask = BotCheatMask::none;

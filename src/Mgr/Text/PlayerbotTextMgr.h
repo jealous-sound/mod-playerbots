@@ -8,6 +8,7 @@
 #define PLAYERBOTS_PLAYERBOTTEXTMGR_H
 
 #include "Common.h"
+#include <atomic>
 #include <map>
 #include <vector>
 
@@ -89,7 +90,7 @@ private:
     {
         for (uint8 i = 0; i < TOTAL_LOCALES; ++i)
         {
-            botTextLocalePriority[i] = 0;
+            botTextLocalePriority[i].store(0, std::memory_order_relaxed);
         }
     };
     ~PlayerbotTextMgr() = default;
@@ -102,7 +103,8 @@ private:
 
     std::map<std::string, std::vector<BotTextEntry>> botTexts;
     std::map<std::string, uint32> botTextChance;
-    uint32 botTextLocalePriority[TOTAL_LOCALES];
+    // GetLocalePriority resets it from map threads when no player is online.
+    std::atomic<uint32> botTextLocalePriority[TOTAL_LOCALES];
 };
 
 #endif
