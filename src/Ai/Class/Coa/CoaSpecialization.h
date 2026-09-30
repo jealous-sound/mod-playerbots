@@ -121,6 +121,10 @@ bool CoaLfgHeard(Player* player, std::string const& message, Channel* channel);
 // Whether `bot` was offered to `inviter` by "lfg bot" and the offer still holds; the offer is used up.
 bool CoaLfgTakeOffer(Player* bot, Player* inviter);
 
+// Whether `bot` has an "lfg bot" offer that still holds, to anyone (the offer is kept). Any thread (LfgLock). The CoA
+// activity director leaves such bots alone.
+bool CoaLfgIsOffered(ObjectGuid bot);
+
 // Takes a bot out of the battleground and Dungeon Finder queues it joined by itself, so its new group can
 // queue for anything ("You cannot queue for a dungeon while using battlegrounds or arenas", PTR 28/09).
 void CoaLeaveBattlegroundQueues(Player* bot);

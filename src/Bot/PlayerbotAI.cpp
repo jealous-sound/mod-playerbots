@@ -6,6 +6,8 @@
 
 #include "PlayerbotAI.h"
 #include "CoaSpecialization.h"
+#include "ActivityDuelRules.h"
+#include "ActivityRegistry.h"
 #include "AiFactory.h"
 #include "BudgetValues.h"
 #include "ChannelMgr.h"
@@ -473,6 +475,11 @@ void PlayerbotAI::UpdateAIGroupMaster()
         return;
     }
 
+    // CoA activity: a participant keeps the master the director gave it (its bot leader; none for the leader): a real
+    // player joining the group does not take over. One relaxed load with activities off.
+    if (ActivityRegistry::IsParticipant(bot->GetGUID().GetCounter()))
+        return;
+
     // Bot in BG, but master no longer part of a group: release master
     // Exclude alt and addclass bots as they rely on current (real player) master, security-wise.
     if (bot->InBattleground() && sRandomPlayerbotMgr.IsRandomBot(bot) && master && !master->GetGroup())
@@ -590,6 +597,10 @@ void PlayerbotAI::UpdateAIInternal([[maybe_unused]] uint32 elapsed, bool minimal
     if (!bot->GetMap())
         return; // instances are created and destroyed on demand
 
+    // CoA activity: this bot joined or left an activity in the last director tick (never set with activities off).
+    if (TakeCoaStrategiesDirty())
+        ResetStrategies();
+
     ClearStaleFall();
     RejoinLfgDungeon();
 
@@ -618,6 +629,10 @@ void PlayerbotAI::UpdateAIInternal([[maybe_unused]] uint32 elapsed, bool minimal
 
     for (ChatQueuedReply& reply : dueReplies)
         ChatReplyAction::ChatReplyDo(bot, reply.m_type, reply.m_guid1, reply.m_msg, reply.m_chanName, reply.m_name);
+
+    // CoA activity: a duel accept waiting for the brain (never set with activities off).
+    if (HasCoaDuelPending())
+        ActivityDuelRules::Continue(this);
 
     HandleCommands();
 
@@ -4886,6 +4901,10 @@ bool PlayerbotAI::AllowActive(ActivityType activityType)
     if (!bot || !bot->GetSession() || !bot->IsInWorld() || bot->IsBeingTeleported() ||
         bot->GetSession()->isLogingOut() || bot->IsDuringRemoveFromWorld())
         return false;
+
+    // CoA activity: participants stay active whatever the rotation (CoaActivity.MaxParticipants bounds them).
+    if (ActivityRegistry::IsParticipant(bot->GetGUID().GetCounter()))
+        return true;
 
     // always allow packet handling (e.g. group invites, trade, loot, friend requests etc)
     if (activityType == PACKET_ACTIVITY)

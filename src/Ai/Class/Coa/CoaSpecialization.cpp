@@ -12,6 +12,7 @@
 #include "Config.h"
 #include "ScriptMgr.h"
 
+#include "ActivityRegistry.h"
 #include "BattlegroundMgr.h"
 #include "LFGMgr.h"
 #include "Group.h"
@@ -514,6 +515,10 @@ Player* FindCoaRecruit(Player* master, CoaRole role, uint8 classId, std::set<Obj
 
         // Already offered to another player (lfg bots) or otherwise set aside by the caller.
         if (skip.count(bot->GetGUID()))
+            continue;
+
+        // Held by a CoA activity (a participant, or being asked to join one).
+        if (ActivityRegistry::IsHeld(bot->GetGUID().GetCounter()))
             continue;
 
         // The bot is added to the group directly, past the invitation checks, so the faction rule
@@ -1063,6 +1068,13 @@ bool CoaLfgTakeOffer(Player* bot, Player* inviter)
         return false;
     LfgOffers.erase(offer);
     return true;
+}
+
+bool CoaLfgIsOffered(ObjectGuid bot)
+{
+    std::lock_guard<std::mutex> guard(LfgLock);
+    auto const offer = LfgOffers.find(bot);
+    return offer != LfgOffers.end() && offer->second.until >= time(nullptr);
 }
 
 namespace

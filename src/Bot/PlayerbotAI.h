@@ -431,6 +431,21 @@ public:
         }
         // `view` holds the previous snapshot now: released here, outside the lock.
     }
+    // CoA activity (M4). The director sets the flag in CoaWorldScript::OnUpdate when this bot's activity membership
+    // changed; the bot's map thread runs ResetStrategies() at the start of its next UpdateAIInternal (AiFactory then
+    // reads the registry). Never set with CoaActivity off: the check costs one relaxed load.
+    void SetCoaStrategiesDirty() { coaStrategiesDirty.store(true, std::memory_order_relaxed); }
+    bool TakeCoaStrategiesDirty()
+    {
+        if (!coaStrategiesDirty.load(std::memory_order_relaxed))
+            return false;
+        coaStrategiesDirty.store(false, std::memory_order_relaxed);
+        return true;
+    }
+    // A duel accept waits for the brain (ActivityDuelRules): set by AcceptDuelAction, cleared by
+    // ActivityDuelRules::Continue, both on the bot's map thread; UpdateAIInternal calls Continue while it is set.
+    void SetCoaDuelPending(bool pending) { coaDuelPending.store(pending, std::memory_order_relaxed); }
+    bool HasCoaDuelPending() const { return coaDuelPending.load(std::memory_order_relaxed); }
     void HandleBotOutgoingPacket(WorldPacket const& packet);
     void HandleMasterIncomingPacket(WorldPacket const& packet);
     void HandleMasterOutgoingPacket(WorldPacket const& packet);
@@ -691,6 +706,8 @@ protected:
     uint64 coaEpoch = 0;                              // CoaEpoch::Next() in PlayerbotAI(Player*); 0 otherwise
     mutable std::mutex memoryViewLock;                // guards memoryView only
     std::shared_ptr<MemoryView const> memoryView;    // CoaMemoryMgr's latest snapshot of this bot's memory
+    std::atomic<bool> coaStrategiesDirty{false};      // the activity director changed this bot's membership
+    std::atomic<bool> coaDuelPending{false};          // a duel accept waits for the brain
     PacketHandlingHelper botOutgoingPacketHandlers;
     PacketHandlingHelper masterIncomingPacketHandlers;
     PacketHandlingHelper masterOutgoingPacketHandlers;

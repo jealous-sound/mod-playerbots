@@ -40,6 +40,10 @@ char const* BrainUseName(BrainUse use)
             return "probe";
         case BrainUse::Test:
             return "test";
+        case BrainUse::Duel:
+            return "duel";
+        case BrainUse::Organizer:
+            return "organizer";
         default:
             return "unknown";
     }

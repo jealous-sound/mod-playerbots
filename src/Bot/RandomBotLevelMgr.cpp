@@ -9,6 +9,7 @@
  */
 
 #include "RandomBotLevelMgr.h"
+#include "ActivityRegistry.h"
 #include "ArenaTeamMgr.h"
 #include "DatabaseEnv.h"
 #include "LFGMgr.h"
@@ -119,6 +120,10 @@ static bool BotInArenaTeam(Player* bot)
 static bool IsBotSafeForLevelReset(Player* bot)
 {
     if (!bot || !bot->GetSession() || bot->GetSession()->isLogingOut() || bot->IsDuringRemoveFromWorld())
+        return false;
+
+    // Held by a CoA activity: never re-leveled or sent to a starting zone mid-activity.
+    if (ActivityRegistry::IsHeld(bot->GetGUID().GetCounter()))
         return false;
 
     if (!bot->IsInWorld())
@@ -895,6 +900,10 @@ uint8 RandomBotLevelMgr::ComputeResetChance(uint8 level) const
 // whichever is higher) via a full PlayerbotFactory randomize.
 void RandomBotLevelMgr::ResetBot(Player* player, uint8 currentLevel)
 {
+    // Held by a CoA activity: never re-leveled mid-activity (a later login, level-up or played-time check retries).
+    if (ActivityRegistry::IsHeld(player->GetGUID().GetCounter()))
+        return;
+
     uint8 levelToResetTo = sPlayerbotAIConfig.resetBotLevelResetTo;
 
     uint8 dkMinLevel = static_cast<uint8>(sWorld->getIntConfig(CONFIG_START_HEROIC_PLAYER_LEVEL));
@@ -918,6 +927,10 @@ void RandomBotLevelMgr::ResetBot(Player* player, uint8 currentLevel)
 // level, whichever is higher) via a full PlayerbotFactory randomize.
 void RandomBotLevelMgr::SkipBotLevel(Player* player, uint8 currentLevel)
 {
+    // Held by a CoA activity: never re-leveled mid-activity (a later login or level-up retries).
+    if (ActivityRegistry::IsHeld(player->GetGUID().GetCounter()))
+        return;
+
     uint8 levelToSkipTo = sPlayerbotAIConfig.resetBotLevelSkipTo;
 
     uint8 dkMinLevel = static_cast<uint8>(sWorld->getIntConfig(CONFIG_START_HEROIC_PLAYER_LEVEL));
@@ -950,6 +963,10 @@ void RandomBotLevelMgr::RunResetPlayedTimeCheck()
         if (!candidate || !candidate->IsInWorld())
             continue;
         if (!sRandomPlayerbotMgr.IsRandomBot(candidate))
+            continue;
+
+        // Held by a CoA activity: retried on a later check, after the activity ends.
+        if (ActivityRegistry::IsHeld(candidate->GetGUID().GetCounter()))
             continue;
 
         if (IsNameInExcludeList(candidate, sPlayerbotAIConfig.resetBotLevelExcludeNames))
@@ -1081,6 +1098,10 @@ void RandomBotLevelMgr::OnBotLogin(Player* player)
 void RandomBotLevelMgr::OnBotLevelChanged(Player* player, uint8 oldLevel)
 {
     if (!sRandomPlayerbotMgr.IsRandomBot(player))
+        return;
+
+    // Held by a CoA activity: never re-leveled mid-activity (a later login or played-time check applies the rules).
+    if (ActivityRegistry::IsHeld(player->GetGUID().GetCounter()))
         return;
 
     // Only react to a natural level up.

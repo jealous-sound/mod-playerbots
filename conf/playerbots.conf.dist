@@ -1884,7 +1884,8 @@ AiPlayerbot.CoaHooks.BusMax = 20000
 #    within AiPlayerbot.CoaVoice.DecisionTimeoutMs, or any error, leaves the message to the usual
 #    rules: a slow or failing engine never silences the bots.
 #    Off by default. With Enable = 0 no thread is started, no connection is opened and the voice
-#    director works exactly as without it. It needs AiPlayerbot.CoaVoice.Enable = 1 to be used.
+#    director works exactly as without it. It needs AiPlayerbot.CoaVoice.Enable = 1 to be used,
+#    or AiPlayerbot.CoaActivity.Enable = 1 for Use.Duel and Use.Organizer.
 #    Privacy: hosted engines (openrouter, typesafe) get features of a message only (language,
 #    intent, length, level bands, the bots' class and level), never a player's name or words,
 #    unless Privacy.SendPlayerText = 1 and the engine's own SendPlayerText = 1. Players can stop
@@ -1968,8 +1969,9 @@ AiPlayerbot.CoaBrain.MaxRequestsPerMinute = 120
 #    AiPlayerbot.CoaBrain.LaneStopAt
 #        Description: Three percentages of MaxUsdPerDay (0 to 100 each) for the Player, Organizer
 #                     and Ambient lanes: a lane gets no new call once the day's spend reaches its
-#                     share. Player: players' messages and .playerbots brain test; Organizer:
-#                     .playerbots brain probe; Ambient: not used yet.
+#                     share. Player: players' messages, players' duel challenges (Use.Duel) and
+#                     .playerbots brain test; Organizer: the activity director's questions
+#                     (Use.Organizer) and .playerbots brain probe; Ambient: not used yet.
 #        Default:     100,80,50
 
 AiPlayerbot.CoaBrain.LaneStopAt = 100,80,50
@@ -2032,6 +2034,41 @@ AiPlayerbot.CoaBrain.Use.ChatReply = 1
 #                     1 - yes
 
 AiPlayerbot.CoaBrain.Use.Rating = 0
+
+#    AiPlayerbot.CoaBrain.Use.Duel
+#        Description: Whether a bot challenged to a duel by a real player asks the brain whether
+#                     to accept. The player waits at most Duel.DeadlineMs for the answer, then the
+#                     usual rule decides. Needs AiPlayerbot.CoaActivity.Enable = 1 and
+#                     AiPlayerbot.CoaActivity.Duel.Enable = 1; the duel cap applies first. Read
+#                     with the activity settings.
+#        Default:     0 - no: the usual rule (health, and the bots' memory)
+#                     1 - yes
+
+AiPlayerbot.CoaBrain.Use.Duel = 0
+
+#    AiPlayerbot.CoaBrain.Use.Organizer
+#        Description: Whether the activity director asks the brain which activity to start next
+#                     and which bots join it, waiting AiPlayerbot.CoaActivity.BrainDeadlineMs at
+#                     most. Needs AiPlayerbot.CoaActivity.Enable = 1. Read with the activity
+#                     settings.
+#        Default:     0 - no: the dice decide
+#                     1 - yes
+
+AiPlayerbot.CoaBrain.Use.Organizer = 0
+
+#    AiPlayerbot.CoaBrain.Duel.DeadlineMs
+#        Description: With Use.Duel = 1 only. Milliseconds a duel challenge waits for the brain's
+#                     answer (200 to 10000).
+#        Default:     3000
+
+AiPlayerbot.CoaBrain.Duel.DeadlineMs = 3000
+
+#    AiPlayerbot.CoaBrain.Duel.AcceptThreshold
+#        Description: With Use.Duel = 1 only. The brain's probability of "accept" from which the
+#                     bot accepts (0 to 1).
+#        Default:     0.5
+
+AiPlayerbot.CoaBrain.Duel.AcceptThreshold = 0.5
 
 #    AiPlayerbot.CoaBrain.QuestionFile
 #        Description: A JSON file rewording the questions (in English; the options stay the
@@ -2474,6 +2511,373 @@ AiPlayerbot.CoaMemory.RivalDuels = 0
 #                     1 - on
 
 AiPlayerbot.CoaMemory.FriendInvites = 0
+
+#
+#    CoA activities: a director gathers random bots into small group activities near where real
+#    players play. Duel rings: a few bots of a player's faction and levels meet at a duel spot,
+#    duel each other and the players passing by, cheer, then scatter. Gangs: 3 to 5 bots of close
+#    levels form a group led by one of them, roam 2 or 3 zones of their level on their continent
+#    hunting together (PvE), brag, then disband. Bots never lose a duel on purpose.
+#    Off by default. With Enable = 0 nothing runs, the other keys of this block are not read and
+#    the bots behave exactly as without it.
+#    Apply data/sql/playerbots/updates/2026_09_30_03_coa_activity.sql first: without its two
+#    tables activities stay off (one error in the log). The tables keep a short log of each
+#    activity and its members; an activity found running at startup (a crash) is closed, and a
+#    ruleset it gave a bot is put back when that bot is next online.
+#    While a bot takes part, the usual rules leave it alone: it is not logged out by the rotation,
+#    not re-leveled or sent to a starting zone, not revived by the random bot manager (the
+#    director revives it, Revive.AfterSeconds), not taken from its gang by the leave rules, and
+#    not offered to players by the CoA LFG. Real players are never teleported, and join a gang
+#    only with .playerbots activity join and by accepting its group invitation; bots are
+#    teleported only where no real player can see them.
+#    Bots accept and fight at most Duel.MaxAcceptsPerPlayerPerDay duels with one account per UTC
+#    day, so the Hero's Call Board duel quest is not farmed on them. Players stop the bots'
+#    challenges with .playerbots optout duels; declining one leaves that account alone for 30
+#    minutes.
+#    GMs: .playerbots activity list, info <id>, start duel|gang [...], stop <id>|all, pause,
+#    resume, reload and census [hours]. Players: .playerbots activity join [id] (no id: the
+#    nearest activity of their faction and level).
+#    Every AiPlayerbot.CoaActivity.* setting is read again by .reload config, or by .playerbots
+#    activity reload (which applies only this block and AiPlayerbot.CoaBrain.Use.Duel,
+#    Use.Organizer and Duel.*): turning Enable off ends every activity at once, turning a kind off
+#    ends its activities.
+#
+
+#    AiPlayerbot.CoaActivity.Enable
+#        Description: Master switch.
+#        Default:     0 - off
+#                     1 - on
+
+AiPlayerbot.CoaActivity.Enable = 0
+
+#    AiPlayerbot.CoaActivity.TickMs
+#        Description: Milliseconds between two rounds of the director (100 to 10000).
+#        Default:     1000
+
+AiPlayerbot.CoaActivity.TickMs = 1000
+
+#    AiPlayerbot.CoaActivity.ScheduleSeconds
+#        Description: Seconds between two activities started by the director (30 to 86400), give
+#                     or take 20 %. The first one comes about 2 minutes after the start.
+#        Default:     600
+
+AiPlayerbot.CoaActivity.ScheduleSeconds = 600
+
+#    AiPlayerbot.CoaActivity.MaxConcurrent
+#        Description: Activities running at the same time at most (0 to 20), GM starts included.
+#        Default:     2
+#                     0 - none
+
+AiPlayerbot.CoaActivity.MaxConcurrent = 2
+
+#    AiPlayerbot.CoaActivity.MaxParticipants, AiPlayerbot.CoaActivity.MaxParticipantsPercent
+#        Description: Bots in activities (or being asked to join one) at most (0 to 1000), and at
+#                     most this percentage of the random bots online (0 to 100). Participants
+#                     stay active whatever the bots' activity scaling says, so this bounds the
+#                     extra load.
+#        Default:     60, 20
+
+AiPlayerbot.CoaActivity.MaxParticipants = 60
+AiPlayerbot.CoaActivity.MaxParticipantsPercent = 20
+
+#    AiPlayerbot.CoaActivity.SuspendAboveMs, AiPlayerbot.CoaActivity.AbortAboveMs
+#        Description: The load guard, on the longest world update of the current measure (the
+#                     value the bots' activity scaling reads). Above SuspendAboveMs (10 to 10000)
+#                     no activity starts and no player is invited; above AbortAboveMs
+#                     (SuspendAboveMs to 10000) for 60 seconds, the activity with the most bots
+#                     ends, and another one at most every 60 seconds.
+#        Default:     120, 200
+
+AiPlayerbot.CoaActivity.SuspendAboveMs = 120
+AiPlayerbot.CoaActivity.AbortAboveMs = 200
+
+#    AiPlayerbot.CoaActivity.MaxOpsPerTick
+#        Description: Changes to the world per round of the director at most (1 to 1000): group
+#                     creations and additions, invitations, channel posts and lines, teleports,
+#                     revivals. The rest waits for the next rounds.
+#        Default:     20
+
+AiPlayerbot.CoaActivity.MaxOpsPerTick = 20
+
+#    AiPlayerbot.CoaActivity.BotCooldownMinutes
+#        Description: Minutes after a bot leaves an activity before it can be asked to join
+#                     another one (0 to 1440).
+#        Default:     90
+
+AiPlayerbot.CoaActivity.BotCooldownMinutes = 90
+
+#    AiPlayerbot.CoaActivity.AcceptPercent
+#        Description: Chance that a bot asked to join an activity accepts (0 to 100), moved by up
+#                     to 25 points by its sociability and kept between 5 and 95. With
+#                     AiPlayerbot.CoaBrain.Use.Organizer = 1 the brain decides, and this is the
+#                     fallback.
+#        Default:     70
+
+AiPlayerbot.CoaActivity.AcceptPercent = 70
+
+#    AiPlayerbot.CoaActivity.RequireRealPlayerOnline
+#        Description: Whether activities need a real player online (GMs count, bots do not).
+#        Default:     1 - nothing starts without one, and activities not started by a GM end
+#                         after 10 minutes without one
+#                     0 - gangs start with nobody online too (a duel ring is always placed near a
+#                         player)
+
+AiPlayerbot.CoaActivity.RequireRealPlayerOnline = 1
+
+#    AiPlayerbot.CoaActivity.AmbientNearPlayerBrackets
+#        Description: Activities started by the director are placed for a real player online: on
+#                     the player's continent, for the player's faction, in level brackets (1-10,
+#                     11-20, ... 51-60) within this many of the player's (0 to 5).
+#        Default:     1
+
+AiPlayerbot.CoaActivity.AmbientNearPlayerBrackets = 1
+
+#    AiPlayerbot.CoaActivity.Revive.AfterSeconds
+#        Description: Seconds a participant bot stays dead before the director resurrects it at
+#                     half health (5 to 600), then brings it next to its gang's leader or back to
+#                     its duel ring when no real player can see it. Once the activity is over,
+#                     the random bot manager revives dead bots as usual.
+#        Default:     45
+
+AiPlayerbot.CoaActivity.Revive.AfterSeconds = 45
+
+#    AiPlayerbot.CoaActivity.BrainDeadlineMs
+#        Description: With AiPlayerbot.CoaBrain.Use.Organizer = 1 only. Milliseconds the director
+#                     waits for the brain's answers (which activity next, which bots join) before
+#                     rolling the dice (200 to 10000).
+#        Default:     1500
+
+AiPlayerbot.CoaActivity.BrainDeadlineMs = 1500
+
+#    AiPlayerbot.CoaActivity.LogKeepDays
+#        Description: Days the activity log is kept in the database (1 to 3650). A ruleset still
+#                     not put back after that many days (the bot never logged in again) is given
+#                     up.
+#        Default:     30
+
+AiPlayerbot.CoaActivity.LogKeepDays = 30
+
+#    AiPlayerbot.CoaActivity.Weight.Duel, AiPlayerbot.CoaActivity.Weight.Gang
+#        Description: How often the director picks each kind when it starts an activity (0 to
+#                     1000, relative to each other). 0: never started by the director, a GM can
+#                     still start it.
+#        Default:     30, 20
+
+AiPlayerbot.CoaActivity.Weight.Duel = 30
+AiPlayerbot.CoaActivity.Weight.Gang = 20
+
+#
+#    Duel rings. A ring gathers at a duel spot of the faction of a player online, for bots of
+#    the player's levels. Bots challenge each other and, once the ring is set, the players
+#    passing by (a player at most once per Duel.PlayerCooldownMinutes); an unanswered challenge
+#    is withdrawn after 30 seconds. At the end the best duelist speaks and the bots go back to
+#    their own lives.
+#
+
+#    AiPlayerbot.CoaActivity.Duel.Enable
+#        Description: Duel rings. Off, bots also answer duels as without this block (no daily
+#                     cap, no Use.Duel).
+#        Default:     1 - on
+#                     0 - off
+
+AiPlayerbot.CoaActivity.Duel.Enable = 1
+
+#    AiPlayerbot.CoaActivity.Duel.Spots
+#        Description: The duel spots, separated by ";", each as name:team:map:x:y:z:minLevel:
+#                     maxLevel (all on one line), where name is 1 to 24 lower case letters,
+#                     digits or "_", team is alliance or horde, and the levels go from 1 to 255.
+#                     A spot is used for rings of its levels only. A malformed entry is skipped
+#                     with an error in the log; a spot without ground or in an area where duels
+#                     are not allowed is skipped with a warning when first used.
+#                     GMs start a ring at a spot with .playerbots activity start duel <name>.
+#        Default:     (empty) - four spots: orgrimmar_gate:horde:1:1380.0:-4390.0:27.0:10:60;
+#                     ironforge_gate:alliance:0:-5025.0:-820.0:495.0:10:60;
+#                     razor_hill:horde:1:325.0:-4705.0:14.0:1:12;
+#                     goldshire:alliance:0:-9456.0:72.0:56.0:1:12
+#                     Their coordinates are approximate: measure them in game (.gps) and list
+#                     them here.
+
+AiPlayerbot.CoaActivity.Duel.Spots =
+
+#    AiPlayerbot.CoaActivity.Duel.MinBots, AiPlayerbot.CoaActivity.Duel.MaxBots
+#        Description: Bots in a ring: at least MinBots accept to come (2 to 20), at most MaxBots
+#                     (MinBots to 20).
+#        Default:     4, 8
+
+AiPlayerbot.CoaActivity.Duel.MinBots = 4
+AiPlayerbot.CoaActivity.Duel.MaxBots = 8
+
+#    AiPlayerbot.CoaActivity.Duel.Max
+#        Description: Duel rings at the same time at most (0 to 4).
+#        Default:     1
+
+AiPlayerbot.CoaActivity.Duel.Max = 1
+
+#    AiPlayerbot.CoaActivity.Duel.Minutes
+#        Description: Minutes a ring duels once its bots have gathered (5 to 240), give or take
+#                     10 (at least 5).
+#        Default:     30
+
+AiPlayerbot.CoaActivity.Duel.Minutes = 30
+
+#    AiPlayerbot.CoaActivity.Duel.PairCooldownMinutes
+#        Description: Minutes before a bot's challenge matches the same two characters again (0
+#                     to 1440).
+#        Default:     10
+
+AiPlayerbot.CoaActivity.Duel.PairCooldownMinutes = 10
+
+#    AiPlayerbot.CoaActivity.Duel.PlayerCooldownMinutes
+#        Description: Minutes between two bots' challenges to the characters of one player
+#                     account (0 to 1440).
+#        Default:     10
+
+AiPlayerbot.CoaActivity.Duel.PlayerCooldownMinutes = 10
+
+#    AiPlayerbot.CoaActivity.Duel.MaxAcceptsPerPlayerPerDay
+#        Description: Duels bots fight with the characters of one player account per UTC day,
+#                     whoever challenged (0 to 100). Past it, bots decline that account's
+#                     challenges and stop challenging it until the next day: a duel won against a
+#                     bot counts for the Hero's Call Board, which this keeps from being farmed.
+#        Default:     3
+#                     0 - no cap
+
+AiPlayerbot.CoaActivity.Duel.MaxAcceptsPerPlayerPerDay = 3
+
+#    AiPlayerbot.CoaActivity.Duel.PreferCallBoardHolders
+#        Description: Whether bots challenge first the players who hold the Hero's Call Board duel
+#                     quest, and accept their challenges from Duel.CallBoardMinHp health.
+#        Default:     0 - no
+#                     1 - yes
+
+AiPlayerbot.CoaActivity.Duel.PreferCallBoardHolders = 0
+
+#    AiPlayerbot.CoaActivity.Duel.CallBoardMinHp
+#        Description: With Duel.PreferCallBoardHolders = 1 only. Health percentage from which a
+#                     bot accepts the challenge of a player holding the Hero's Call Board duel
+#                     quest (1 to 100), when it is lower than the usual 90.
+#        Default:     60
+
+AiPlayerbot.CoaActivity.Duel.CallBoardMinHp = 60
+
+#    AiPlayerbot.CoaActivity.Duel.Ambient
+#        Description: Whether every random bot without a group and outside activities may
+#                     challenge the players and bots near it too, not only the bots of a duel ring
+#                     (same cooldowns and cap).
+#        Default:     0 - no
+#                     1 - yes
+
+AiPlayerbot.CoaActivity.Duel.Ambient = 0
+
+#
+#    Gangs. The group loots with group loot from uncommon quality. Its leader is a bot and stays
+#    the leader when a player joins; a player still in the group at the end keeps it, with the
+#    lead. Gangs hunt only: no PvP is sought.
+#
+
+#    AiPlayerbot.CoaActivity.Gang.Enable
+#        Description: Gangs.
+#        Default:     1 - on
+#                     0 - off
+
+AiPlayerbot.CoaActivity.Gang.Enable = 1
+
+#    AiPlayerbot.CoaActivity.Gang.MinBots, AiPlayerbot.CoaActivity.Gang.MaxBots
+#        Description: Bots in a gang, its leader included: at least MinBots (2 to 10), at most
+#                     MaxBots (MinBots to 10).
+#        Default:     3, 5
+
+AiPlayerbot.CoaActivity.Gang.MinBots = 3
+AiPlayerbot.CoaActivity.Gang.MaxBots = 5
+
+#    AiPlayerbot.CoaActivity.Gang.Max
+#        Description: Gangs at the same time at most (0 to 10).
+#        Default:     2
+
+AiPlayerbot.CoaActivity.Gang.Max = 2
+
+#    AiPlayerbot.CoaActivity.Gang.Minutes
+#        Description: Minutes a gang roams (10 to 240), give or take 15 (at least 10): three
+#                     quarters of it hunting, the rest for the road.
+#        Default:     45
+
+AiPlayerbot.CoaActivity.Gang.Minutes = 45
+
+#    AiPlayerbot.CoaActivity.Gang.LevelSpread
+#        Description: The members' levels are within this many of their leader's (0 to 10).
+#        Default:     3
+
+AiPlayerbot.CoaActivity.Gang.LevelSpread = 3
+
+#    AiPlayerbot.CoaActivity.PvpRuleset
+#        Description: The CoA ruleset of the gangs' bots. With warmode, a bot in High-Risk or
+#                     Mercenary never takes part, the others get War Mode while in the gang and
+#                     their previous ruleset back when they leave it (after a crash, when they
+#                     are next online). Any other value is read as keep, with an error in the log.
+#        Default:     keep    - the bots keep their own ruleset
+#                     warmode - War Mode during the gang
+
+AiPlayerbot.CoaActivity.PvpRuleset = keep
+
+#
+#    Travel. Bots walk to their activity; a bot too far away, or on another continent, is
+#    teleported, but only while no real player is within 150 yards of it or of where it lands.
+#
+
+#    AiPlayerbot.CoaActivity.Travel.WalkMaxYards
+#        Description: Bots farther than this from where their activity gathers, or on another
+#                     continent, are teleported there (50 to 5000); closer ones walk.
+#        Default:     700
+
+AiPlayerbot.CoaActivity.Travel.WalkMaxYards = 700
+
+#    AiPlayerbot.CoaActivity.Travel.StragglerYards,
+#    AiPlayerbot.CoaActivity.Travel.StragglerSeconds
+#        Description: A gang member farther than StragglerYards from its leader (30 to 2000), or
+#                     a ring bot that far from its ring, for StragglerSeconds (5 to 600) is
+#                     teleported back. A gang leader that gets no closer to its next stop for
+#                     twice StragglerSeconds is teleported nearer to it.
+#        Default:     150, 45
+
+AiPlayerbot.CoaActivity.Travel.StragglerYards = 150
+AiPlayerbot.CoaActivity.Travel.StragglerSeconds = 45
+
+#    AiPlayerbot.CoaActivity.Travel.RallyWaitSeconds
+#        Description: Seconds a gang still gathering waits for a player who just joined it to
+#                     reach the rally point (0 to 3600).
+#        Default:     300
+
+AiPlayerbot.CoaActivity.Travel.RallyWaitSeconds = 300
+
+#    AiPlayerbot.CoaActivity.Travel.GatherTimeoutSeconds
+#        Description: Seconds the bots of an activity have to gather (30 to 3600). Then the late
+#                     ones are dropped: a ring goes on with 2 bots or more, a gang with 2 bots,
+#                     or 1 and a player.
+#        Default:     600
+
+AiPlayerbot.CoaActivity.Travel.GatherTimeoutSeconds = 600
+
+#
+#    Chat. Bots of an activity speak in /say around them, and a gang's leader whispers to a player
+#    who joins; a new duel ring is also announced in a channel.
+#
+
+#    AiPlayerbot.CoaActivity.Chat.Channel
+#        Description: Where a ring bot announces a new duel ring, when a real player is in the
+#                     zone of its spot. Any other value is read as zone, with an error in the log.
+#        Default:     zone  - the zone channel (AiPlayerbot.ZoneChannelId)
+#                     world - the realm-wide channel (AiPlayerbot.BroadcastWorldChannelName)
+#                     none  - nowhere
+
+AiPlayerbot.CoaActivity.Chat.Channel = zone
+
+#    AiPlayerbot.CoaActivity.Chat.MaxPosts, AiPlayerbot.CoaActivity.Chat.MinGapSeconds
+#        Description: Channel posts per activity at most (0 to 50), and seconds between two of
+#                     them (0 to 3600).
+#        Default:     4, 60
+
+AiPlayerbot.CoaActivity.Chat.MaxPosts = 4
+AiPlayerbot.CoaActivity.Chat.MinGapSeconds = 60
 
 # Quality a looted item must reach to be written to the "playerbots.loot" logger:
 # 3 rare (blue), 4 epic, 5 legendary. Nothing is written unless worldserver.conf

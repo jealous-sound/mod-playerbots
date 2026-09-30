@@ -4,6 +4,10 @@
  * or (at your option) any later version.
  */
 
+#include "ActivityConfig.h"
+#include "ActivityDirector.h"
+#include "ActivityKind.h"
+#include "ActivityTypes.h"
 #include "BattleGroundTactics.h"
 #include "BrainAdmin.h"
 #include "BrainConfig.h"
@@ -16,6 +20,7 @@
 #include "CoaPlayerPrefs.h"
 #include "CoaSpecialization.h"
 #include "CoaVoiceDirector.h"
+#include "Config.h"
 #include "GuildTaskMgr.h"
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
@@ -79,6 +84,18 @@ public:
             {"mine", HandleMemoryMineCommand, SEC_PLAYER, Console::No},
         };
 
+        static ChatCommandTable playerbotsActivityCommandTable = {
+            {"list", HandleActivityListCommand, SEC_GAMEMASTER, Console::Yes},
+            {"info", HandleActivityInfoCommand, SEC_GAMEMASTER, Console::Yes},
+            {"start", HandleActivityStartCommand, SEC_GAMEMASTER, Console::Yes},
+            {"stop", HandleActivityStopCommand, SEC_GAMEMASTER, Console::Yes},
+            {"pause", HandleActivityPauseCommand, SEC_GAMEMASTER, Console::Yes},
+            {"resume", HandleActivityResumeCommand, SEC_GAMEMASTER, Console::Yes},
+            {"reload", HandleActivityReloadCommand, SEC_GAMEMASTER, Console::Yes},
+            {"census", HandleActivityCensusCommand, SEC_GAMEMASTER, Console::Yes},
+            {"join", HandleActivityJoinCommand, SEC_PLAYER, Console::No},
+        };
+
         static ChatCommandTable playerbotsCommandTable = {
             {"bot", HandlePlayerbotCommand, SEC_PLAYER, Console::No},
             {"gtask", HandleGuildTaskCommand, SEC_GAMEMASTER, Console::Yes},
@@ -92,6 +109,7 @@ public:
             {"voice", playerbotsVoiceCommandTable},
             {"brain", playerbotsBrainCommandTable},
             {"memory", playerbotsMemoryCommandTable},
+            {"activity", playerbotsActivityCommandTable},
         };
 
         static ChatCommandTable commandTable = {
@@ -482,6 +500,167 @@ public:
     {
         SendBrainLine(handler, "Usage: .playerbots memory show <bot> [player]|forget <bot> <player>|wipe <bot>|"
                                "purge <character or #account>|stats|mine [page]");
+        return true;
+    }
+
+    // .playerbots activity ...: the activity director's (ActivityDirector). Chat and console commands run on the
+    // world thread, where the director lives. GM lines are English and go through SendBrainLine ('|' doubled).
+    static bool HandleActivityListCommand(ChatHandler* handler, char const* /*args*/)
+    {
+        return SendBrainLines(handler, ActivityDirector::Instance().List());
+    }
+
+    // info <id>
+    static bool HandleActivityInfoCommand(ChatHandler* handler, char const* args)
+    {
+        std::vector<std::string> const words = BrainWords(args);
+        uint32 id = 0;
+        if (words.size() != 1 || !ParseActivityNumber(words[0], 1, ACTIVITY_MAX_ID, id))
+            return SendActivityUsage(handler);
+        return SendBrainLines(handler, ActivityDirector::Instance().Info(id));
+    }
+
+    // start duel [spot] [alliance|horde] [level] [size], start gang [alliance|horde] [level] [size]: the words in
+    // any order; the first number is the level, the second the size.
+    static bool HandleActivityStartCommand(ChatHandler* handler, char const* args)
+    {
+        std::vector<std::string> words = BrainWords(args);
+        for (std::string& word : words)
+            word = AsciiLower(word);
+        std::optional<ActivityKindId> const kind = words.empty() ? std::nullopt : ActivityKindFromName(words[0]);
+        if (!kind)
+            return SendActivityUsage(handler);
+
+        ActivityStartRequest request;
+        request.kind = *kind;
+        uint32 numbers = 0;
+        for (std::size_t i = 1; i < words.size(); ++i)
+        {
+            std::string const& word = words[i];
+            uint32 number = 0;
+            if (word == "alliance" || word == "horde")
+            {
+                if (request.team)
+                    return SendActivityUsage(handler);
+                request.team = uint8(word == "alliance" ? TEAM_ALLIANCE : TEAM_HORDE);
+            }
+            else if (word.find_first_not_of("0123456789") == std::string::npos)
+            {
+                // Digits alone are a level or a size, never a spot's name.
+                if (numbers >= 2 || !ParseActivityNumber(word, 0, 255, number))
+                    return SendActivityUsage(handler);
+                if (numbers++ == 0)
+                    request.level = uint8(number);
+                else
+                    request.size = number;
+            }
+            else if (*kind == ActivityKindId::Duel && request.target.empty())
+                request.target = word;
+            else
+                return SendActivityUsage(handler);
+        }
+
+        Player* const gmPlayer = handler->GetSession() ? handler->GetSession()->GetPlayer() : nullptr;
+        return SendBrainLines(handler, ActivityDirector::Instance().Start(std::move(request), gmPlayer));
+    }
+
+    // stop <id>|all
+    static bool HandleActivityStopCommand(ChatHandler* handler, char const* args)
+    {
+        std::vector<std::string> const words = BrainWords(args);
+        uint32 id = 0;
+        if (words.size() != 1 ||
+            (AsciiLower(words[0]) != "all" && !ParseActivityNumber(words[0], 1, ACTIVITY_MAX_ID, id)))
+            return SendActivityUsage(handler);
+        return SendBrainLines(handler, ActivityDirector::Instance().Stop(id));
+    }
+
+    static bool HandleActivityPauseCommand(ChatHandler* handler, char const* /*args*/)
+    {
+        SendBrainLine(handler, ActivityDirector::Instance().Pause());
+        return true;
+    }
+
+    static bool HandleActivityResumeCommand(ChatHandler* handler, char const* /*args*/)
+    {
+        SendBrainLine(handler, ActivityDirector::Instance().Resume());
+        return true;
+    }
+
+    // reload: the config files again, then only AiPlayerbot.CoaActivity.* (and the brain keys it reads) applied, as
+    // CoaWorldScript::OnAfterConfigLoad does for them; the rest waits for .reload config.
+    static bool HandleActivityReloadCommand(ChatHandler* handler, char const* /*args*/)
+    {
+        if (!sConfigMgr->Reload())
+        {
+            SendBrainLine(handler, "could not reload the config files");
+            return true;
+        }
+
+        std::shared_ptr<ActivityConfig const> const config = ActivityConfig::Load();
+        ActivityConfig::Publish(config);
+        // The duel rules read the players' opt-outs, which nothing loaded while voice and memory are off.
+        if (config->enable)
+            CoaPlayerPrefs::Instance().LoadAsync();
+        ActivityDirector::Instance().OnConfigReload();
+        SendBrainLine(handler, "AiPlayerbot.CoaActivity.* reloaded (other settings wait for .reload config)");
+        return true;
+    }
+
+    // census [hours]: the director clamps the hours (1 to 168).
+    static bool HandleActivityCensusCommand(ChatHandler* handler, char const* args)
+    {
+        std::vector<std::string> const words = BrainWords(args);
+        uint32 hours = 24;
+        if (words.size() > 1 || (words.size() == 1 && !ParseActivityNumber(words[0], 1, 100000, hours)))
+            return SendActivityUsage(handler);
+        return SendBrainLines(handler, ActivityDirector::Instance().Census(hours));
+    }
+
+    // join [id]: players join an activity of their faction and level; no id picks the nearest one. The answer is a
+    // localized line (coa_act_join_*).
+    static bool HandleActivityJoinCommand(ChatHandler* handler, char const* args)
+    {
+        WorldSession* const session = handler->GetSession();
+        Player* const player = session ? session->GetPlayer() : nullptr;
+        if (!player)
+            return false;
+
+        std::vector<std::string> const words = BrainWords(args);
+        uint32 id = 0;
+        if (words.size() > 1 || (words.size() == 1 && !ParseActivityNumber(words[0], 1, ACTIVITY_MAX_ID, id)))
+        {
+            SendBrainLine(handler, VoiceText("coa_act_join_usage",
+                                             "Usage: .playerbots activity join [id] (no id: the nearest one)"));
+            return true;
+        }
+
+        std::string const line = ActivityDirector::Instance().Join(player, id);
+        if (!line.empty())
+            SendBrainLine(handler, line);
+        return true;
+    }
+
+    // Activity ids fit the playerbots_coa_activity `id` column (INT UNSIGNED); nine digits are plenty.
+    static constexpr uint32 ACTIVITY_MAX_ID = 999999999;
+
+    // Digits only, from `lowest` to `highest`.
+    static bool ParseActivityNumber(std::string const& word, uint32 lowest, uint32 highest, uint32& value)
+    {
+        if (word.empty() || word.size() > 9 || word.find_first_not_of("0123456789") != std::string::npos)
+            return false;
+        uint32 const number = uint32(std::stoul(word));
+        if (number < lowest || number > highest)
+            return false;
+        value = number;
+        return true;
+    }
+
+    static bool SendActivityUsage(ChatHandler* handler)
+    {
+        SendBrainLine(handler, "Usage: .playerbots activity list|info <id>|start duel [spot] [alliance|horde] [level] "
+                               "[size]|start gang [alliance|horde] [level] [size]|stop <id>|all|pause|resume|reload|"
+                               "census [hours]|join [id]");
         return true;
     }
 

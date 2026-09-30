@@ -1,5 +1,5 @@
--- CoA voice (M1) and memory (M3): the lines bots answer players with, the lines of the bots' memory, and the
--- texts of the opt-out and memory commands.
+-- CoA voice (M1), memory (M3) and activities (M4): the lines bots answer players with, the lines of the bots'
+-- memory and activities, and the texts of the opt-out, memory and activity commands.
 --
 -- Director rows (coa_reply_*, coa_deny_*, coa_emote_*): 8 per name, English in `text`, French in
 -- `text_loc2`. They are read only when AiPlayerbot.CoaVoice.Enable = 1; the director picks the rows of
@@ -23,19 +23,33 @@
 --   %groups %trades), and %events (the list of dated kinds) in coa_mem_mine_events.
 --   coa_mem_mine_axes and coa_mem_mine_counters, ten placeholders each, are the only rows over 160 bytes
 --   before filling (system lines, never said in chat); filled with numbers they are shorter.
+-- Activity rows (coa_act_*, M4); the bot lines are said only with AiPlayerbot.CoaActivity.Enable = 1, and the
+-- first row of each name carries the English default the code falls back to:
+--   coa_act_duel_lfm       8, %area in every row, %zone optional (a ring opens: zone or world channel)
+--   coa_act_duel_open      8, %area optional (a ring bot in /say as the duels begin)
+--   coa_act_duel_champion  8, %wins in every row (the ring's best duelist at the end)
+--   coa_act_duel_close     8 (another ring bot at the end)
+--   coa_act_gang_form      8, %gang and %zone in every row (the gang's leader once the group formed)
+--   coa_act_gang_move      8, %zone in every row (the leader leaving for the next zone)
+--   coa_act_gang_brag      8, %gang in every row, %zone and %minutes optional (the leader at the end)
+--   coa_act_gang_name      8 gang names used as %gang: no sentence, no placeholder, under 32 bytes
+--   coa_act_join_where     8, %zone in every row, %gang optional (whispered by the leader to a player who joined)
+--   coa_act_off, coa_act_join_*: 1 per name, sent by .playerbots activity join; %leader %gang in
+--   coa_act_join_invited, %area %zone in coa_act_join_ring, %min %max in coa_act_join_level.
 --
 -- Rules for new lines: utf8 (3-byte) characters only, no emoji; plain apostrophes doubled; no pipe, no
 -- at sign, no link; never start a line with . ! + - #; under 160 bytes before filling. French avoids
 -- gendered agreement for the speaker and the listener (neither gender is known here), and no line
 -- says or implies that the speaker is a program or promises something the bot will not do.
 --
--- Ids 30000-30799: voice 30000-30449 (reply 30000-30159, deny 30160-30239, emote 30240-30399, system
+-- Ids 30000-31499: voice 30000-30449 (reply 30000-30159, deny 30160-30239, emote 30240-30399, system
 -- 30400-30449), 30450-30499 spare; memory bot lines 30500-30563, 30564-30599 spare; memory system rows
--- 30600-30635, 30636-30799 spare. Re-runnable: the deletes below touch only coa_* rows, by id block (to drop
--- renamed or removed lines) and by name. The file ends by moving the table's AUTO_INCREMENT to 30800, so
--- an insert without an id gets 30800 or above and never lands in this block.
+-- 30600-30635, 30636-30799 spare; activity bot lines 30800-30871, 30872-30999 spare; activity system rows
+-- 31000-31009, 31010-31499 spare. Re-runnable: the deletes below touch only coa_* rows, by id block (to drop
+-- renamed or removed lines) and by name. The file ends by moving the table's AUTO_INCREMENT to 31500, so
+-- an insert without an id gets 31500 or above and never lands in this block.
 
-DELETE FROM ai_playerbot_texts WHERE id BETWEEN 30000 AND 30799 AND LEFT(name, 4) = 'coa_';
+DELETE FROM ai_playerbot_texts WHERE id BETWEEN 30000 AND 31499 AND LEFT(name, 4) = 'coa_';
 DELETE FROM ai_playerbot_texts WHERE name IN (
     'coa_reply_greet',
     'coa_reply_bye',
@@ -131,7 +145,26 @@ DELETE FROM ai_playerbot_texts WHERE name IN (
     'coa_mem_kind_kicked_by',
     'coa_mem_kind_traded',
     'coa_mem_kind_boss_kill',
-    'coa_mem_kind_leader_kill'
+    'coa_mem_kind_leader_kill',
+    'coa_act_duel_lfm',
+    'coa_act_duel_open',
+    'coa_act_duel_champion',
+    'coa_act_duel_close',
+    'coa_act_gang_form',
+    'coa_act_gang_move',
+    'coa_act_gang_brag',
+    'coa_act_gang_name',
+    'coa_act_join_where',
+    'coa_act_off',
+    'coa_act_join_none',
+    'coa_act_join_invited',
+    'coa_act_join_ring',
+    'coa_act_join_full',
+    'coa_act_join_grouped',
+    'coa_act_join_faction',
+    'coa_act_join_level',
+    'coa_act_join_already',
+    'coa_act_join_usage'
 );
 
 INSERT INTO `ai_playerbot_texts`
@@ -1005,7 +1038,191 @@ VALUES
     (30634, 'coa_mem_kind_boss_kill', 'a boss beaten together', 0, 0,
      '', 'boss vaincu ensemble', '', '', '', '', '', ''),
     (30635, 'coa_mem_kind_leader_kill', 'a faction leader beaten together', 0, 0,
-     '', 'chef de faction vaincu ensemble', '', '', '', '', '', '');
+     '', 'chef de faction vaincu ensemble', '', '', '', '', '', ''),
 
--- The explicit ids push the counter to 30636, inside the block; move it past (never below max(id) + 1).
-ALTER TABLE `ai_playerbot_texts` AUTO_INCREMENT = 30800;
+    -- coa_act_duel_lfm
+    (30800, 'coa_act_duel_lfm', 'Duels at %area, come and test your skills!', 0, 0,
+     '', 'Duels à %area, venez tester vos talents !', '', '', '', '', '', ''),
+    (30801, 'coa_act_duel_lfm', 'Duel ring near %area in %zone. Come watch or join in!', 0, 0,
+     '', 'Cercle de duels vers %area, %zone. Venez regarder ou participer !', '', '', '', '', '', ''),
+    (30802, 'coa_act_duel_lfm', 'We are dueling near %area, anyone care to try?', 0, 0,
+     '', 'On fait des duels vers %area, quelqu''un veut essayer ?', '', '', '', '', '', ''),
+    (30803, 'coa_act_duel_lfm', 'Friendly duels near %area. Bring your best moves!', 0, 0,
+     '', 'Duels amicaux vers %area. Sortez vos meilleures techniques !', '', '', '', '', '', ''),
+    (30804, 'coa_act_duel_lfm', 'Looking for duel partners near %area, come by!', 0, 0,
+     '', 'On cherche des adversaires en duel vers %area, passez nous voir !', '', '', '', '', '', ''),
+    (30805, 'coa_act_duel_lfm', 'Duels starting near %area, all in good fun!', 0, 0,
+     '', 'Les duels commencent vers %area, dans la bonne humeur !', '', '', '', '', '', ''),
+    (30806, 'coa_act_duel_lfm', 'Who wants to cross blades? We are near %area, %zone.', 0, 0,
+     '', 'Qui veut croiser le fer ? Rendez-vous vers %area, %zone.', '', '', '', '', '', ''),
+    (30807, 'coa_act_duel_lfm', 'Duels near %area. Come and watch, the more the merrier!', 0, 0,
+     '', 'Duels vers %area. Venez regarder, plus on est de fous, plus on rit !', '', '', '', '', '', ''),
+
+    -- coa_act_duel_open
+    (30808, 'coa_act_duel_open', 'Right, who wants a duel?', 0, 0,
+     '', 'Allez, qui veut un duel ?', '', '', '', '', '', ''),
+    (30809, 'coa_act_duel_open', 'Let''s warm up. First duel, anyone?', 0, 0,
+     '', 'On s''échauffe ? Premier duel, quelqu''un ?', '', '', '', '', '', ''),
+    (30810, 'coa_act_duel_open', 'Good place for duels. Who starts?', 0, 0,
+     '', 'Bon endroit pour des duels. Qui commence ?', '', '', '', '', '', ''),
+    (30811, 'coa_act_duel_open', 'Duels here, one at a time!', 0, 0,
+     '', 'Duels ici même, un à la fois !', '', '', '', '', '', ''),
+    (30812, 'coa_act_duel_open', 'Stretch those arms, the duels begin!', 0, 0,
+     '', 'Échauffez-vous, les duels commencent !', '', '', '', '', '', ''),
+    (30813, 'coa_act_duel_open', 'Who dares to face me first?', 0, 0,
+     '', 'Qui ose m''affronter en premier ?', '', '', '', '', '', ''),
+    (30814, 'coa_act_duel_open', 'Fair fights only, and good luck to everyone!', 0, 0,
+     '', 'Des combats loyaux, et bonne chance à tout le monde !', '', '', '', '', '', ''),
+    (30815, 'coa_act_duel_open', 'Duels at %area, starting now!', 0, 0,
+     '', 'Duels vers %area, ça commence maintenant !', '', '', '', '', '', ''),
+
+    -- coa_act_duel_champion
+    (30816, 'coa_act_duel_champion', '%wins wins today. Who is next?', 0, 0,
+     '', '%wins victoires aujourd''hui. À qui le tour ?', '', '', '', '', '', ''),
+    (30817, 'coa_act_duel_champion', 'Wins for me today: %wins. Good fights, everyone!', 0, 0,
+     '', 'Victoires pour moi aujourd''hui : %wins. Beaux combats, tout le monde !', '', '', '', '', '', ''),
+    (30818, 'coa_act_duel_champion', '%wins victories! A day to remember.', 0, 0,
+     '', '%wins victoires ! Une journée à retenir.', '', '', '', '', '', ''),
+    (30819, 'coa_act_duel_champion', 'Duels won: %wins. Thanks for the fights!', 0, 0,
+     '', 'Duels gagnés : %wins. Merci pour les combats !', '', '', '', '', '', ''),
+    (30820, 'coa_act_duel_champion', '%wins wins in the ring today. Come beat me next time!', 0, 0,
+     '', '%wins victoires au cercle aujourd''hui. Revenez me battre la prochaine fois !', '', '', '', '', '', ''),
+    (30821, 'coa_act_duel_champion', 'Score: %wins. A rematch another day?', 0, 0,
+     '', 'Score : %wins. Une revanche un autre jour ?', '', '', '', '', '', ''),
+    (30822, 'coa_act_duel_champion', 'That makes %wins wins. What a day!', 0, 0,
+     '', 'Ça fait %wins victoires. Quelle journée !', '', '', '', '', '', ''),
+    (30823, 'coa_act_duel_champion', '%wins wins. Well fought, everyone!', 0, 0,
+     '', '%wins victoires. Bien joué, tout le monde !', '', '', '', '', '', ''),
+
+    -- coa_act_duel_close
+    (30824, 'coa_act_duel_close', 'That is enough for today. See you next time!', 0, 0,
+     '', 'Bon, on remballe. À la prochaine !', '', '', '', '', '', ''),
+    (30825, 'coa_act_duel_close', 'Good duels, everyone. Time to head out.', 0, 0,
+     '', 'Beaux duels, tout le monde. On se disperse.', '', '', '', '', '', ''),
+    (30826, 'coa_act_duel_close', 'My arms are sore. Until next time!', 0, 0,
+     '', 'J''ai les bras en compote. À la prochaine !', '', '', '', '', '', ''),
+    (30827, 'coa_act_duel_close', 'Thanks for the fights, see you around!', 0, 0,
+     '', 'Merci pour les combats, à plus tard !', '', '', '', '', '', ''),
+    (30828, 'coa_act_duel_close', 'Right, back to adventuring. Take care!', 0, 0,
+     '', 'Allez, retour à l''aventure. Prenez soin de vous !', '', '', '', '', '', ''),
+    (30829, 'coa_act_duel_close', 'That was fun. Same place another day?', 0, 0,
+     '', 'C''était sympa. Même endroit un autre jour ?', '', '', '', '', '', ''),
+    (30830, 'coa_act_duel_close', 'The ring is closed for today. Farewell!', 0, 0,
+     '', 'Le cercle ferme pour aujourd''hui. Au revoir !', '', '', '', '', '', ''),
+    (30831, 'coa_act_duel_close', 'Enough dueling for now. Safe travels!', 0, 0,
+     '', 'Assez de duels pour le moment. Bonne route !', '', '', '', '', '', ''),
+
+    -- coa_act_gang_form
+    (30832, 'coa_act_gang_form', '%gang, with me! We hunt in %zone.', 0, 0,
+     '', '%gang, avec moi ! On chasse du côté de %zone.', '', '', '', '', '', ''),
+    (30833, 'coa_act_gang_form', 'With me, %gang! First stop: %zone.', 0, 0,
+     '', 'Avec moi, %gang ! Première étape : %zone.', '', '', '', '', '', ''),
+    (30834, 'coa_act_gang_form', 'Alright %gang, we are heading to %zone. Stay close!', 0, 0,
+     '', 'Allez %gang, cap sur %zone. On reste ensemble !', '', '', '', '', '', ''),
+    (30835, 'coa_act_gang_form', 'Time to hunt, %gang! We start in %zone.', 0, 0,
+     '', 'L''heure de la chasse, %gang ! On commence par %zone.', '', '', '', '', '', ''),
+    (30836, 'coa_act_gang_form', 'Gear up, %gang. The hunt starts in %zone.', 0, 0,
+     '', 'Équipez-vous, %gang. La chasse commence : %zone.', '', '', '', '', '', ''),
+    (30837, 'coa_act_gang_form', 'Follow me, %gang. %zone awaits!', 0, 0,
+     '', 'Suivez-moi, %gang. En route pour %zone !', '', '', '', '', '', ''),
+    (30838, 'coa_act_gang_form', 'Here we go, %gang! We head for %zone.', 0, 0,
+     '', 'C''est parti, %gang ! On file vers %zone.', '', '', '', '', '', ''),
+    (30839, 'coa_act_gang_form', 'Let''s go, %gang! Plenty to hunt in %zone.', 0, 0,
+     '', 'En avant, %gang ! Il y a de quoi chasser vers %zone.', '', '', '', '', '', ''),
+
+    -- coa_act_gang_move
+    (30840, 'coa_act_gang_move', 'On to %zone!', 0, 0,
+     '', 'Cap sur %zone !', '', '', '', '', '', ''),
+    (30841, 'coa_act_gang_move', 'Next stop: %zone. Follow me!', 0, 0,
+     '', 'Prochaine étape : %zone. Suivez-moi !', '', '', '', '', '', ''),
+    (30842, 'coa_act_gang_move', 'Done here. Heading to %zone.', 0, 0,
+     '', 'Fini ici. On part pour %zone.', '', '', '', '', '', ''),
+    (30843, 'coa_act_gang_move', 'Let''s move on to %zone.', 0, 0,
+     '', 'On continue vers %zone.', '', '', '', '', '', ''),
+    (30844, 'coa_act_gang_move', 'Pack up, we go to %zone.', 0, 0,
+     '', 'On plie bagage, direction %zone.', '', '', '', '', '', ''),
+    (30845, 'coa_act_gang_move', 'This area is cleared. %zone next!', 0, 0,
+     '', 'Le coin est nettoyé. Ensuite : %zone !', '', '', '', '', '', ''),
+    (30846, 'coa_act_gang_move', 'Keep up, we are off to %zone.', 0, 0,
+     '', 'Suivez le rythme, on file vers %zone.', '', '', '', '', '', ''),
+    (30847, 'coa_act_gang_move', 'Time for a change of scenery: %zone.', 0, 0,
+     '', 'Changement de décor : %zone.', '', '', '', '', '', ''),
+
+    -- coa_act_gang_brag
+    (30848, 'coa_act_gang_brag', 'Good hunt, %gang. Nobody stood in our way.', 0, 0,
+     '', 'Belle chasse, %gang. Personne n''a pu nous arrêter.', '', '', '', '', '', ''),
+    (30849, 'coa_act_gang_brag', '%minutes minutes of hunting. Well done, %gang!', 0, 0,
+     '', '%minutes minutes de chasse. Bien joué, %gang !', '', '', '', '', '', ''),
+    (30850, 'coa_act_gang_brag', '%zone will remember %gang!', 0, 0,
+     '', '%zone n''oubliera pas %gang !', '', '', '', '', '', ''),
+    (30851, 'coa_act_gang_brag', 'That was a hunt worth telling. Thanks, %gang!', 0, 0,
+     '', 'Une chasse à raconter. Merci, %gang !', '', '', '', '', '', ''),
+    (30852, 'coa_act_gang_brag', 'Great work, %gang. Time to rest.', 0, 0,
+     '', 'Beau travail, %gang. Place au repos.', '', '', '', '', '', ''),
+    (30853, 'coa_act_gang_brag', 'Nothing in %zone could stop %gang today.', 0, 0,
+     '', 'Rien vers %zone n''a pu arrêter %gang aujourd''hui.', '', '', '', '', '', ''),
+    (30854, 'coa_act_gang_brag', 'Another great outing for %gang. Until next time!', 0, 0,
+     '', 'Encore une belle sortie pour %gang. À la prochaine !', '', '', '', '', '', ''),
+    (30855, 'coa_act_gang_brag', 'What a hunt, %gang! Great work, all of you.', 0, 0,
+     '', 'Quelle chasse, %gang ! Bravo à vous.', '', '', '', '', '', ''),
+
+    -- coa_act_gang_name
+    (30856, 'coa_act_gang_name', 'the Red Boars', 0, 0,
+     '', 'les Sangliers Rouges', '', '', '', '', '', ''),
+    (30857, 'coa_act_gang_name', 'the Grey Wolves', 0, 0,
+     '', 'les Loups Gris', '', '', '', '', '', ''),
+    (30858, 'coa_act_gang_name', 'the Wild Hawks', 0, 0,
+     '', 'les Faucons Sauvages', '', '', '', '', '', ''),
+    (30859, 'coa_act_gang_name', 'the Iron Badgers', 0, 0,
+     '', 'les Blaireaux de Fer', '', '', '', '', '', ''),
+    (30860, 'coa_act_gang_name', 'the Night Owls', 0, 0,
+     '', 'les Hiboux de Minuit', '', '', '', '', '', ''),
+    (30861, 'coa_act_gang_name', 'the Storm Crows', 0, 0,
+     '', 'les Corbeaux de l''Orage', '', '', '', '', '', ''),
+    (30862, 'coa_act_gang_name', 'the Dusty Boots', 0, 0,
+     '', 'les Bottes Poussiéreuses', '', '', '', '', '', ''),
+    (30863, 'coa_act_gang_name', 'the Lucky Foxes', 0, 0,
+     '', 'les Renards Chanceux', '', '', '', '', '', ''),
+
+    -- coa_act_join_where
+    (30864, 'coa_act_join_where', 'Welcome! We are in %zone, come find us.', 0, 0,
+     '', 'Bienvenue ! On est vers %zone, viens nous rejoindre.', '', '', '', '', '', ''),
+    (30865, 'coa_act_join_where', 'Welcome to %gang! We are hunting in %zone.', 0, 0,
+     '', 'Bienvenue parmi %gang ! On chasse vers %zone.', '', '', '', '', '', ''),
+    (30866, 'coa_act_join_where', 'Welcome aboard. Meet us in %zone.', 0, 0,
+     '', 'Bienvenue à bord. Retrouve-nous vers %zone.', '', '', '', '', '', ''),
+    (30867, 'coa_act_join_where', 'Good to have you! We are around %zone, catch up when you can.', 0, 0,
+     '', 'Ça fait plaisir ! On est vers %zone, rejoins-nous dès que possible.', '', '', '', '', '', ''),
+    (30868, 'coa_act_join_where', 'Hey, welcome to the group. We are in %zone.', 0, 0,
+     '', 'Salut, bienvenue dans le groupe. On est vers %zone.', '', '', '', '', '', ''),
+    (30869, 'coa_act_join_where', 'Welcome! Head to %zone, that is where we hunt.', 0, 0,
+     '', 'Bienvenue ! Viens vers %zone, c''est là qu''on chasse.', '', '', '', '', '', ''),
+    (30870, 'coa_act_join_where', 'Nice, reinforcements! Find us in %zone.', 0, 0,
+     '', 'Super, du renfort ! Retrouve-nous vers %zone.', '', '', '', '', '', ''),
+    (30871, 'coa_act_join_where', 'Welcome to %gang. Our hunting ground: %zone.', 0, 0,
+     '', 'Bienvenue chez %gang. Notre terrain de chasse : %zone.', '', '', '', '', '', ''),
+
+    -- coa_act_* system rows: .playerbots activity join, 1 row each
+    (31000, 'coa_act_off', 'Bot activities are off on this realm.', 0, 0,
+     '', 'Les activités des bots sont désactivées sur ce royaume.', '', '', '', '', '', ''),
+    (31001, 'coa_act_join_none', 'No bot activity you can join right now.', 0, 0,
+     '', 'Aucune activité de bots à rejoindre pour le moment.', '', '', '', '', '', ''),
+    (31002, 'coa_act_join_invited', '%leader invites you to %gang: accept the group invitation.', 0, 0,
+     '', '%leader vous invite chez %gang : acceptez l''invitation de groupe.', '', '', '', '', '', ''),
+    (31003, 'coa_act_join_ring', 'The duel ring is at %area (%zone): come and duel.', 0, 0,
+     '', 'Le cercle de duels est vers %area (%zone) : venez faire des duels.', '', '', '', '', '', ''),
+    (31004, 'coa_act_join_full', 'That group is full.', 0, 0,
+     '', 'Ce groupe est complet.', '', '', '', '', '', ''),
+    (31005, 'coa_act_join_grouped', 'Leave your group first.', 0, 0,
+     '', 'Quittez d''abord votre groupe.', '', '', '', '', '', ''),
+    (31006, 'coa_act_join_faction', 'That activity is for the other faction.', 0, 0,
+     '', 'Cette activité est réservée à l''autre faction.', '', '', '', '', '', ''),
+    (31007, 'coa_act_join_level', 'That activity is for levels %min to %max.', 0, 0,
+     '', 'Cette activité est pour les niveaux %min à %max.', '', '', '', '', '', ''),
+    (31008, 'coa_act_join_already', 'You are already in that activity.', 0, 0,
+     '', 'Vous participez déjà à cette activité.', '', '', '', '', '', ''),
+    (31009, 'coa_act_join_usage', 'Usage: .playerbots activity join [id] (no id: the nearest one)', 0, 0,
+     '', 'Usage : .playerbots activity join [id] (sans id : la plus proche)', '', '', '', '', '', '');
+
+-- The explicit ids push the counter to 31010, inside the block; move it past (never below max(id) + 1).
+ALTER TABLE `ai_playerbot_texts` AUTO_INCREMENT = 31500;

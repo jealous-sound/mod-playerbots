@@ -27,8 +27,10 @@
 //   -> CoaHooks::OnBotAiCreated             command)                     self-bot) -> Post BotLogin
 // ~PlayerbotAI                              map or world                 Memory Enable -> guid and epoch set ->
 //   -> CoaHooks::OnBotAiDestroyed                                        Post BotLogout
-// CoaPlayerScript::OnPlayerDuelEnd          map (inferred); world for    Memory Enable -> both players -> not
-//                                           a cancel opcode              interrupted -> bot pair rule -> Post Duel
+// CoaPlayerScript::OnPlayerDuelEnd          map (inferred); world for    Activity DuelRulesActive -> both players
+//                                           a cancel opcode              -> ActivityDuelCooldowns::OnDuelEnd; then
+//                                                                        Memory Enable -> both players -> not
+//                                                                        interrupted -> bot pair rule -> Post Duel
 // CoaUnitScript::OnUnitDeath                MAP, every unit death        Memory Enable -> player victim: killer's
 //                                                                        owner, not self -> bot pair rule ->
 //                                                                        BattlegroundKills -> Post PlayerKill;
@@ -47,7 +49,9 @@
 // CoaWorldScript OnAfterConfigLoad,         world (main thread)          CoaThread::CaptureWorldThread() first
 //   OnStartup, OnUpdate, OnShutdown
 // director, governor, index, templates,     world only                   COA_ASSERT_WORLD_THREAD() at public
-//   prefs writes, CoaMemoryMgr                                           entry points
+//   prefs writes, CoaMemoryMgr,                                          entry points
+//   ActivityDirector, activity kinds,
+//   operations, store
 // CoaChatIntent, NameMatch, sanitizer,      any                          pure, atomic, or a short lock
 //   persona For, EmoteCategoryFor,
 //   CoaVoiceConfig::Enabled/Current,
@@ -55,7 +59,10 @@
 //   BattlegroundKills/IsLeaderEntry,
 //   CoaMemoryMgr::Running,
 //   CoaPlayerPrefs::Get/VoiceOptedOut/
-//   IsLoaded, CoaEventBus::Post
+//   IsLoaded, CoaEventBus::Post,
+//   ActivityRegistry::AnyHeld/Current,
+//   ActivityDirector gates,
+//   ActivityDuelCooldowns (own mutex)
 //
 // Human speakers never race map threads (chat is handled in UpdateSessions while the map threads are idle). Bot
 // speech and text emotes run on map threads: those paths only read the speaker's own Player and post to the bus.
@@ -69,8 +76,14 @@
 // never GET_PLAYERBOT_AI, never an ObjectAccessor lookup by GUID) and post plain values. Whether the other side is
 // a player worth remembering is settled here only when both sessions are at hand; CoaMemoryMgr checks the rest on
 // the world thread.
+//
+// The activity step of the duel-end hook (M4) tests ActivityDirector::DuelRulesActive() (a relaxed atomic) first:
+// with activities off it costs that one load. It reads only the two duelists (one map) and writes under
+// ActivityDuelCooldowns' own mutex; the director drains the results on the world thread.
 
 #include "CoaHooks.h"
+#include "ActivityDirector.h"
+#include "ActivityDuelCooldowns.h"
 #include "Channel.h"
 #include "CoaChatIntent.h"
 #include "CoaEventBus.h"
@@ -378,6 +391,10 @@ public:
     // a cancel opcode, which is DUEL_INTERRUPTED. On DUEL_FLED the loser is the one who fled.
     void OnPlayerDuelEnd(Player* winner, Player* loser, DuelCompleteType type) override
     {
+        // CoA activity: declines, the day's count, the bots' outcomes and the rings' results (its own mutex).
+        if (ActivityDirector::DuelRulesActive() && winner && loser)
+            ActivityDuelCooldowns::Instance().OnDuelEnd(winner, loser, uint8(type));
+
         if (!MemoryRunning() || !winner || !loser)
             return;
         if (type == DUEL_INTERRUPTED)

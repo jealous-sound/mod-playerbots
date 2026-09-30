@@ -26,6 +26,8 @@
 #include "ShamanAiObjectContext.h"
 #include "SharedDefines.h"
 #include "SpellInfo.h"
+#include "ActivityDirector.h"
+#include "CoaActivityStrategy.h"
 #include "CoaAiObjectContext.h"
 #include "CoaMemoryConfig.h"
 #include "CoaMemoryMgr.h"
@@ -520,6 +522,10 @@ void AiFactory::AddDefaultCombatStrategies(Player* player, PlayerbotAI* const fa
     else
         engine->ChangeStrategy(sPlayerbotAIConfig.combatStrategies);
 
+    // CoA activity: from the registry, so every ResetStrategies keeps it (one relaxed load with activities off).
+    if (ActivityDirector::Running() && sRandomPlayerbotMgr.IsRandomBot(player) && !player->InBattleground())
+        CoaActivityStrategies::AddCombat(player, facade, engine);
+
     // Battleground switch
     if (player->InBattleground() && player->GetBattleground())
     {
@@ -743,6 +749,11 @@ void AiFactory::AddDefaultNonCombatStrategies(Player* player, PlayerbotAI* const
                 }
             }
         }
+
+        // CoA activity: from the registry, after ChangeStrategy(randomBotNonCombatStrategies), so every
+        // ResetStrategies keeps it (one relaxed load with activities off).
+        if (ActivityDirector::Running())
+            CoaActivityStrategies::AddNonCombat(player, facade, nonCombatEngine);
     }
     else
         nonCombatEngine->ChangeStrategy(sPlayerbotAIConfig.nonCombatStrategies);

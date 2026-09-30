@@ -5,6 +5,7 @@
  */
 
 #include "AcceptDuelAction.h"
+#include "ActivityDuelRules.h"
 #include "CoaMemoryRules.h"
 #include "Event.h"
 #include "Playerbots.h"
@@ -22,9 +23,17 @@ bool AcceptDuelAction::Execute(Event event)
     CoaDuelVerdict const verdict = CoaMemoryRules::DuelVerdict(botAI, playerGuid);
     uint8 const minHealth = verdict == CoaDuelVerdict::Eager ? uint8(MemoryThreshold::DUEL_EAGER_HEALTH) : uint8(90);
 
+    // CoA activity: the per-account cap, the brain and the duel mood; Legacy (today's rule) with activities off.
+    ActivityDuelDecision const decision = verdict == CoaDuelVerdict::Refuse
+                                              ? ActivityDuelDecision::Legacy
+                                              : ActivityDuelRules::OnChallenge(botAI, playerGuid, flagGuid, minHealth);
+    if (decision == ActivityDuelDecision::Pending)
+        return true;  // ActivityDuelRules::Continue answers once the brain did
+
     // Do not auto duel with low health
-    if (verdict == CoaDuelVerdict::Refuse ||
-        ((!botAI->HasGameClientMaster() || (botAI->GetMaster() && botAI->GetMaster()->GetGUID() != playerGuid)) &&
+    if (verdict == CoaDuelVerdict::Refuse || decision == ActivityDuelDecision::Refuse ||
+        (decision == ActivityDuelDecision::Legacy &&
+         (!botAI->HasGameClientMaster() || (botAI->GetMaster() && botAI->GetMaster()->GetGUID() != playerGuid)) &&
          AI_VALUE2(uint8, "health", "self target") < minHealth))
     {
         WorldPacket packet(CMSG_DUEL_CANCELLED, 8);

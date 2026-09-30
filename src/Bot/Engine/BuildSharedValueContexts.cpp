@@ -5,6 +5,7 @@
  */
 
 #include "AiObjectContext.h"
+#include "CoaActivityAiContext.h"
 #include "CoaMemoryContext.h"
 #include "GDValueContext.h"
 #include "MechValueContext.h"
@@ -20,4 +21,5 @@ void AiObjectContext::BuildSharedValueContexts(SharedNamedObjectContextList<Unty
     valueContexts.Add(new WotlkDungeonGDValueContext());
     valueContexts.Add(new TbcDungeonMgTValueContext());
     valueContexts.Add(new CoaMemoryValueContext());
+    valueContexts.Add(new CoaActivityValueContext());
 }

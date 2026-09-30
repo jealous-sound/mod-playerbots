@@ -25,12 +25,16 @@ enum class BrainLane : uint8
     Count
 };
 
-// What a job is for. ChatReply is gated by CoaBrain.Use.ChatReply; Probe and Test are GM tools.
+// What a job is for. ChatReply is gated by CoaBrain.Use.ChatReply; Probe and Test are GM tools. Duel and Organizer
+// (M4) are gated by their consumer (ActivityConfig reads CoaBrain.Use.Duel and Use.Organizer): the brain's Active()
+// only says whether it runs and accepts.
 enum class BrainUse : uint8
 {
     ChatReply = 0,  // the voice director's decision for one human message
     Probe,          // one engine (BrainJob::forceEngine), no cache, no chain
     Test,           // the chain, no cache, nothing is said in game
+    Duel,           // a bot's yes/no to a real player's duel challenge (Player lane)
+    Organizer,      // the activity director: which activity next, who joins (Organizer lane)
     Count
 };
 
@@ -160,7 +164,7 @@ struct BrainResult
 };
 
 char const* BrainLaneName(BrainLane lane);                  // "player", "organizer", "ambient"
-char const* BrainUseName(BrainUse use);                     // "chat-reply", "probe", "test"
+char const* BrainUseName(BrainUse use);                     // "chat-reply", "probe", "test", "duel", "organizer"
 char const* BrainSubmitName(BrainSubmit submit);            // "queued", "answered", "off", "invalid", ...
 char const* BrainErrorName(BrainError error);               // "none", "too-late", "cancelled", ...
 char const* BrainQuestionTypeName(BrainQuestionType type);  // "choice", "yes-no", "score"
