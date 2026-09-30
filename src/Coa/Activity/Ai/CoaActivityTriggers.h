@@ -112,14 +112,32 @@ public:
     bool IsActive() override;
 };
 
+// "coa activity engage" (M5), every 1 s, out of combat: the row has an objective and no ACTIVITY_VIEW_RETREAT, the
+// objective is in reach (CoaActivityBot::ObjectiveInReach) and the bot is alive. Starts the fight (hunts, raids).
+class CoaActivityEngageTrigger : public Trigger
+{
+public:
+    CoaActivityEngageTrigger(PlayerbotAI* botAI) : Trigger(botAI, "coa activity engage", 1 * 1000) {}
+    bool IsActive() override;
+};
+
 // --- "coa activity combat" ---
 
 // "coa activity objective", every 1 s. The row has an objective (M5), alive, attackable, on the bot's map within 60
-// yards, and it is not the bot's current target.
+// yards, and it is not the bot's current target. M5: never with ACTIVITY_VIEW_RETREAT.
 class CoaActivityObjectiveTrigger : public Trigger
 {
 public:
     CoaActivityObjectiveTrigger(PlayerbotAI* botAI) : Trigger(botAI, "coa activity objective", 1 * 1000) {}
+    bool IsActive() override;
+};
+
+// "coa activity retreat" (M5), every 1 s, in combat: the row has ACTIVITY_VIEW_RETREAT, its center is set on the bot's
+// map and the bot is farther than RALLY_ARRIVE_RADIUS from it.
+class CoaActivityRetreatTrigger : public Trigger
+{
+public:
+    CoaActivityRetreatTrigger(PlayerbotAI* botAI) : Trigger(botAI, "coa activity retreat", 1 * 1000) {}
     bool IsActive() override;
 };
 

@@ -2049,8 +2049,10 @@ AiPlayerbot.CoaBrain.Use.Duel = 0
 #    AiPlayerbot.CoaBrain.Use.Organizer
 #        Description: Whether the activity director asks the brain which activity to start next
 #                     and which bots join it, waiting AiPlayerbot.CoaActivity.BrainDeadlineMs at
-#                     most. Needs AiPlayerbot.CoaActivity.Enable = 1. Read with the activity
-#                     settings.
+#                     most. It also asks which hunt or raid target comes next, which recruitment
+#                     message a leader posts, whether a raid falls back, and which emote closes
+#                     an activity. Needs AiPlayerbot.CoaActivity.Enable = 1. Read with the
+#                     activity settings.
 #        Default:     0 - no: the dice decide
 #                     1 - yes
 
@@ -2518,6 +2520,13 @@ AiPlayerbot.CoaMemory.FriendInvites = 0
 #    duel each other and the players passing by, cheer, then scatter. Gangs: 3 to 5 bots of close
 #    levels form a group led by one of them, roam 2 or 3 zones of their level on their continent
 #    hunting together (PvE), brag, then disband. Bots never lose a duel on purpose.
+#    Dungeon runs: 3 or 4 bots form a group for a dungeon of a player's level, post in chat that
+#    they look for the missing role, and queue with the player at the Dungeon Finder once the
+#    group is full (otherwise they walk to the portal). Elite
+#    hunts: bots group up to kill a named elite (Hogger, Gallywix) and call players in chat.
+#    Outpost raids (off by default): bots raid an enemy quest giver in Hillsbrad. Inn parties,
+#    city crowds at the capitals' banks and the Gurubashi booty run: bots gather to drink, dance,
+#    show off their mounts or brawl in the arena.
 #    Off by default. With Enable = 0 nothing runs, the other keys of this block are not read and
 #    the bots behave exactly as without it.
 #    Apply data/sql/playerbots/updates/2026_09_30_03_coa_activity.sql first: without its two
@@ -2527,16 +2536,24 @@ AiPlayerbot.CoaMemory.FriendInvites = 0
 #    While a bot takes part, the usual rules leave it alone: it is not logged out by the rotation,
 #    not re-leveled or sent to a starting zone, not revived by the random bot manager (the
 #    director revives it, Revive.AfterSeconds), not taken from its gang by the leave rules, and
-#    not offered to players by the CoA LFG. Real players are never teleported, and join a gang
-#    only with .playerbots activity join and by accepting its group invitation; bots are
-#    teleported only where no real player can see them.
+#    not offered to players by the CoA LFG. Real players are never teleported or grouped by the
+#    director: they join a group activity by asking, then by accepting its group invitation. They
+#    ask with a join word (Chat.JoinWords, "inv" for example) whispered alone to the leader while
+#    it recruits, with !join [id] whispered to any bot (WhisperPrefix), with .playerbots activity
+#    join [id], or by saying "lfg bot <role>" in a channel (a recruiting leader whispers them an
+#    offer). A dungeon run goes in through the Dungeon Finder: the player accepts the role check
+#    and the proposal as for any group (or walks in with the bots when the finder cannot be
+#    used). Bots are teleported only where no real player can see them.
+#    Outpost raids start on their own only when the census (.playerbots activity census) counts
+#    enough free bots at that hour; test them with a GM character first (see Raid.Enable).
 #    Bots accept and fight at most Duel.MaxAcceptsPerPlayerPerDay duels with one account per UTC
 #    day, so the Hero's Call Board duel quest is not farmed on them. Players stop the bots'
 #    challenges with .playerbots optout duels; declining one leaves that account alone for 30
 #    minutes.
-#    GMs: .playerbots activity list, info <id>, start duel|gang [...], stop <id>|all, pause,
-#    resume, reload and census [hours]. Players: .playerbots activity join [id] (no id: the
-#    nearest activity of their faction and level).
+#    GMs: .playerbots activity list, info <id>, start <kind> [...] (duel, gang, dungeon, hunt,
+#    raid, party, loiter or gurubashi), stop <id>|all, pause, resume, reload and census [hours].
+#    Players: .playerbots activity join [id] (no id: the nearest activity of their faction and
+#    level).
 #    Every AiPlayerbot.CoaActivity.* setting is read again by .reload config, or by .playerbots
 #    activity reload (which applies only this block and AiPlayerbot.CoaBrain.Use.Duel,
 #    Use.Organizer and Duel.*): turning Enable off ends every activity at once, turning a kind off
@@ -2643,8 +2660,8 @@ AiPlayerbot.CoaActivity.Revive.AfterSeconds = 45
 
 #    AiPlayerbot.CoaActivity.BrainDeadlineMs
 #        Description: With AiPlayerbot.CoaBrain.Use.Organizer = 1 only. Milliseconds the director
-#                     waits for the brain's answers (which activity next, which bots join) before
-#                     rolling the dice (200 to 10000).
+#                     waits for the brain's answers (which activity next, which bots join, and the
+#                     activities' own questions) before rolling the dice (200 to 10000).
 #        Default:     1500
 
 AiPlayerbot.CoaActivity.BrainDeadlineMs = 1500
@@ -2657,14 +2674,24 @@ AiPlayerbot.CoaActivity.BrainDeadlineMs = 1500
 
 AiPlayerbot.CoaActivity.LogKeepDays = 30
 
-#    AiPlayerbot.CoaActivity.Weight.Duel, AiPlayerbot.CoaActivity.Weight.Gang
+#    AiPlayerbot.CoaActivity.Weight.Duel, AiPlayerbot.CoaActivity.Weight.Gang,
+#    AiPlayerbot.CoaActivity.Weight.Dungeon, AiPlayerbot.CoaActivity.Weight.Hunt,
+#    AiPlayerbot.CoaActivity.Weight.Raid, AiPlayerbot.CoaActivity.Weight.Party,
+#    AiPlayerbot.CoaActivity.Weight.Loiter, AiPlayerbot.CoaActivity.Weight.Gurubashi
 #        Description: How often the director picks each kind when it starts an activity (0 to
 #                     1000, relative to each other). 0: never started by the director, a GM can
-#                     still start it.
-#        Default:     30, 20
+#                     still start it. A kind turned off or at its Max is left out of the draw, and
+#                     so is a hunt or a raid without a target that fits at the time.
+#        Default:     30, 20, 30, 15, 5, 10, 10, 20
 
 AiPlayerbot.CoaActivity.Weight.Duel = 30
 AiPlayerbot.CoaActivity.Weight.Gang = 20
+AiPlayerbot.CoaActivity.Weight.Dungeon = 30
+AiPlayerbot.CoaActivity.Weight.Hunt = 15
+AiPlayerbot.CoaActivity.Weight.Raid = 5
+AiPlayerbot.CoaActivity.Weight.Party = 10
+AiPlayerbot.CoaActivity.Weight.Loiter = 10
+AiPlayerbot.CoaActivity.Weight.Gurubashi = 20
 
 #
 #    Duel rings. A ring gathers at a duel spot of the faction of a player online, for bots of
@@ -2809,13 +2836,462 @@ AiPlayerbot.CoaActivity.Gang.Minutes = 45
 
 AiPlayerbot.CoaActivity.Gang.LevelSpread = 3
 
+#
+#    Dungeon runs. The director picks a real player of level 10 or more who is out in the world,
+#    without a group and not queued, and a classic dungeon of that level. Bots of the player's
+#    faction and levels, one per missing role (a tank, a healer, damage), form a group led by one
+#    of them. The leader posts in chat the roles the group still needs and whispers the player
+#    an offer; the player joins by whispering a join word to the leader (or with !join or
+#    .playerbots activity join) and accepting the invitation. Once the five places are taken,
+#    the leader queues the group at the Dungeon Finder for that dungeon: the player accepts the
+#    role check and the proposal, and the finder brings everyone in. A group that is not full at
+#    the end of the recruitment (the finder would replace it) walks to the portal instead. When
+#    the finder is off, refuses (a character whose CoA challenge
+#    forbids it, for example) or does not form the group after Dungeon.LfgTries attempts, the
+#    group walks to the instance portal instead, and the bots follow the player in. Inside, the
+#    player leads and the bots follow. They leave Dungeon.IdleDisbandMinutes after the run is
+#    over: the dungeon done, the player gone from the group, or 10 minutes out of the dungeon.
+#
+
+#    AiPlayerbot.CoaActivity.Dungeon.Enable
+#        Description: Dungeon runs.
+#        Default:     1 - on
+#                     0 - off
+
+AiPlayerbot.CoaActivity.Dungeon.Enable = 1
+
+#    AiPlayerbot.CoaActivity.Dungeon.Bots
+#        Description: Bots in a run, its leader included (3 or 4); real players take the other
+#                     places of the five.
+#        Default:     4
+
+AiPlayerbot.CoaActivity.Dungeon.Bots = 4
+
+#    AiPlayerbot.CoaActivity.Dungeon.LevelSpread
+#        Description: The bots' levels are within this many of the player's (0 to 5), and within
+#                     the dungeon's levels.
+#        Default:     3
+
+AiPlayerbot.CoaActivity.Dungeon.LevelSpread = 3
+
+#    AiPlayerbot.CoaActivity.Dungeon.Max
+#        Description: Dungeon runs at the same time at most (0 to 4).
+#        Default:     1
+
+AiPlayerbot.CoaActivity.Dungeon.Max = 1
+
+#    AiPlayerbot.CoaActivity.Dungeon.RecruitMinutes
+#        Description: Minutes the leader recruits in chat (2 to 60). Without a real player in the
+#                     group by then, the run ends.
+#        Default:     10
+
+AiPlayerbot.CoaActivity.Dungeon.RecruitMinutes = 10
+
+#    AiPlayerbot.CoaActivity.Dungeon.QueueMinutes
+#        Description: Minutes one Dungeon Finder attempt may take, role check, queue and proposal
+#                     included (2 to 60); also the minutes the group waits at the portal for the
+#                     player when it walks there.
+#        Default:     10
+
+AiPlayerbot.CoaActivity.Dungeon.QueueMinutes = 10
+
+#    AiPlayerbot.CoaActivity.Dungeon.LfgTries
+#        Description: Dungeon Finder attempts before the group walks to the portal (1 to 5).
+#        Default:     2
+
+AiPlayerbot.CoaActivity.Dungeon.LfgTries = 2
+
+#    AiPlayerbot.CoaActivity.Dungeon.UseLfg
+#        Description: Whether the group queues at the Dungeon Finder.
+#        Default:     1 - yes, and walks to the portal only when the finder does not form it
+#                     0 - no: the group always walks to the instance portal
+
+AiPlayerbot.CoaActivity.Dungeon.UseLfg = 1
+
+#    AiPlayerbot.CoaActivity.Dungeon.MaxMinutes
+#        Description: Minutes a run may last after its recruitment and queue (30 to 360).
+#        Default:     120
+
+AiPlayerbot.CoaActivity.Dungeon.MaxMinutes = 120
+
+#    AiPlayerbot.CoaActivity.Dungeon.IdleDisbandMinutes
+#        Description: Minutes the bots stay once the run is over, before they leave the group (1
+#                     to 60).
+#        Default:     5
+
+AiPlayerbot.CoaActivity.Dungeon.IdleDisbandMinutes = 5
+
+#    AiPlayerbot.CoaActivity.Dungeon.PlayerCooldownMinutes
+#        Description: Minutes before the director plans another run for the same character (0 to
+#                     1440). GM starts are counted, not checked.
+#        Default:     60
+
+AiPlayerbot.CoaActivity.Dungeon.PlayerCooldownMinutes = 60
+
+#    AiPlayerbot.CoaActivity.Dungeon.SwitchSpecs
+#        Description: Whether a bot of a class that can take a missing role, but in another
+#                     specialization, takes a specialization of that role for the run and keeps
+#                     it, as the bots recruited with "lfg bot" do.
+#        Default:     1 - yes
+#                     0 - no: only bots already in the role
+
+AiPlayerbot.CoaActivity.Dungeon.SwitchSpecs = 1
+
+#    AiPlayerbot.CoaActivity.Dungeon.Ids
+#        Description: The Dungeon Finder dungeon ids (LFGDungeons.dbc) runs may choose, separated
+#                     by commas. A malformed entry is skipped with an error in the log.
+#        Default:     (empty) - every classic normal 5-player dungeon
+
+AiPlayerbot.CoaActivity.Dungeon.Ids =
+
+#
+#    Elite hunts. When a real player of about an elite's levels is on its continent, a bot of the
+#    hunting faction (Hunt.Targets) forms a group of bots of those levels, calls players in chat
+#    for Hunt.RecruitSeconds, gathers the group near the elite, marks it with a skull and attacks
+#    it with the group; a player who joins shares the kill. A group that loses more than 60 % of
+#    its bots falls back to where it gathered and tries again, and gives up the second time. No
+#    hunt starts, and a hunt under way ends, while a real player outside the group needs the
+#    elite for a quest ("Wanted: Hogger", for example).
+#
+
+#    AiPlayerbot.CoaActivity.Hunt.Enable
+#        Description: Elite hunts.
+#        Default:     1 - on
+#                     0 - off
+
+AiPlayerbot.CoaActivity.Hunt.Enable = 1
+
+#    AiPlayerbot.CoaActivity.Hunt.Targets
+#        Description: The elites, separated by ";", each as name:spawn:team, where name is 1 to 24
+#                     lower case letters, digits or "_", spawn the creature's spawn id
+#                     (creature.guid), and team (alliance or horde) the faction whose bots hunt
+#                     it. A malformed entry is skipped with an error in the log, an unknown
+#                     spawn with a warning. Empty: the default.
+#                     GMs start a hunt with .playerbots activity start hunt <name>.
+#        Default:     hogger:80531:alliance;gallywix:14412:horde - Hogger (level 11, Elwynn
+#                     Forest) for the Alliance, Grand Foreman Puzik Gallywix (level 23, the
+#                     Barrens) for the Horde
+
+AiPlayerbot.CoaActivity.Hunt.Targets = hogger:80531:alliance;gallywix:14412:horde
+
+#    AiPlayerbot.CoaActivity.Hunt.MinBots, AiPlayerbot.CoaActivity.Hunt.MaxBots
+#        Description: Bots in a hunt, its leader included: at least MinBots (2 to 10), at most
+#                     MaxBots (MinBots to 10).
+#        Default:     3, 6
+
+AiPlayerbot.CoaActivity.Hunt.MinBots = 3
+AiPlayerbot.CoaActivity.Hunt.MaxBots = 6
+
+#    AiPlayerbot.CoaActivity.Hunt.Max
+#        Description: Hunts at the same time at most (0 to 4), never two on one elite.
+#        Default:     1
+
+AiPlayerbot.CoaActivity.Hunt.Max = 1
+
+#    AiPlayerbot.CoaActivity.Hunt.RecruitSeconds
+#        Description: Seconds the leader calls players in chat once the group is formed, before
+#                     it gathers (0 to 1800). Players can join until the elite is dead.
+#        Default:     120
+#                     0 - no call
+
+AiPlayerbot.CoaActivity.Hunt.RecruitSeconds = 120
+
+#    AiPlayerbot.CoaActivity.Hunt.Minutes
+#        Description: Minutes a hunt may last after its recruitment (5 to 120).
+#        Default:     20
+
+AiPlayerbot.CoaActivity.Hunt.Minutes = 20
+
+#    AiPlayerbot.CoaActivity.Hunt.LevelBelow, AiPlayerbot.CoaActivity.Hunt.LevelAbove
+#        Description: The bots' levels go from the elite's level minus LevelBelow (0 to 10) to its
+#                     level plus LevelAbove (0 to 10).
+#        Default:     2, 3
+
+AiPlayerbot.CoaActivity.Hunt.LevelBelow = 2
+AiPlayerbot.CoaActivity.Hunt.LevelAbove = 3
+
+#
+#    Outpost raids. A bot leader of the attacking faction forms a raid of bots of level
+#    Raid.MinLevel and above, calls players in chat for Raid.RecruitMinutes, rallies near the
+#    enemy town, then marches on the quest giver (skull mark) and fights it and its guards. The
+#    raid falls back to its rally and regroups when it loses too many bots (with
+#    AiPlayerbot.CoaBrain.Use.Organizer = 1 the brain decides), and gives up the second time. At
+#    the end the lead goes to a real player of the raid, if any, and the bots leave one by one.
+#    No raid starts while a real player of the defending faction is in the zone
+#    (Raid.SkipIfDefenderInZone) or any real player holds a quest the target gives or takes. A
+#    raid under way does not engage while a real defender is within Raid.QuestGiverGuardYards of
+#    the target, gives up when one stays there 5 minutes, and ends when a real player takes a
+#    quest from the target.
+#    The director starts a raid only when the census (.playerbots activity census) counted, at
+#    this hour of the day, at least 1.5 x Raid.MinBots free bots of the attacking faction and
+#    levels in 9 samples out of 10 (with 3 samples of the hour at least); GM starts skip this
+#    check, but the daily cap and the guards apply to them too.
+#
+
+#    AiPlayerbot.CoaActivity.Raid.Enable
+#        Description: Outpost raids. Before turning them on, check the raid pool lines of
+#                     .playerbots activity census, and that a level-60 character on the PvE
+#                     ruleset can attack each target and one of its guards (then start one with
+#                     .playerbots activity start raid <name>); if it cannot, keep this off.
+#        Default:     0 - off
+#                     1 - on
+
+AiPlayerbot.CoaActivity.Raid.Enable = 0
+
+#    AiPlayerbot.CoaActivity.Raid.Targets
+#        Description: The quest givers raided, separated by ";", each as
+#                     name:spawn:team[:rallyX:rallyY] (all on one line), where name is 1 to 24
+#                     lower case letters, digits or "_", spawn the creature's spawn id
+#                     (creature.guid), team (alliance or horde) the attacking faction, and
+#                     rallyX:rallyY the rally point on the target's map (its height is taken
+#                     from the ground). Without a rally, the raid rallies 250 yards from the
+#                     target in a random direction. A malformed entry is skipped with an error
+#                     in the log, an unknown spawn with a warning. Empty: the default.
+#        Default:     maleb:15322:horde:-642:-594;darthalia:15542:alliance:-253:-808 -
+#                     Magistrate Henry Maleb (Southshore) raided by the Horde, High Executor
+#                     Darthalia (Tarren Mill) raided by the Alliance. Their rallies are about 250
+#                     yards from the target toward the other town, approximate: measure them in
+#                     game (.gps) and list them here.
+
+AiPlayerbot.CoaActivity.Raid.Targets = maleb:15322:horde:-642:-594;darthalia:15542:alliance:-253:-808
+
+#    AiPlayerbot.CoaActivity.Raid.MinLevel
+#        Description: The raid's bots are of this level and above (1 to 80); players from 5 levels
+#                     below are welcome.
+#        Default:     45
+
+AiPlayerbot.CoaActivity.Raid.MinLevel = 45
+
+#    AiPlayerbot.CoaActivity.Raid.MinBots, AiPlayerbot.CoaActivity.Raid.MaxBots
+#        Description: A raid starts with at least MinBots bots (2 to 40) and marches with at least
+#                     MinBots bots and players; it takes at most MaxBots bots (MinBots to 39),
+#                     real players filling the other places of the 40. The group becomes a raid
+#                     before its sixth member.
+#        Default:     6, 15
+
+AiPlayerbot.CoaActivity.Raid.MinBots = 6
+AiPlayerbot.CoaActivity.Raid.MaxBots = 15
+
+#    AiPlayerbot.CoaActivity.Raid.Max
+#        Description: Raids at the same time at most (0 to 2), never two on one target.
+#        Default:     1
+
+AiPlayerbot.CoaActivity.Raid.Max = 1
+
+#    AiPlayerbot.CoaActivity.Raid.RecruitMinutes, AiPlayerbot.CoaActivity.Raid.TimeoutMinutes
+#        Description: Minutes the leader calls players in chat before the raid rallies (1 to 60),
+#                     then minutes the raid has to kill its target (5 to 180).
+#        Default:     10, 25
+
+AiPlayerbot.CoaActivity.Raid.RecruitMinutes = 10
+AiPlayerbot.CoaActivity.Raid.TimeoutMinutes = 25
+
+#    AiPlayerbot.CoaActivity.Raid.QuestGiverGuardYards
+#        Description: The raid does not engage while a real player of the defending faction is
+#                     within this many yards of the target (0 to 500); it falls back to its
+#                     rally, and gives up when that player stays 5 minutes.
+#        Default:     100
+
+AiPlayerbot.CoaActivity.Raid.QuestGiverGuardYards = 100
+
+#    AiPlayerbot.CoaActivity.Raid.MaxPerTargetPerDay
+#        Description: Raids started on one target per UTC day at most, GM starts included (0 to
+#                     24). The count is kept in memory only: a restart forgets it.
+#        Default:     2
+#                     0 - no cap
+
+AiPlayerbot.CoaActivity.Raid.MaxPerTargetPerDay = 2
+
+#    AiPlayerbot.CoaActivity.Raid.SkipIfDefenderInZone
+#        Description: Whether no raid starts while a real player of the defending faction is in
+#                     the target's zone, GM starts included.
+#        Default:     1 - yes
+#                     0 - no
+
+AiPlayerbot.CoaActivity.Raid.SkipIfDefenderInZone = 1
+
+#    AiPlayerbot.CoaActivity.Raid.LootMethod, AiPlayerbot.CoaActivity.Raid.LootThreshold
+#        Description: The raid's loot method: free, roundrobin, master, group or need (any other
+#                     value is read as group, with an error in the log); and the item quality
+#                     from which it applies (0 poor to 6 artifact).
+#        Default:     group, 2 (uncommon)
+
+AiPlayerbot.CoaActivity.Raid.LootMethod = group
+AiPlayerbot.CoaActivity.Raid.LootThreshold = 2
+
+#
+#    Inn parties. A few bots of a player's faction and levels meet at the nearest inn that is not
+#    hostile to the player (or at a Party.Spots place): they sit, drink, toast, laugh and wave at
+#    the players who come in, and some parties are dance parties. One of them may invite the zone
+#    in chat once, when a real player of its faction is in the zone. Players who ask to join are
+#    told where the party is.
+#
+
+#    AiPlayerbot.CoaActivity.Party.Enable
+#        Description: Inn parties.
+#        Default:     1 - on
+#                     0 - off
+
+AiPlayerbot.CoaActivity.Party.Enable = 1
+
+#    AiPlayerbot.CoaActivity.Party.MinBots, AiPlayerbot.CoaActivity.Party.MaxBots
+#        Description: Bots at a party: at least MinBots (2 to 12), at most MaxBots (MinBots to
+#                     12).
+#        Default:     4, 8
+
+AiPlayerbot.CoaActivity.Party.MinBots = 4
+AiPlayerbot.CoaActivity.Party.MaxBots = 8
+
+#    AiPlayerbot.CoaActivity.Party.Max
+#        Description: Parties at the same time at most (0 to 4), never two at one inn.
+#        Default:     1
+
+AiPlayerbot.CoaActivity.Party.Max = 1
+
+#    AiPlayerbot.CoaActivity.Party.Minutes
+#        Description: Minutes a party lasts once its bots have gathered (5 to 120), give or take 5
+#                     (at least 5).
+#        Default:     15
+
+AiPlayerbot.CoaActivity.Party.Minutes = 15
+
+#    AiPlayerbot.CoaActivity.Party.LevelSpread
+#        Description: The bots' levels are within this many of the player's (0 to 20).
+#        Default:     5
+
+AiPlayerbot.CoaActivity.Party.LevelSpread = 5
+
+#    AiPlayerbot.CoaActivity.Party.DancePercent
+#        Description: Chance that a party is a dance party (0 to 100).
+#        Default:     30
+
+AiPlayerbot.CoaActivity.Party.DancePercent = 30
+
+#    AiPlayerbot.CoaActivity.Party.MaxYards
+#        Description: The inn is at most this many yards from the player the party is for, on the
+#                     same map (100 to 10000).
+#        Default:     2000
+
+AiPlayerbot.CoaActivity.Party.MaxYards = 2000
+
+#    AiPlayerbot.CoaActivity.Party.Spots
+#        Description: Party places, separated by ";", each as name:team:map:x:y:z, where name is 1
+#                     to 24 lower case letters, digits or "_" and team is alliance, horde or any.
+#                     A malformed entry is skipped with an error in the log; a place without
+#                     ground is skipped with a warning when first used.
+#                     GMs start a party at a place with .playerbots activity start party <name>.
+#        Default:     (empty) - the inns: every innkeeper not hostile to the player
+
+AiPlayerbot.CoaActivity.Party.Spots =
+
+#
+#    City crowds. Bots of level Loiter.MinLevel and above hang around a capital's bank of a
+#    player's faction while the player is in that city or near it: idle emotes, mounts on show,
+#    a word when a player comes close. One crowd per city, never more than 8 bots in it; a crowd
+#    leaves early after 10 minutes without a real player of its faction within 1000 yards.
+#
+
+#    AiPlayerbot.CoaActivity.Loiter.Enable
+#        Description: City crowds.
+#        Default:     1 - on
+#                     0 - off
+
+AiPlayerbot.CoaActivity.Loiter.Enable = 1
+
+#    AiPlayerbot.CoaActivity.Loiter.MinBots, AiPlayerbot.CoaActivity.Loiter.MaxBots
+#        Description: Bots in a crowd: at least MinBots (2 to 8), at most MaxBots (MinBots to 8).
+#        Default:     3, 8
+
+AiPlayerbot.CoaActivity.Loiter.MinBots = 3
+AiPlayerbot.CoaActivity.Loiter.MaxBots = 8
+
+#    AiPlayerbot.CoaActivity.Loiter.Max
+#        Description: Crowds at the same time at most (0 to 6).
+#        Default:     2
+
+AiPlayerbot.CoaActivity.Loiter.Max = 2
+
+#    AiPlayerbot.CoaActivity.Loiter.Minutes
+#        Description: Minutes a crowd stays once gathered (5 to 240), give or take 10 (at least 5).
+#        Default:     30
+
+AiPlayerbot.CoaActivity.Loiter.Minutes = 30
+
+#    AiPlayerbot.CoaActivity.Loiter.MinLevel
+#        Description: The crowd's bots are of this level and above (1 to 80).
+#        Default:     20
+
+AiPlayerbot.CoaActivity.Loiter.MinLevel = 20
+
+#    AiPlayerbot.CoaActivity.Loiter.Spots
+#        Description: Crowd places, separated by ";", each as name:team:map:x:y:z, where name is 1
+#                     to 24 lower case letters, digits or "_" and team is alliance, horde or any.
+#                     A malformed entry is skipped with an error in the log; a place without
+#                     ground is skipped with a warning when first used.
+#                     GMs start a crowd at a place with .playerbots activity start loiter <name>.
+#        Default:     (empty) - the six capitals' banks, at their bankers:
+#                     stormwind_bank:alliance:0:-8935.3:613.1:99.6;
+#                     ironforge_bank:alliance:0:-4886.5:-997.6:504.0;
+#                     darnassus_bank:alliance:1:9942.0:2519.2:1317.7;
+#                     orgrimmar_bank:horde:1:1627.3:-4376.1:12.1;
+#                     undercity_bank:horde:0:1595.9:240.3:-52.1;
+#                     thunderbluff_bank:horde:1:-1257.6:22.8:128.3
+
+AiPlayerbot.CoaActivity.Loiter.Spots =
+
+#
+#    Gurubashi booty run. While the Gurubashi Arena Booty Run is on (game event 16: every 3
+#    hours, for 2 hours), bots of both factions of level Gurubashi.MinLevel and above gather in
+#    the arena of Stranglethorn Vale, brawl there and cheer when the chest appears. One run at a
+#    time. They leave once the chest is taken, when the event ends, or after Gurubashi.Minutes.
+#
+
+#    AiPlayerbot.CoaActivity.Gurubashi.Enable
+#        Description: Gurubashi booty runs.
+#        Default:     1 - on
+#                     0 - off
+
+AiPlayerbot.CoaActivity.Gurubashi.Enable = 1
+
+#    AiPlayerbot.CoaActivity.Gurubashi.MinBots, AiPlayerbot.CoaActivity.Gurubashi.MaxBots
+#        Description: Bots in the arena: at least MinBots (2 to 8), at most MaxBots (MinBots to
+#                     8).
+#        Default:     4, 8
+
+AiPlayerbot.CoaActivity.Gurubashi.MinBots = 4
+AiPlayerbot.CoaActivity.Gurubashi.MaxBots = 8
+
+#    AiPlayerbot.CoaActivity.Gurubashi.MinLevel
+#        Description: The bots are of this level and above (1 to 80).
+#        Default:     35
+
+AiPlayerbot.CoaActivity.Gurubashi.MinLevel = 35
+
+#    AiPlayerbot.CoaActivity.Gurubashi.Minutes
+#        Description: Minutes the bots stay in the arena at most (5 to 120).
+#        Default:     25
+
+AiPlayerbot.CoaActivity.Gurubashi.Minutes = 25
+
+#    AiPlayerbot.CoaActivity.Gurubashi.BotsMayWin
+#        Description: Whether the bots of a booty run may loot, and so take the chest.
+#        Default:     0 - no: they never loot or gather during the run, the chest is the players'
+#                     1 - yes: they loot as usual
+
+AiPlayerbot.CoaActivity.Gurubashi.BotsMayWin = 0
+
+#
+#    Rulesets of the gangs and the outpost raids.
+#
+
 #    AiPlayerbot.CoaActivity.PvpRuleset
-#        Description: The CoA ruleset of the gangs' bots. With warmode, a bot in High-Risk or
-#                     Mercenary never takes part, the others get War Mode while in the gang and
-#                     their previous ruleset back when they leave it (after a crash, when they
-#                     are next online). Any other value is read as keep, with an error in the log.
+#        Description: The CoA ruleset of the bots of gangs and outpost raids. With warmode, a bot
+#                     in High-Risk or Mercenary never takes part, the others get War Mode while in
+#                     the gang or the raid and their previous ruleset back when they leave it
+#                     (after a crash, when they are next online). Any other value is read as
+#                     keep, with an error in the log.
 #        Default:     keep    - the bots keep their own ruleset
-#                     warmode - War Mode during the gang
+#                     warmode - War Mode during the gang or the raid
 
 AiPlayerbot.CoaActivity.PvpRuleset = keep
 
@@ -2851,23 +3327,29 @@ AiPlayerbot.CoaActivity.Travel.RallyWaitSeconds = 300
 
 #    AiPlayerbot.CoaActivity.Travel.GatherTimeoutSeconds
 #        Description: Seconds the bots of an activity have to gather (30 to 3600). Then the late
-#                     ones are dropped: a ring goes on with 2 bots or more, a gang with 2 bots,
-#                     or 1 and a player.
+#                     ones are dropped: a ring, a party, a crowd or a booty run goes on with 2 bots
+#                     or more; a gang, a hunt or a raid with 2 bots, or 1 and a player.
 #        Default:     600
 
 AiPlayerbot.CoaActivity.Travel.GatherTimeoutSeconds = 600
 
 #
-#    Chat. Bots of an activity speak in /say around them, and a gang's leader whispers to a player
-#    who joins; a new duel ring is also announced in a channel.
+#    Chat. Bots of an activity speak in /say around them and in their group, and whisper to the
+#    players who join or ask to; a new duel ring, the recruitment of dungeon runs, hunts and
+#    raids, and the invitations of inn parties and booty runs are also posted in channels.
 #
 
 #    AiPlayerbot.CoaActivity.Chat.Channel
-#        Description: Where a ring bot announces a new duel ring, when a real player is in the
-#                     zone of its spot. Any other value is read as zone, with an error in the log.
-#        Default:     zone  - the zone channel (AiPlayerbot.ZoneChannelId)
+#        Description: Where activities post: a ring bot announces a new duel ring (when a real
+#                     player is in the zone of its spot), recruiting leaders call for players
+#                     (dungeon runs, hunts, raids), and a bot of an inn party (when a real player
+#                     of its faction is in the zone) or of a booty run invites everyone once.
+#                     Any other value is read as zone, with an error in the log.
+#        Default:     zone  - the zone channel (AiPlayerbot.ZoneChannelId) for the rings, the
+#                             channels of Chat.Channels for the others
 #                     world - the realm-wide channel (AiPlayerbot.BroadcastWorldChannelName)
-#                     none  - nowhere
+#                     none  - nowhere: no recruitment in chat, players can still join with
+#                             .playerbots activity join
 
 AiPlayerbot.CoaActivity.Chat.Channel = zone
 
@@ -2878,6 +3360,44 @@ AiPlayerbot.CoaActivity.Chat.Channel = zone
 
 AiPlayerbot.CoaActivity.Chat.MaxPosts = 4
 AiPlayerbot.CoaActivity.Chat.MinGapSeconds = 60
+
+#    AiPlayerbot.CoaActivity.Chat.Channels
+#        Description: With Chat.Channel = zone, the channels where recruiting leaders and the bots
+#                     of inn parties and booty runs post: the beginnings of their names, separated
+#                     by commas, case ignored ("Zone,Trade" for example). A bot posts in at most
+#                     two channels it is on whose name begins with one of them. Empty: Zone, with
+#                     an error in the log.
+#        Default:     Zone - the zone channel ("Zone - <place>" on Conquest of Azeroth)
+
+AiPlayerbot.CoaActivity.Chat.Channels = Zone
+
+#    AiPlayerbot.CoaActivity.Chat.RecruitEverySeconds
+#        Description: Seconds between two recruitment posts of one activity (30 to 3600), and at
+#                     least Chat.MinGapSeconds; Chat.MaxPosts still caps them.
+#        Default:     180
+
+AiPlayerbot.CoaActivity.Chat.RecruitEverySeconds = 180
+
+#    AiPlayerbot.CoaActivity.Chat.JoinWords
+#        Description: Words, separated by commas, that a player whispers alone to the leader of a
+#                     group activity while it recruits to join it (case and a final ".", "!" or
+#                     "?" ignored): the leader answers, and invites the player when the group
+#                     can take them. Whispered to any other bot, or with other words, they are
+#                     ordinary whispers.
+#        Default:     inv,x,moi
+#                     (empty) - off
+
+AiPlayerbot.CoaActivity.Chat.JoinWords = inv,x,moi
+
+#    AiPlayerbot.CoaActivity.WhisperPrefix
+#        Description: Players whisper <prefix>join [id] or <prefix>rejoindre [id] to any bot to
+#                     join an activity (no id: that bot's activity, else the nearest one of their
+#                     faction and level); the bot answers. At most 4 characters. While activities
+#                     run, such whispers are never read as commands to the bot.
+#        Default:     ! - !join, !rejoindre
+#                     (empty) - off
+
+AiPlayerbot.CoaActivity.WhisperPrefix = !
 
 # Quality a looted item must reach to be written to the "playerbots.loot" logger:
 # 3 rare (blue), 4 epic, 5 legendary. Nothing is written unless worldserver.conf

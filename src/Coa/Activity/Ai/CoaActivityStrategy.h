@@ -25,8 +25,11 @@ class PlayerbotAI;
 //   "coa activity away"      -> "coa activity return"    13
 //   "coa activity catch up"  -> "coa activity catch up"  12
 //   "coa activity roam"      -> "coa activity roam"      3
+//   M5: "coa activity engage" -> "coa activity attack objective" 20
+//   M5: "coa activity retreat" -> "coa activity fall back"      17 (RETREAT, out of combat too)
 // Above NewRpg's status update (11, removed for participants anyway), grind's "attack anything" (4) and follow (1);
-// below the pvp strategy's "attack enemy player" (55).
+// below the pvp strategy's "attack enemy player" (55). M5: with ACTIVITY_VIEW_QUIET the movement triggers (travel,
+// hold, away, catch up, roam, engage) stay quiet; celebrate still fires.
 class CoaActivityStrategy : public Strategy
 {
 public:
@@ -38,6 +41,8 @@ public:
 
 // "coa activity combat" (combat), every participant: "coa activity objective" -> "coa activity attack objective" 45.
 // Holds an objective target while engaged (M5 kinds); M4 kinds set none, so it never fires in M4.
+// M5: "coa activity retreat" -> "coa activity fall back" 60 (ACTIVITY_VIEW_RETREAT: back to the rally, fighting or
+// not; M4 kinds never set the flag).
 class CoaActivityCombatStrategy : public Strategy
 {
 public:
@@ -71,6 +76,11 @@ namespace CoaActivityStrategies
 // without a group or leading it (AiFactory's own test) also -"new rpg", -"rpg", -"move random", -"travel"; a
 // duel-ring participant also -"grind", +"coa duel". Not a participant, no group, and ActivityDirector::DuelAmbient():
 // +"coa duel". Strategies added and removed with init = false.
+// M5: a party, loiter or gurubashi participant also -"grind", +"coa party"; a gurubashi participant with
+// Gurubashi.BotsMayWin = 0 (ActivityConfig::Current()) also -"loot", -"gather" (the chest is the players'), and so
+// does a former one (the last row its AI saw) within 40 yards of the chest while it is up (Gurubashi.Enable = 1).
+// Every call first drops a stale activity objective from "prioritized targets"
+// (CoaActivityAttackObjectiveAction::DropStale).
 void AddNonCombat(Player* player, PlayerbotAI* facade, Engine* engine);
 
 // AiFactory::AddDefaultCombatStrategies, right after the random bot's ChangeStrategy(randomBotCombatStrategies),

@@ -119,6 +119,49 @@ void Activity::SetFlags(uint8 flags)
     viewDirty = true;
 }
 
+void Activity::SetFollow(ObjectGuid player)
+{
+    if (follow == player)
+        return;
+    follow = player;
+    viewDirty = true;
+    membershipDirty = true;
+}
+
+void Activity::SetStyle(uint8 style)
+{
+    if (viewStyle == style)
+        return;
+    viewStyle = style;
+    viewDirty = true;
+}
+
+void Activity::SetClosingEmote(uint32 emote)
+{
+    if (closingEmote == emote)
+        return;
+    closingEmote = emote;
+    viewDirty = true;
+}
+
+void Activity::SetObjective(ObjectGuid target)
+{
+    if (objective == target)
+        return;
+    objective = target;
+    viewDirty = true;
+}
+
+Player* Activity::FollowedPlayer() const
+{
+    if (follow.IsEmpty())
+        return nullptr;
+    ActivityMember const* const member = FindMember(follow);
+    if (!member || !member->In() || member->isBot)
+        return nullptr;
+    return ActivityWorld::FindMember(*member);
+}
+
 ActivityMember& Activity::Enroll(ObjectGuid guid, uint64 epoch, bool isBot, uint8 level, uint32 nowUnix)
 {
     membershipDirty = true;

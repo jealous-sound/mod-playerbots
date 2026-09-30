@@ -8,6 +8,7 @@
 #include "ActivityConfig.h"
 #include "ActivityDuelCooldowns.h"
 #include "ActivityRegistry.h"
+#include "AiObjectContext.h"
 #include "BrainTypes.h"
 #include "ChatHelper.h"
 #include "CoaActivityValues.h"
@@ -143,7 +144,10 @@ bool CoaActivityCelebrateAction::Execute(Event /*event*/)
             bot->SetFacingTo(bot->GetAngle(r->center.x, r->center.y));
     }
 
-    uint32 const emote = CELEBRATE_EMOTES[(bot->GetGUID().GetCounter() + r->activityId) % CELEBRATE_EMOTES.size()];
+    // M5: the activity's closing emote when the kind chose one, else the bot's own pick.
+    uint32 const emote =
+        r->emote ? r->emote
+                 : CELEBRATE_EMOTES[(bot->GetGUID().GetCounter() + r->activityId) % CELEBRATE_EMOTES.size()];
     botAI->PlayEmote(emote);
     s.celebratedActivity = r->activityId;
     return true;
@@ -305,6 +309,60 @@ bool CoaActivityAttackObjectiveAction::Execute(Event /*event*/)
     if (!objective)
         return false;
 
-    context->GetValue<GuidVector>("prioritized targets")->Set({objective->GetGUID()});
+    written = objective->GetGUID();
+    context->GetValue<GuidVector>("prioritized targets")->Set({written});
     return Attack(objective);
+}
+
+void CoaActivityAttackObjectiveAction::DropStale(PlayerbotAI* botAI, ActivityMemberView const* row)
+{
+    AiObjectContext* const objects = botAI ? botAI->GetAiObjectContext() : nullptr;
+    auto* const self =
+        objects ? dynamic_cast<CoaActivityAttackObjectiveAction*>(objects->GetAction("coa activity attack objective"))
+                : nullptr;
+    if (!self || self->written.IsEmpty())
+        return;
+    if (row && row->objective == self->written && !row->Has(ACTIVITY_VIEW_RETREAT))
+        return;
+    self->BreakOff();
+}
+
+void CoaActivityAttackObjectiveAction::BreakOff()
+{
+    ObjectGuid const objective = written;
+    written.Clear();
+
+    // Stock AttackersValue adds every prioritized target and GrindTargetValue takes the first attacker: a stale entry
+    // would send the bot back to the target the activity left (or a guard protected).
+    Value<GuidVector>* const prioritized = context->GetValue<GuidVector>("prioritized targets");
+    GuidVector const targets = prioritized->Get();
+    if (targets.size() == 1 && targets.front() == objective)
+        prioritized->Reset();
+
+    Value<Unit*>* const current = context->GetValue<Unit*>("current target");
+    Unit* const target = current->Get();
+    if (target && target->GetGUID() == objective)
+        current->Set(nullptr);
+
+    Unit* const victim = bot->GetVictim();
+    if (victim && victim->GetGUID() == objective)
+        bot->AttackStop();
+}
+
+bool CoaActivityFallBackAction::isUseful()
+{
+    ActivityMemberView const* r = CoaActivityBot::Refresh(botAI).row;
+    return r && r->Has(ACTIVITY_VIEW_RETREAT) && !bot->IsInFlight();
+}
+
+bool CoaActivityFallBackAction::Execute(Event /*event*/)
+{
+    ActivityMemberView const* r = CoaActivityBot::Refresh(botAI).row;
+    if (!r || !r->Has(ACTIVITY_VIEW_RETREAT))
+        return false;
+
+    // The objective is no longer the priority: back to the rally, whoever fights the bot, no longer swinging at it.
+    context->GetValue<GuidVector>("prioritized targets")->Set({});
+    CoaActivityAttackObjectiveAction::DropStale(botAI, r);
+    return ActivityMoveFarTo(StableJitter(r->center, ActivityThreshold::RALLY_ARRIVE_RADIUS, r->phase));
 }

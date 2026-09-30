@@ -520,8 +520,9 @@ public:
         return SendBrainLines(handler, ActivityDirector::Instance().Info(id));
     }
 
-    // start duel [spot] [alliance|horde] [level] [size], start gang [alliance|horde] [level] [size]: the words in
-    // any order; the first number is the level, the second the size.
+    // start <kind> [target] [alliance|horde] [level] [size]: the words in any order; the first number is the level,
+    // the second the size. Any other word is the target of the kinds that take one (ActivityStartTakesTarget); the
+    // director checks it. For a dungeon run the GM's own character is the player the run is for.
     static bool HandleActivityStartCommand(ChatHandler* handler, char const* args)
     {
         std::vector<std::string> words = BrainWords(args);
@@ -554,7 +555,7 @@ public:
                 else
                     request.size = number;
             }
-            else if (*kind == ActivityKindId::Duel && request.target.empty())
+            else if (ActivityStartTakesTarget(*kind) && request.target.empty())
                 request.target = word;
             else
                 return SendActivityUsage(handler);
@@ -656,11 +657,29 @@ public:
         return true;
     }
 
+    // The kinds whose start takes a target word: a duel spot (Duel.Spots), a Hunt.Targets or Raid.Targets name, a
+    // Party.Spots or Loiter.Spots name. Dungeon runs, gangs and booty runs take none.
+    static bool ActivityStartTakesTarget(ActivityKindId kind)
+    {
+        switch (kind)
+        {
+            case ActivityKindId::Duel:
+            case ActivityKindId::Hunt:
+            case ActivityKindId::Raid:
+            case ActivityKindId::Party:
+            case ActivityKindId::Loiter:
+                return true;
+            default:
+                return false;
+        }
+    }
+
     static bool SendActivityUsage(ChatHandler* handler)
     {
         SendBrainLine(handler, "Usage: .playerbots activity list|info <id>|start duel [spot] [alliance|horde] [level] "
-                               "[size]|start gang [alliance|horde] [level] [size]|stop <id>|all|pause|resume|reload|"
-                               "census [hours]|join [id]");
+                               "[size]|start gang|dungeon|gurubashi [alliance|horde] [level] [size]|start "
+                               "hunt|raid|party|loiter [target] [alliance|horde] [level] [size]|stop <id>|all|pause|"
+                               "resume|reload|census [hours]|join [id]");
         return true;
     }
 

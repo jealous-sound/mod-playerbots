@@ -1,4 +1,4 @@
--- CoA voice (M1), memory (M3) and activities (M4): the lines bots answer players with, the lines of the bots'
+-- CoA voice (M1), memory (M3) and activities (M4, M5): the lines bots answer players with, the lines of the bots'
 -- memory and activities, and the texts of the opt-out, memory and activity commands.
 --
 -- Director rows (coa_reply_*, coa_deny_*, coa_emote_*): 8 per name, English in `text`, French in
@@ -36,6 +36,36 @@
 --   coa_act_join_where     8, %zone in every row, %gang optional (whispered by the leader to a player who joined)
 --   coa_act_off, coa_act_join_*: 1 per name, sent by .playerbots activity join; %leader %gang in
 --   coa_act_join_invited, %area %zone in coa_act_join_ring, %min %max in coa_act_join_level.
+-- Activity rows of M5 (chat recruitment, dungeon runs, hunts, raids, parties, crowds, booty runs), same rules:
+--   coa_act_lfm_dungeon    8, %dungeon and %role in every row, %count optional (a dungeon run's leader recruits
+--   coa_act_lfm_dungeon_alt   in its channels; %role is role words joined by ", ", %count "<members>/5")
+--   coa_act_dungeon_queue  8, %dungeon in every row (the leader in party chat, queueing at the Dungeon Finder)
+--   coa_act_dungeon_meet   8, %dungeon and %zone in every row (whispered: the group walks to the portal)
+--   coa_act_dungeon_thanks 8, %dungeon optional (party chat at the end of a run that went in)
+--   coa_act_lfm_hunt       8, %target in every row, %zone optional (a hunt's leader recruits in its channels)
+--   coa_act_lfm_hunt_alt   8, same
+--   coa_act_hunt_go        8, %target in every row (/say as the group attacks)
+--   coa_act_hunt_win       8, %target in every row (/say after the kill)
+--   coa_act_lfm_raid       8, %target %minutes %count %max in every row, %zone optional (a raid's leader
+--   coa_act_lfm_raid_alt      recruits in its channels; %count/%max are raiders in and bots at most)
+--   coa_act_raid_rally     8, %area in every row, %minutes optional (party chat, going to the rally)
+--   coa_act_raid_charge    8, %target in every row (/yell as the raid engages)
+--   coa_act_raid_retreat   8, %area optional (/yell, falling back to the rally)
+--   coa_act_raid_win       8, %target in every row (/yell after the kill)
+--   coa_act_raid_lead      8 (whispered to the real player the lead goes to)
+--   coa_act_recruit_offer  8, %target in every row (a recruiting leader whispers a player who said "lfg bot"
+--                          in a channel, or the player a dungeon run is for; %target is the activity's name)
+--   coa_act_party_call     8, %area in every row (an inn party bot in its channels, once)
+--   coa_act_party_greet    8, %player in every row (/say to a player who comes to the party)
+--   coa_act_loiter_mount   8 (/say, a city crowd bot showing off its mount to a player nearby)
+--   coa_act_booty_call     8, %area optional (a booty run bot in its channels, once)
+--   coa_act_booty_cheer    8 (/say when the Gurubashi chest appears)
+--   coa_act_role_tank, coa_act_role_heal, coa_act_role_dps: 1 each, the role words %role is made of (a
+--   fragment, lower case in English: "a tank"; "un tank" in French).
+--   coa_act_join_role (%role), coa_act_join_closed, coa_act_join_group (%leader %target), coa_act_join_spot
+--   (%area %zone): 1 each, the answers to .playerbots activity join and to join requests whispered to bots.
+--   The French lines that ask for a whisper say "/w moi": a player who whispers "moi" (a join word) to the
+--   recruiting leader joins.
 --
 -- Rules for new lines: utf8 (3-byte) characters only, no emoji; plain apostrophes doubled; no pipe, no
 -- at sign, no link; never start a line with . ! + - #; under 160 bytes before filling. French avoids
@@ -44,8 +74,9 @@
 --
 -- Ids 30000-31499: voice 30000-30449 (reply 30000-30159, deny 30160-30239, emote 30240-30399, system
 -- 30400-30449), 30450-30499 spare; memory bot lines 30500-30563, 30564-30599 spare; memory system rows
--- 30600-30635, 30636-30799 spare; activity bot lines 30800-30871, 30872-30999 spare; activity system rows
--- 31000-31009, 31010-31499 spare. Re-runnable: the deletes below touch only coa_* rows, by id block (to drop
+-- 30600-30635, 30636-30799 spare; activity bot lines 30800-30999 (M4 30800-30871, M5 30872-30999); activity
+-- system rows 31000-31016 (M4 31000-31009, M5 31010-31016), 31017-31099 spare; M5 activity bot lines
+-- 31100-31147, 31148-31499 spare. Re-runnable: the deletes below touch only coa_* rows, by id block (to drop
 -- renamed or removed lines) and by name. The file ends by moving the table's AUTO_INCREMENT to 31500, so
 -- an insert without an id gets 31500 or above and never lands in this block.
 
@@ -164,7 +195,36 @@ DELETE FROM ai_playerbot_texts WHERE name IN (
     'coa_act_join_faction',
     'coa_act_join_level',
     'coa_act_join_already',
-    'coa_act_join_usage'
+    'coa_act_join_usage',
+    'coa_act_lfm_dungeon',
+    'coa_act_lfm_dungeon_alt',
+    'coa_act_dungeon_queue',
+    'coa_act_dungeon_meet',
+    'coa_act_dungeon_thanks',
+    'coa_act_lfm_hunt',
+    'coa_act_lfm_hunt_alt',
+    'coa_act_hunt_go',
+    'coa_act_hunt_win',
+    'coa_act_lfm_raid',
+    'coa_act_lfm_raid_alt',
+    'coa_act_raid_rally',
+    'coa_act_raid_charge',
+    'coa_act_raid_retreat',
+    'coa_act_raid_win',
+    'coa_act_raid_lead',
+    'coa_act_role_tank',
+    'coa_act_role_heal',
+    'coa_act_role_dps',
+    'coa_act_join_role',
+    'coa_act_join_closed',
+    'coa_act_join_group',
+    'coa_act_join_spot',
+    'coa_act_recruit_offer',
+    'coa_act_party_call',
+    'coa_act_party_greet',
+    'coa_act_loiter_mount',
+    'coa_act_booty_call',
+    'coa_act_booty_cheer'
 );
 
 INSERT INTO `ai_playerbot_texts`
@@ -1202,6 +1262,294 @@ VALUES
     (30871, 'coa_act_join_where', 'Welcome to %gang. Our hunting ground: %zone.', 0, 0,
      '', 'Bienvenue chez %gang. Notre terrain de chasse : %zone.', '', '', '', '', '', ''),
 
+    -- coa_act_lfm_dungeon
+    (30872, 'coa_act_lfm_dungeon', 'LFM %dungeon, need %role. Whisper me!', 0, 0,
+     '', 'LFM %dungeon, il manque %role. /w moi !', '', '', '', '', '', ''),
+    (30873, 'coa_act_lfm_dungeon', 'LFM %dungeon, %count, need %role. Whisper me inv to join.', 0, 0,
+     '', 'LFM %dungeon, %count, il manque %role. Chuchotez-moi « inv » pour venir.', '', '', '', '', '', ''),
+    (30874, 'coa_act_lfm_dungeon', '%dungeon group forming, we need %role. Whisper me!', 0, 0,
+     '', 'Groupe pour %dungeon en formation, il nous faut %role. /w moi !', '', '', '', '', '', ''),
+    (30875, 'coa_act_lfm_dungeon', 'Anyone for %dungeon? Need %role, whisper me inv.', 0, 0,
+     '', 'Quelqu''un pour %dungeon ? Il manque %role, /w moi « inv ».', '', '', '', '', '', ''),
+    (30876, 'coa_act_lfm_dungeon', '%dungeon run starting soon, looking for %role. Whisper me x.', 0, 0,
+     '', 'On part bientôt pour %dungeon, on cherche %role. /w moi « x ».', '', '', '', '', '', ''),
+    (30877, 'coa_act_lfm_dungeon', 'LF %role for %dungeon (%count). Whisper me inv!', 0, 0,
+     '', 'On cherche %role pour %dungeon (%count). /w moi « inv » !', '', '', '', '', '', ''),
+    (30878, 'coa_act_lfm_dungeon', 'Need %role for %dungeon, then we go. Whisper me!', 0, 0,
+     '', 'Il manque %role pour %dungeon, et on y va. /w moi !', '', '', '', '', '', ''),
+    (30879, 'coa_act_lfm_dungeon', '%dungeon: %count, still need %role. Whisper me inv.', 0, 0,
+     '', '%dungeon : %count, il manque encore %role. Chuchotez-moi « inv ».', '', '', '', '', '', ''),
+
+    -- coa_act_lfm_dungeon_alt
+    (30880, 'coa_act_lfm_dungeon_alt', 'Group for %dungeon, still missing %role. Whisper me inv.', 0, 0,
+     '', 'Groupe pour %dungeon, il manque encore %role. /w moi « inv ».', '', '', '', '', '', ''),
+    (30881, 'coa_act_lfm_dungeon_alt', 'Still looking for %role for %dungeon. Whisper me inv.', 0, 0,
+     '', 'On cherche toujours %role pour %dungeon. Chuchotez-moi « inv ».', '', '', '', '', '', ''),
+    (30882, 'coa_act_lfm_dungeon_alt', '%dungeon, %count. Missing %role, whisper me x.', 0, 0,
+     '', '%dungeon, %count. Il manque %role, /w moi « x ».', '', '', '', '', '', ''),
+    (30883, 'coa_act_lfm_dungeon_alt', 'Room left in our %dungeon group for %role. Whisper me inv.', 0, 0,
+     '', 'Il reste de la place pour %role dans notre groupe pour %dungeon. /w moi « inv ».', '', '', '', '', '', ''),
+    (30884, 'coa_act_lfm_dungeon_alt', 'Our %dungeon group needs %role. Whisper me inv.', 0, 0,
+     '', 'Notre groupe pour %dungeon cherche %role. /w moi « inv ».', '', '', '', '', '', ''),
+    (30885, 'coa_act_lfm_dungeon_alt', '%role wanted for %dungeon, %count. Whisper me!', 0, 0,
+     '', 'On recherche %role pour %dungeon, %count. /w moi !', '', '', '', '', '', ''),
+    (30886, 'coa_act_lfm_dungeon_alt', 'Looking for %role, then off to %dungeon. Whisper me inv.', 0, 0,
+     '', 'On cherche %role, et direction %dungeon. /w moi « inv ».', '', '', '', '', '', ''),
+    (30887, 'coa_act_lfm_dungeon_alt', '%dungeon today? We still need %role. Whisper me inv.', 0, 0,
+     '', '%dungeon aujourd''hui ? Il nous faut encore %role. /w moi « inv ».', '', '', '', '', '', ''),
+
+    -- coa_act_dungeon_queue
+    (30888, 'coa_act_dungeon_queue', 'Everyone is here: queueing us for %dungeon, confirm your role.', 0, 0,
+     '', 'Tout le monde est là : je nous inscris pour %dungeon, confirmez votre rôle.', '', '', '', '', '', ''),
+    (30889, 'coa_act_dungeon_queue', 'Signing us up for %dungeon, accept the role check.', 0, 0,
+     '', 'Inscription pour %dungeon, acceptez la vérification des rôles.', '', '', '', '', '', ''),
+    (30890, 'coa_act_dungeon_queue', 'Queueing for %dungeon now. Accept the role check, then enter when it is ready.', 0, 0,
+     '', 'On s''inscrit pour %dungeon. Acceptez la vérification des rôles, puis entrez quand c''est prêt.', '', '', '', '', '', ''),
+    (30891, 'coa_act_dungeon_queue', 'All set. I am queueing us for %dungeon, please confirm your role.', 0, 0,
+     '', 'Tout est prêt. Je nous inscris pour %dungeon, confirmez votre rôle.', '', '', '', '', '', ''),
+    (30892, 'coa_act_dungeon_queue', 'Dungeon Finder for %dungeon: confirm your role when it pops up.', 0, 0,
+     '', 'Recherche de donjon lancée pour %dungeon : confirmez votre rôle quand ça s''affiche.', '', '', '', '', '', ''),
+    (30893, 'coa_act_dungeon_queue', 'Signing up for %dungeon. Pick your role and accept when it is ready.', 0, 0,
+     '', 'Inscription pour %dungeon. Choisissez votre rôle et acceptez quand c''est prêt.', '', '', '', '', '', ''),
+    (30894, 'coa_act_dungeon_queue', 'Here we go, queueing for %dungeon. Confirm your role, please.', 0, 0,
+     '', 'C''est parti, on s''inscrit pour %dungeon. Confirmez votre rôle, s''il vous plaît.', '', '', '', '', '', ''),
+    (30895, 'coa_act_dungeon_queue', 'Queue for %dungeon is on. Accept the role check, then the dungeon.', 0, 0,
+     '', 'File d''attente lancée pour %dungeon. Acceptez la vérification des rôles, puis le donjon.', '', '', '', '', '', ''),
+
+    -- coa_act_dungeon_meet
+    (30896, 'coa_act_dungeon_meet', 'The finder is not helping. Meet us at the %dungeon entrance in %zone.', 0, 0,
+     '', 'La recherche de donjon ne donne rien. Retrouve-nous devant %dungeon, vers %zone.', '', '', '', '', '', ''),
+    (30897, 'coa_act_dungeon_meet', 'No luck with the finder. We walk: meet us at the entrance of %dungeon, %zone.', 0, 0,
+     '', 'Pas de chance avec la recherche. On y va à pied : rendez-vous devant %dungeon, vers %zone.', '', '', '', '', '', ''),
+    (30898, 'coa_act_dungeon_meet', 'We will go on foot. See you at the entrance of %dungeon in %zone.', 0, 0,
+     '', 'On y va à pied. On se retrouve devant %dungeon, vers %zone.', '', '', '', '', '', ''),
+    (30899, 'coa_act_dungeon_meet', 'The queue is not working out, so we walk. Meet at %dungeon, in %zone.', 0, 0,
+     '', 'La file d''attente ne marche pas, on y va à pied. Rendez-vous devant %dungeon, vers %zone.', '', '', '', '', '', ''),
+    (30900, 'coa_act_dungeon_meet', 'Change of plan: we meet at the entrance of %dungeon, %zone.', 0, 0,
+     '', 'Changement de plan : rendez-vous devant %dungeon, vers %zone.', '', '', '', '', '', ''),
+    (30901, 'coa_act_dungeon_meet', 'Let''s walk there. Entrance of %dungeon, %zone. See you soon!', 0, 0,
+     '', 'Allons-y à pied : direction %dungeon, vers %zone. À tout de suite !', '', '', '', '', '', ''),
+    (30902, 'coa_act_dungeon_meet', 'The finder did not pop, so on foot it is. %dungeon entrance, %zone.', 0, 0,
+     '', 'La recherche n''a rien donné, donc à pied. Rendez-vous devant %dungeon, vers %zone.', '', '', '', '', '', ''),
+    (30903, 'coa_act_dungeon_meet', 'We are heading to the entrance of %dungeon in %zone. Meet us there!', 0, 0,
+     '', 'On se dirige vers %dungeon, vers %zone. Retrouve-nous devant l''entrée !', '', '', '', '', '', ''),
+
+    -- coa_act_dungeon_thanks
+    (30904, 'coa_act_dungeon_thanks', 'Thanks for the run, see you around!', 0, 0,
+     '', 'Merci pour la sortie, à plus tard !', '', '', '', '', '', ''),
+    (30905, 'coa_act_dungeon_thanks', 'Good run, everyone. Thanks!', 0, 0,
+     '', 'Belle sortie, tout le monde. Merci !', '', '', '', '', '', ''),
+    (30906, 'coa_act_dungeon_thanks', 'That was a fine %dungeon run. Thanks, everyone!', 0, 0,
+     '', 'Belle virée dans %dungeon. Merci, tout le monde !', '', '', '', '', '', ''),
+    (30907, 'coa_act_dungeon_thanks', 'Well played in %dungeon. Take care!', 0, 0,
+     '', 'Bien joué dans %dungeon. Prenez soin de vous !', '', '', '', '', '', ''),
+    (30908, 'coa_act_dungeon_thanks', 'Thanks for the group, it was fun!', 0, 0,
+     '', 'Merci pour le groupe, c''était sympa !', '', '', '', '', '', ''),
+    (30909, 'coa_act_dungeon_thanks', 'GG everyone, thanks for the company.', 0, 0,
+     '', 'GG tout le monde, merci pour la compagnie.', '', '', '', '', '', ''),
+    (30910, 'coa_act_dungeon_thanks', 'Nice work in there. Until next time!', 0, 0,
+     '', 'Beau travail là-dedans. À la prochaine !', '', '', '', '', '', ''),
+    (30911, 'coa_act_dungeon_thanks', 'Thanks for joining us in %dungeon!', 0, 0,
+     '', 'Merci pour cette virée dans %dungeon !', '', '', '', '', '', ''),
+
+    -- coa_act_lfm_hunt
+    (30912, 'coa_act_lfm_hunt', 'Going after %target, who is in? Whisper me.', 0, 0,
+     '', 'On part chasser %target, qui vient ? /w moi.', '', '', '', '', '', ''),
+    (30913, 'coa_act_lfm_hunt', 'Group forming for %target in %zone. Whisper me inv to come along.', 0, 0,
+     '', 'Groupe en formation contre %target vers %zone. Chuchotez-moi « inv » pour venir.', '', '', '', '', '', ''),
+    (30914, 'coa_act_lfm_hunt', 'Hunting %target soon. Want in? Whisper me inv.', 0, 0,
+     '', 'On attaque %target bientôt. Envie de venir ? /w moi « inv ».', '', '', '', '', '', ''),
+    (30915, 'coa_act_lfm_hunt', 'Anyone up for %target? We have a group, whisper me x.', 0, 0,
+     '', 'Quelqu''un pour %target ? On a un groupe, /w moi « x ».', '', '', '', '', '', ''),
+    (30916, 'coa_act_lfm_hunt', '%target has had it coming. Join us, whisper me inv!', 0, 0,
+     '', '%target n''a qu''à bien se tenir. Rejoignez-nous, /w moi « inv » !', '', '', '', '', '', ''),
+    (30917, 'coa_act_lfm_hunt', 'Heading out to take down %target in %zone. Whisper me to join!', 0, 0,
+     '', 'On part abattre %target vers %zone. /w moi pour venir !', '', '', '', '', '', ''),
+    (30918, 'coa_act_lfm_hunt', 'LFM %target, whisper me inv.', 0, 0,
+     '', 'LFM %target, /w moi « inv ».', '', '', '', '', '', ''),
+    (30919, 'coa_act_lfm_hunt', 'Who wants a piece of %target? Whisper me inv.', 0, 0,
+     '', 'Qui veut sa part de %target ? /w moi « inv ».', '', '', '', '', '', ''),
+
+    -- coa_act_lfm_hunt_alt
+    (30920, 'coa_act_lfm_hunt_alt', 'Group forming to kill %target. Whisper me inv.', 0, 0,
+     '', 'Groupe en formation pour tuer %target. /w moi « inv ».', '', '', '', '', '', ''),
+    (30921, 'coa_act_lfm_hunt_alt', 'Room in our group for %target. Whisper me inv.', 0, 0,
+     '', 'Il reste de la place dans notre groupe contre %target. /w moi « inv ».', '', '', '', '', '', ''),
+    (30922, 'coa_act_lfm_hunt_alt', 'Still taking people for %target. Whisper me x.', 0, 0,
+     '', 'On prend encore du monde pour %target. /w moi « x ».', '', '', '', '', '', ''),
+    (30923, 'coa_act_lfm_hunt_alt', '%target hunt in %zone. Whisper me inv to join us.', 0, 0,
+     '', 'On chasse %target vers %zone. Chuchotez-moi « inv » pour venir.', '', '', '', '', '', ''),
+    (30924, 'coa_act_lfm_hunt_alt', 'We are about to go for %target. Whisper me inv!', 0, 0,
+     '', 'On va bientôt attaquer %target. /w moi « inv » !', '', '', '', '', '', ''),
+    (30925, 'coa_act_lfm_hunt_alt', 'Taking down %target together, all welcome. Whisper me.', 0, 0,
+     '', 'On abat %target ensemble, tout le monde est bienvenu. /w moi.', '', '', '', '', '', ''),
+    (30926, 'coa_act_lfm_hunt_alt', 'Need a few more for %target. Whisper me inv.', 0, 0,
+     '', 'Il nous faut encore du monde pour %target. /w moi « inv ».', '', '', '', '', '', ''),
+    (30927, 'coa_act_lfm_hunt_alt', '%target is up. Group forming, whisper me inv.', 0, 0,
+     '', '%target est là. Groupe en formation, /w moi « inv ».', '', '', '', '', '', ''),
+
+    -- coa_act_hunt_go
+    (30928, 'coa_act_hunt_go', 'There is %target. Everyone on it!', 0, 0,
+     '', 'Voilà %target. Tout le monde dessus !', '', '', '', '', '', ''),
+    (30929, 'coa_act_hunt_go', '%target, right there. Attack!', 0, 0,
+     '', '%target, juste là. À l''attaque !', '', '', '', '', '', ''),
+    (30930, 'coa_act_hunt_go', 'Found %target! Go, go, go!', 0, 0,
+     '', 'J''ai trouvé %target ! Allez, allez !', '', '', '', '', '', ''),
+    (30931, 'coa_act_hunt_go', 'On %target, now!', 0, 0,
+     '', 'Sur %target, maintenant !', '', '', '', '', '', ''),
+    (30932, 'coa_act_hunt_go', 'Skull on %target. Charge!', 0, 0,
+     '', 'Crâne sur %target. Chargez !', '', '', '', '', '', ''),
+    (30933, 'coa_act_hunt_go', 'There, %target! Together now!', 0, 0,
+     '', 'Là, %target ! Ensemble, maintenant !', '', '', '', '', '', ''),
+    (30934, 'coa_act_hunt_go', '%target spotted. Hit hard!', 0, 0,
+     '', '%target en vue. Frappez fort !', '', '', '', '', '', ''),
+    (30935, 'coa_act_hunt_go', 'Here we go, %target is ours!', 0, 0,
+     '', 'C''est parti, %target est pour nous !', '', '', '', '', '', ''),
+
+    -- coa_act_hunt_win
+    (30936, 'coa_act_hunt_win', '%target is down. Nice work!', 0, 0,
+     '', '%target est à terre. Beau travail !', '', '', '', '', '', ''),
+    (30937, 'coa_act_hunt_win', 'Down goes %target! Well done, everyone.', 0, 0,
+     '', 'Au tapis, %target ! Bien joué, tout le monde.', '', '', '', '', '', ''),
+    (30938, 'coa_act_hunt_win', 'That is the end of %target. Great teamwork!', 0, 0,
+     '', 'C''en est fini de %target. Beau travail d''équipe !', '', '', '', '', '', ''),
+    (30939, 'coa_act_hunt_win', '%target will not bother anyone for a bit. Thanks, everyone!', 0, 0,
+     '', '%target ne dérangera plus personne avant un moment. Merci, tout le monde !', '', '', '', '', '', ''),
+    (30940, 'coa_act_hunt_win', 'We got %target! Good fight.', 0, 0,
+     '', 'On a eu %target ! Beau combat.', '', '', '', '', '', ''),
+    (30941, 'coa_act_hunt_win', 'So much for %target. Well fought!', 0, 0,
+     '', 'Et voilà pour %target. Bien combattu !', '', '', '', '', '', ''),
+    (30942, 'coa_act_hunt_win', 'Victory over %target. Nice job, everyone!', 0, 0,
+     '', 'Victoire contre %target. Bien joué, tout le monde !', '', '', '', '', '', ''),
+    (30943, 'coa_act_hunt_win', 'And that is %target done. Thanks for the help!', 0, 0,
+     '', '%target, c''est réglé. Merci pour le coup de main !', '', '', '', '', '', ''),
+
+    -- coa_act_lfm_raid
+    (30944, 'coa_act_lfm_raid', 'Raid on %target in %minutes min, %count/%max. Whisper me!', 0, 0,
+     '', 'Raid sur %target dans %minutes min, %count/%max. /w moi !', '', '', '', '', '', ''),
+    (30945, 'coa_act_lfm_raid', 'Raiding %target in %zone, leaving in %minutes min. %count/%max, whisper me inv.', 0, 0,
+     '', 'Raid sur %target vers %zone, départ dans %minutes min. %count/%max, /w moi « inv ».', '', '', '', '', '', ''),
+    (30946, 'coa_act_lfm_raid', '%count/%max for the raid on %target, we go in %minutes min. Whisper me inv!', 0, 0,
+     '', '%count/%max pour le raid sur %target, on part dans %minutes min. /w moi « inv » !', '', '', '', '', '', ''),
+    (30947, 'coa_act_lfm_raid', 'LFM raid on %target, %count/%max, %minutes min left. Whisper me x.', 0, 0,
+     '', 'LFM raid sur %target, %count/%max, encore %minutes min. /w moi « x ».', '', '', '', '', '', ''),
+    (30948, 'coa_act_lfm_raid', 'We hit %target in %minutes min. %count/%max so far, whisper me inv.', 0, 0,
+     '', 'On attaque %target dans %minutes min. %count/%max pour l''instant, /w moi « inv ».', '', '', '', '', '', ''),
+    (30949, 'coa_act_lfm_raid', 'Raid forming against %target: %count/%max, %minutes min to join. Whisper me!', 0, 0,
+     '', 'Raid en formation contre %target : %count/%max, %minutes min pour nous rejoindre. /w moi !', '', '', '', '', '', ''),
+    (30950, 'coa_act_lfm_raid', 'Taking %target down in %minutes min, %count/%max. Whisper me inv.', 0, 0,
+     '', 'On fait tomber %target dans %minutes min, %count/%max. /w moi « inv ».', '', '', '', '', '', ''),
+    (30951, 'coa_act_lfm_raid', '%minutes min until we march on %target. %count/%max, whisper me inv.', 0, 0,
+     '', 'Plus que %minutes min avant de marcher sur %target. %count/%max, /w moi « inv ».', '', '', '', '', '', ''),
+
+    -- coa_act_lfm_raid_alt
+    (30952, 'coa_act_lfm_raid_alt', 'Who is coming to hit %target? %count/%max, we leave in %minutes min.', 0, 0,
+     '', 'Qui vient taper %target ? %count/%max, départ dans %minutes min.', '', '', '', '', '', ''),
+    (30953, 'coa_act_lfm_raid_alt', 'Still room in the raid on %target: %count/%max, %minutes min left. Whisper me inv.', 0, 0,
+     '', 'Encore de la place dans le raid sur %target : %count/%max, encore %minutes min. /w moi « inv ».', '', '', '', '', '', ''),
+    (30954, 'coa_act_lfm_raid_alt', 'Raid on %target in %zone, %count/%max. Leaving in %minutes min, whisper me x.', 0, 0,
+     '', 'Raid sur %target vers %zone, %count/%max. Départ dans %minutes min, /w moi « x ».', '', '', '', '', '', ''),
+    (30955, 'coa_act_lfm_raid_alt', '%target is next. %count/%max, we move in %minutes min. Whisper me inv.', 0, 0,
+     '', 'Prochaine cible : %target. %count/%max, on bouge dans %minutes min. /w moi « inv ».', '', '', '', '', '', ''),
+    (30956, 'coa_act_lfm_raid_alt', 'Need more for %target! %count/%max, %minutes min to go. Whisper me.', 0, 0,
+     '', 'Il en faut plus pour %target ! %count/%max, encore %minutes min. /w moi.', '', '', '', '', '', ''),
+    (30957, 'coa_act_lfm_raid_alt', 'Going for %target in %minutes min with %count/%max. Join us, whisper me inv!', 0, 0,
+     '', 'On attaque %target dans %minutes min à %count/%max. Rejoignez-nous, /w moi « inv » !', '', '', '', '', '', ''),
+    (30958, 'coa_act_lfm_raid_alt', 'Spots open against %target: %count/%max. We leave in %minutes min, whisper me inv.', 0, 0,
+     '', 'Places libres contre %target : %count/%max. Départ dans %minutes min, /w moi « inv ».', '', '', '', '', '', ''),
+    (30959, 'coa_act_lfm_raid_alt', '%count/%max ready for %target. %minutes min left to join, whisper me inv.', 0, 0,
+     '', '%count/%max pour %target. Encore %minutes min pour venir, /w moi « inv ».', '', '', '', '', '', ''),
+
+    -- coa_act_raid_rally
+    (30960, 'coa_act_raid_rally', 'Rally at %area. We move out soon.', 0, 0,
+     '', 'Ralliement vers %area. On part bientôt.', '', '', '', '', '', ''),
+    (30961, 'coa_act_raid_rally', 'Everyone to %area, we regroup there.', 0, 0,
+     '', 'Tout le monde vers %area, on se regroupe là-bas.', '', '', '', '', '', ''),
+    (30962, 'coa_act_raid_rally', 'Meet at %area. We march in %minutes min or so.', 0, 0,
+     '', 'Rendez-vous vers %area. On marche dans %minutes min environ.', '', '', '', '', '', ''),
+    (30963, 'coa_act_raid_rally', 'Gather at %area, then we march.', 0, 0,
+     '', 'Rassemblement vers %area, puis on y va.', '', '', '', '', '', ''),
+    (30964, 'coa_act_raid_rally', 'Regroup at %area. We move out once everyone is there.', 0, 0,
+     '', 'Regroupement vers %area. On part quand tout le monde est là.', '', '', '', '', '', ''),
+    (30965, 'coa_act_raid_rally', 'To %area, everyone! We leave in about %minutes min.', 0, 0,
+     '', 'Tout le monde vers %area ! Départ dans environ %minutes min.', '', '', '', '', '', ''),
+    (30966, 'coa_act_raid_rally', 'Rally point: %area. Stay together.', 0, 0,
+     '', 'Point de ralliement : %area. Restez ensemble.', '', '', '', '', '', ''),
+    (30967, 'coa_act_raid_rally', 'Head for %area and wait for the others.', 0, 0,
+     '', 'Direction %area, et on attend les autres.', '', '', '', '', '', ''),
+
+    -- coa_act_raid_charge
+    (30968, 'coa_act_raid_charge', 'Charge! Take down %target!', 0, 0,
+     '', 'Chargez ! Abattez %target !', '', '', '', '', '', ''),
+    (30969, 'coa_act_raid_charge', 'For glory! At %target!', 0, 0,
+     '', 'Pour la gloire ! Sus à %target !', '', '', '', '', '', ''),
+    (30970, 'coa_act_raid_charge', 'All together, on %target!', 0, 0,
+     '', 'Ensemble, sur %target !', '', '', '', '', '', ''),
+    (30971, 'coa_act_raid_charge', 'Now! Everyone on %target!', 0, 0,
+     '', 'Maintenant ! Tout le monde sur %target !', '', '', '', '', '', ''),
+    (30972, 'coa_act_raid_charge', 'Attack! %target falls today!', 0, 0,
+     '', 'À l''attaque ! %target tombe aujourd''hui !', '', '', '', '', '', ''),
+    (30973, 'coa_act_raid_charge', 'Forward! Bring down %target!', 0, 0,
+     '', 'En avant ! Faites tomber %target !', '', '', '', '', '', ''),
+    (30974, 'coa_act_raid_charge', 'Go, go! Hit %target with everything!', 0, 0,
+     '', 'Allez, allez ! Tout sur %target !', '', '', '', '', '', ''),
+    (30975, 'coa_act_raid_charge', 'Everyone on the skull! %target goes down!', 0, 0,
+     '', 'Tout le monde sur le crâne ! %target va tomber !', '', '', '', '', '', ''),
+
+    -- coa_act_raid_retreat
+    (30976, 'coa_act_raid_retreat', 'Fall back! Regroup at the rally!', 0, 0,
+     '', 'Repliez-vous ! Regroupement au point de ralliement !', '', '', '', '', '', ''),
+    (30977, 'coa_act_raid_retreat', 'Retreat! Back to %area!', 0, 0,
+     '', 'Retraite ! Retour vers %area !', '', '', '', '', '', ''),
+    (30978, 'coa_act_raid_retreat', 'Pull back, pull back! We regroup at %area.', 0, 0,
+     '', 'On se replie, on se replie ! Regroupement vers %area.', '', '', '', '', '', ''),
+    (30979, 'coa_act_raid_retreat', 'Too hot! Everyone back to the rally!', 0, 0,
+     '', 'Ça chauffe trop ! Tout le monde au point de ralliement !', '', '', '', '', '', ''),
+    (30980, 'coa_act_raid_retreat', 'Fall back to %area, now!', 0, 0,
+     '', 'Repli vers %area, maintenant !', '', '', '', '', '', ''),
+    (30981, 'coa_act_raid_retreat', 'Back off! Regroup at the rally point!', 0, 0,
+     '', 'On recule ! Regroupement au point de ralliement !', '', '', '', '', '', ''),
+    (30982, 'coa_act_raid_retreat', 'Disengage! Meet at %area!', 0, 0,
+     '', 'Décrochez ! Rendez-vous vers %area !', '', '', '', '', '', ''),
+    (30983, 'coa_act_raid_retreat', 'Retreat to the rally, stay together!', 0, 0,
+     '', 'Retraite au point de ralliement, restez ensemble !', '', '', '', '', '', ''),
+
+    -- coa_act_raid_win
+    (30984, 'coa_act_raid_win', '%target has fallen! Well fought!', 0, 0,
+     '', '%target est à terre ! Bien combattu !', '', '', '', '', '', ''),
+    (30985, 'coa_act_raid_win', 'Victory over %target!', 0, 0,
+     '', 'Victoire sur %target !', '', '', '', '', '', ''),
+    (30986, 'coa_act_raid_win', '%target is down! Glory to us all!', 0, 0,
+     '', '%target est au tapis ! Gloire à nous !', '', '', '', '', '', ''),
+    (30987, 'coa_act_raid_win', 'We did it! Victory over %target!', 0, 0,
+     '', 'On l''a fait ! Victoire contre %target !', '', '', '', '', '', ''),
+    (30988, 'coa_act_raid_win', 'That is how it is done! So much for %target!', 0, 0,
+     '', 'Voilà comment on fait ! C''en est fini de %target !', '', '', '', '', '', ''),
+    (30989, 'coa_act_raid_win', '%target is beaten! Well done, everyone!', 0, 0,
+     '', '%target, c''est terminé ! Bien joué, tout le monde !', '', '', '', '', '', ''),
+    (30990, 'coa_act_raid_win', 'Down goes %target! What a fight!', 0, 0,
+     '', 'Au tapis, %target ! Quel combat !', '', '', '', '', '', ''),
+    (30991, 'coa_act_raid_win', 'The day is ours! %target will not get up soon!', 0, 0,
+     '', 'La journée est à nous ! %target ne se relèvera pas de sitôt !', '', '', '', '', '', ''),
+
+    -- coa_act_raid_lead
+    (30992, 'coa_act_raid_lead', 'The group is yours now. Thanks for coming!', 0, 0,
+     '', 'Le groupe est à toi maintenant. Merci pour ta venue !', '', '', '', '', '', ''),
+    (30993, 'coa_act_raid_lead', 'You lead now. Great raid, thanks!', 0, 0,
+     '', 'C''est toi qui mènes maintenant. Beau raid, merci !', '', '', '', '', '', ''),
+    (30994, 'coa_act_raid_lead', 'I am handing you the lead. Take care out there!', 0, 0,
+     '', 'Je te passe la tête du groupe. Prends soin de toi !', '', '', '', '', '', ''),
+    (30995, 'coa_act_raid_lead', 'The lead is yours. Thanks for fighting with us!', 0, 0,
+     '', 'Le commandement est à toi. Merci d''avoir combattu avec nous !', '', '', '', '', '', ''),
+    (30996, 'coa_act_raid_lead', 'You have the lead. It was an honor!', 0, 0,
+     '', 'Tu as la main. Ce fut un honneur !', '', '', '', '', '', ''),
+    (30997, 'coa_act_raid_lead', 'The raid is yours now. Well fought!', 0, 0,
+     '', 'Le raid est à toi maintenant. Bien combattu !', '', '', '', '', '', ''),
+    (30998, 'coa_act_raid_lead', 'I passed you the lead. See you on the field!', 0, 0,
+     '', 'Je t''ai passé la tête du groupe. À la prochaine sur le terrain !', '', '', '', '', '', ''),
+    (30999, 'coa_act_raid_lead', 'Keep the group, it is yours. Thanks for the help!', 0, 0,
+     '', 'Garde le groupe, il est à toi. Merci pour le coup de main !', '', '', '', '', '', ''),
+
     -- coa_act_* system rows: .playerbots activity join, 1 row each
     (31000, 'coa_act_off', 'Bot activities are off on this realm.', 0, 0,
      '', 'Les activités des bots sont désactivées sur ce royaume.', '', '', '', '', '', ''),
@@ -1222,7 +1570,131 @@ VALUES
     (31008, 'coa_act_join_already', 'You are already in that activity.', 0, 0,
      '', 'Vous participez déjà à cette activité.', '', '', '', '', '', ''),
     (31009, 'coa_act_join_usage', 'Usage: .playerbots activity join [id] (no id: the nearest one)', 0, 0,
-     '', 'Usage : .playerbots activity join [id] (sans id : la plus proche)', '', '', '', '', '', '');
+     '', 'Usage : .playerbots activity join [id] (sans id : la plus proche)', '', '', '', '', '', ''),
 
--- The explicit ids push the counter to 31010, inside the block; move it past (never below max(id) + 1).
+    -- coa_act_* system rows (M5): role words for %role, and the chat and command join answers, 1 row each
+    (31010, 'coa_act_role_tank', 'a tank', 0, 0,
+     '', 'un tank', '', '', '', '', '', ''),
+    (31011, 'coa_act_role_heal', 'a healer', 0, 0,
+     '', 'un soigneur', '', '', '', '', '', ''),
+    (31012, 'coa_act_role_dps', 'a DPS', 0, 0,
+     '', 'un DPS', '', '', '', '', '', ''),
+    (31013, 'coa_act_join_role', 'We already have that role, we need %role.', 0, 0,
+     '', 'Ce rôle est déjà pris, il nous faut %role.', '', '', '', '', '', ''),
+    (31014, 'coa_act_join_closed', 'That group is not recruiting any more.', 0, 0,
+     '', 'Ce groupe ne recrute plus.', '', '', '', '', '', ''),
+    (31015, 'coa_act_join_group', '%leader invites you to the group for %target: accept the invitation.', 0, 0,
+     '', '%leader vous invite dans le groupe pour %target : acceptez l''invitation.', '', '', '', '', '', ''),
+    (31016, 'coa_act_join_spot', 'They are at %area (%zone): come by!', 0, 0,
+     '', 'Ça se passe vers %area (%zone) : passez donc !', '', '', '', '', '', ''),
+
+    -- coa_act_recruit_offer
+    (31100, 'coa_act_recruit_offer', 'We have a group for %target and room for you. Whisper me inv.', 0, 0,
+     '', 'On a un groupe pour %target et de la place pour toi. /w moi « inv ».', '', '', '', '', '', ''),
+    (31101, 'coa_act_recruit_offer', 'Hey, our group for %target has a spot for you. Whisper me inv to join.', 0, 0,
+     '', 'Salut, notre groupe pour %target a une place pour toi. /w moi « inv » pour venir.', '', '', '', '', '', ''),
+    (31102, 'coa_act_recruit_offer', 'Looking for a group? We are going for %target, whisper me inv.', 0, 0,
+     '', 'Tu cherches un groupe ? On part pour %target, /w moi « inv ».', '', '', '', '', '', ''),
+    (31103, 'coa_act_recruit_offer', 'There is room for you in our %target group. Just whisper me inv.', 0, 0,
+     '', 'Il y a de la place pour toi dans notre groupe pour %target. /w moi « inv », tout simplement.', '', '', '', '', '', ''),
+    (31104, 'coa_act_recruit_offer', 'Want to join us for %target? Whisper me inv.', 0, 0,
+     '', 'Envie de venir avec nous pour %target ? /w moi « inv ».', '', '', '', '', '', ''),
+    (31105, 'coa_act_recruit_offer', 'Our group for %target could use you. Whisper me x if you are in.', 0, 0,
+     '', 'Notre groupe pour %target aurait bien besoin de toi. /w moi « x » si ça te dit.', '', '', '', '', '', ''),
+    (31106, 'coa_act_recruit_offer', 'We are heading for %target with a spot open. Whisper me inv!', 0, 0,
+     '', 'On part pour %target avec une place libre. /w moi « inv » !', '', '', '', '', '', ''),
+    (31107, 'coa_act_recruit_offer', 'A free spot for %target with us. Interested? Whisper me inv.', 0, 0,
+     '', 'Une place libre pour %target avec nous. Ça te dit ? /w moi « inv ».', '', '', '', '', '', ''),
+
+    -- coa_act_party_call
+    (31108, 'coa_act_party_call', 'Drinks at the inn in %area, come and join us!', 0, 0,
+     '', 'On boit un verre à l''auberge vers %area, venez nous rejoindre !', '', '', '', '', '', ''),
+    (31109, 'coa_act_party_call', 'Party at the inn in %area. Everyone welcome!', 0, 0,
+     '', 'Fête à l''auberge vers %area. Tout le monde est bienvenu !', '', '', '', '', '', ''),
+    (31110, 'coa_act_party_call', 'Good company and cold drinks at the inn in %area. Come by!', 0, 0,
+     '', 'Bonne compagnie et boissons fraîches à l''auberge vers %area. Passez nous voir !', '', '', '', '', '', ''),
+    (31111, 'coa_act_party_call', 'We are gathering at the inn in %area. Pull up a chair!', 0, 0,
+     '', 'On se retrouve à l''auberge vers %area. Prenez une chaise !', '', '', '', '', '', ''),
+    (31112, 'coa_act_party_call', 'Anyone thirsty? Meet us at the inn in %area.', 0, 0,
+     '', 'Quelqu''un a soif ? Rendez-vous à l''auberge vers %area.', '', '', '', '', '', ''),
+    (31113, 'coa_act_party_call', 'Laughs and drinks at the inn in %area, come have fun!', 0, 0,
+     '', 'Rires et boissons à l''auberge vers %area, venez vous amuser !', '', '', '', '', '', ''),
+    (31114, 'coa_act_party_call', 'Taking a break at the inn in %area. Join us!', 0, 0,
+     '', 'On fait une pause à l''auberge vers %area. Rejoignez-nous !', '', '', '', '', '', ''),
+    (31115, 'coa_act_party_call', 'The inn in %area is the place to be. See you there!', 0, 0,
+     '', 'L''auberge vers %area, c''est là que ça se passe. À tout à l''heure !', '', '', '', '', '', ''),
+
+    -- coa_act_party_greet
+    (31116, 'coa_act_party_greet', 'Hey %player, pull up a chair!', 0, 0,
+     '', 'Salut %player, prends une chaise !', '', '', '', '', '', ''),
+    (31117, 'coa_act_party_greet', 'Welcome, %player! Grab a drink.', 0, 0,
+     '', 'Bienvenue, %player ! Prends un verre.', '', '', '', '', '', ''),
+    (31118, 'coa_act_party_greet', 'Look who is here! Hi %player!', 0, 0,
+     '', 'Regardez qui voilà ! Salut %player !', '', '', '', '', '', ''),
+    (31119, 'coa_act_party_greet', '%player! Come sit with us.', 0, 0,
+     '', '%player ! Viens t''asseoir avec nous.', '', '', '', '', '', ''),
+    (31120, 'coa_act_party_greet', 'Good to see you, %player! The more the merrier.', 0, 0,
+     '', 'Ça fait plaisir de te voir, %player ! Plus on est de fous, plus on rit.', '', '', '', '', '', ''),
+    (31121, 'coa_act_party_greet', 'Hi %player, make yourself at home!', 0, 0,
+     '', 'Salut %player, fais comme chez toi !', '', '', '', '', '', ''),
+    (31122, 'coa_act_party_greet', 'Cheers, %player! Join the fun.', 0, 0,
+     '', 'Santé, %player ! Viens t''amuser avec nous.', '', '', '', '', '', ''),
+    (31123, 'coa_act_party_greet', 'Oh hey, %player! Come on in.', 0, 0,
+     '', 'Oh, salut %player ! Entre donc.', '', '', '', '', '', ''),
+
+    -- coa_act_loiter_mount
+    (31124, 'coa_act_loiter_mount', 'Yes, that is my mount. No, you cannot borrow it.', 0, 0,
+     '', 'Oui, c''est ma monture. Non, je ne la prête pas.', '', '', '', '', '', ''),
+    (31125, 'coa_act_loiter_mount', 'Like the ride? It took me ages to afford it.', 0, 0,
+     '', 'Elle te plaît ? J''ai mis un moment à me l''offrir.', '', '', '', '', '', ''),
+    (31126, 'coa_act_loiter_mount', 'Careful, it bites. Only strangers, though.', 0, 0,
+     '', 'Attention, elle mord. Seulement les inconnus, hein.', '', '', '', '', '', ''),
+    (31127, 'coa_act_loiter_mount', 'Admire all you want, just don''t touch.', 0, 0,
+     '', 'Admire autant que tu veux, mais pas touche.', '', '', '', '', '', ''),
+    (31128, 'coa_act_loiter_mount', 'Best mount in town, if you ask me.', 0, 0,
+     '', 'La plus belle monture de la ville, si tu veux mon avis.', '', '', '', '', '', ''),
+    (31129, 'coa_act_loiter_mount', 'It is faster than it looks, trust me.', 0, 0,
+     '', 'Elle est plus rapide qu''elle en a l''air, crois-moi.', '', '', '', '', '', ''),
+    (31130, 'coa_act_loiter_mount', 'No, it is not for sale. Nice try.', 0, 0,
+     '', 'Non, elle n''est pas à vendre. Bien essayé.', '', '', '', '', '', ''),
+    (31131, 'coa_act_loiter_mount', 'I groomed it just for today. Shiny, right?', 0, 0,
+     '', 'Je l''ai bichonnée rien que pour aujourd''hui. Elle brille, hein ?', '', '', '', '', '', ''),
+
+    -- coa_act_booty_call
+    (31132, 'coa_act_booty_call', 'The Gurubashi chest is up for grabs, see you in the arena!', 0, 0,
+     '', 'Le coffre de Gurubashi est à prendre, rendez-vous dans l''arène !', '', '', '', '', '', ''),
+    (31133, 'coa_act_booty_call', 'Booty run at the Gurubashi Arena! Who is coming?', 0, 0,
+     '', 'Course au trésor dans l''arène de Gurubashi ! Qui vient ?', '', '', '', '', '', ''),
+    (31134, 'coa_act_booty_call', 'Arena chest time! We are heading to %area.', 0, 0,
+     '', 'C''est l''heure du coffre de l''arène ! On file vers %area.', '', '', '', '', '', ''),
+    (31135, 'coa_act_booty_call', 'Heading to the Gurubashi Arena for the chest. Come and fight!', 0, 0,
+     '', 'On part pour l''arène de Gurubashi et son coffre. Venez vous battre !', '', '', '', '', '', ''),
+    (31136, 'coa_act_booty_call', 'The arena treasure is out. Last one standing takes it!', 0, 0,
+     '', 'Le trésor de l''arène est sorti. Qui tiendra jusqu''au bout l''emportera !', '', '', '', '', '', ''),
+    (31137, 'coa_act_booty_call', 'Free-for-all at %area, the chest is waiting!', 0, 0,
+     '', 'Mêlée générale vers %area, le coffre attend !', '', '', '', '', '', ''),
+    (31138, 'coa_act_booty_call', 'Gurubashi Arena, now! Bring your best moves.', 0, 0,
+     '', 'Arène de Gurubashi, tout de suite ! Sortez vos meilleures techniques.', '', '', '', '', '', ''),
+    (31139, 'coa_act_booty_call', 'Who is brave enough for the arena? The chest is up!', 0, 0,
+     '', 'Qui ose affronter l''arène ? Le coffre est là !', '', '', '', '', '', ''),
+
+    -- coa_act_booty_cheer
+    (31140, 'coa_act_booty_cheer', 'May the best one win!', 0, 0,
+     '', 'Bonne chance, et que le combat commence !', '', '', '', '', '', ''),
+    (31141, 'coa_act_booty_cheer', 'There it is! Let the brawl begin!', 0, 0,
+     '', 'Le voilà ! Que la bagarre commence !', '', '', '', '', '', ''),
+    (31142, 'coa_act_booty_cheer', 'The chest! Everyone for themselves!', 0, 0,
+     '', 'Le coffre ! Chacun pour soi !', '', '', '', '', '', ''),
+    (31143, 'coa_act_booty_cheer', 'Good luck, everyone. You will need it!', 0, 0,
+     '', 'Bonne chance à tout le monde. Vous en aurez besoin !', '', '', '', '', '', ''),
+    (31144, 'coa_act_booty_cheer', 'Now it gets interesting!', 0, 0,
+     '', 'Ça devient intéressant !', '', '', '', '', '', ''),
+    (31145, 'coa_act_booty_cheer', 'Here we go! No hard feelings, right?', 0, 0,
+     '', 'C''est parti ! Sans rancune, hein ?', '', '', '', '', '', ''),
+    (31146, 'coa_act_booty_cheer', 'Chest spotted! Watch your backs!', 0, 0,
+     '', 'Coffre en vue ! Surveillez vos arrières !', '', '', '', '', '', ''),
+    (31147, 'coa_act_booty_cheer', 'Let''s see who walks away with it!', 0, 0,
+     '', 'Voyons qui repartira avec !', '', '', '', '', '', '');
+
+-- The explicit ids push the counter to 31148, inside the block; move it past (never below max(id) + 1).
 ALTER TABLE `ai_playerbot_texts` AUTO_INCREMENT = 31500;

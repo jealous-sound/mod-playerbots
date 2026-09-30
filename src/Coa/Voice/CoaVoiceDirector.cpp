@@ -11,6 +11,7 @@
 #include "CharacterCache.h"
 #include "Channel.h"
 #include "ChannelMgr.h"
+#include "CoaChannels.h"
 #include "CoaHash.h"
 #include "CoaMemoryConfig.h"
 #include "CoaMemoryMgr.h"
@@ -1583,7 +1584,8 @@ CoaVoiceDrop CoaVoiceDirector::Nominate(CoaVoiceConfig const& config, CoaEvent c
                 if (entry.teamId != scope.teamId)
                     continue;
                 Player* const bot = ObjectAccessor::FindPlayer(entry.guid);
-                if (bot && bot->IsInChannel(channel) && !bot->InBattleground() && Eligible(scope, bot, sender, fromBot))
+                if (bot && CoaChannels::IsOn(bot, channel) && !bot->InBattleground() &&
+                    Eligible(scope, bot, sender, fromBot))
                     add(bot, entry.nameKey, false);
             }
             break;
@@ -1965,7 +1967,7 @@ bool CoaVoiceDirector::Send(CoaVoiceConfig const& config, CoaVoiceLine const& li
         {
             ChannelMgr* const mgr = ChannelMgr::forTeam(bot->GetTeamId());
             channel = mgr ? mgr->GetChannel(scope.channelName, nullptr, false) : nullptr;
-            if (!channel || !bot->IsInChannel(channel))
+            if (!channel || !CoaChannels::IsOn(bot, channel))
                 return fail(CoaVoiceDrop::BotGone);
             break;
         }

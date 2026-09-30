@@ -17,8 +17,10 @@
 #include <string>
 #include <vector>
 
+class ActivityCensus;
 class ActivityDuelCooldowns;
 class ActivityOperations;
+class ActivityOrganizer;
 class Player;
 struct ActivityConfig;
 struct ActivityDuelResult;
@@ -91,6 +93,12 @@ struct Activity
     uint64 ringDuelEndMs = 0;
     bool warMode = false;             // PvpRuleset = warmode for this activity: the director gives its bots War Mode
                                       // (ApplyWarMode) once they are members, and restores it when they leave
+    // M5.
+    ObjectGuid follow;                // group kinds: a real player member every bot member (the leader included)
+                                      // takes as master; the director keeps it so. Empty: the M4 rule (the leader
+                                      // has no master, the others follow the leader)
+    uint8 viewStyle = 0;              // ActivityViewStyle copied into every member's view
+    uint32 closingEmote = 0;          // TextEmotes id copied into every member's view (0: each bot picks its own)
 
     // Director bookkeeping.
     uint64 leaderBestMs = 0;          // Marching: when the leader last got LEADER_PROGRESS_YARDS closer
@@ -123,6 +131,14 @@ struct Activity
     void SetCenter(ActivityPoint const& point, float newRadius);
     void SetTravel(ActivityTravel mode);
     void SetFlags(uint8 flags);
+    // M5. Each sets viewDirty when the value changes. SetFollow also sets membershipDirty (masters and strategies
+    // change on the next member pass).
+    void SetFollow(ObjectGuid player);
+    void SetStyle(uint8 style);
+    void SetClosingEmote(uint32 emote);
+    void SetObjective(ObjectGuid target);  // the creature every bot attacks ("coa activity engage"/"objective")
+    // M5: the `follow` member's Player when it is a real player member still in (ActivityWorld::FindMember), else null.
+    Player* FollowedPlayer() const;
     // A new member (the kind at Begin, the director for joined players). Leader role for `guid == leader`.
     ActivityMember& Enroll(ObjectGuid guid, uint64 epoch, bool isBot, uint8 level, uint32 nowUnix);
     // The member leaves now (idempotent).
@@ -177,6 +193,8 @@ struct ActivityServices
     std::vector<Player*> const& realPlayers;  // online real players (non-bot sessions in world), this tick
     uint64 nowMs;                             // CoaTime::NowMs()
     uint32 nowUnix;                           // time(nullptr)
+    ActivityOrganizer& organizer;             // M5: the kinds' own Organizer questions (line key, retreat, emote)
+    ActivityCensus const& census;             // M5: the raid gate (RaidPoolP10)
 };
 
 // A kind of activity. One instance per kind lives in the director (created by CreateDuelGatheringKind and
@@ -225,6 +243,36 @@ public:
 
     // One line for .playerbots activity info (after the director's generic lines).
     virtual std::string Describe(Activity const& activity, uint64 nowMs) const = 0;
+
+    // --- M5 (defaults keep every M4 kind as it was) ---
+
+    // The targets this kind could run for `request` now, best first (hunt and raid target names that fit the team,
+    // the level, the caps and the guards), at most 4. nullopt: the kind has no targets (every M4 kind and the solo M5
+    // kinds). An empty list: none fits now, so the scheduler leaves the kind out this time. The scheduler offers them
+    // to the brain as "<kind>_<target>" next options and passes the pick in request.target; the dice leave
+    // request.target empty and Plan chooses (the least recently used).
+    virtual std::optional<std::vector<std::string>> Targets(ActivityServices& /*services*/,
+                                                            ActivityStartRequest const& /*request*/)
+    {
+        return std::nullopt;
+    }
+
+    // Whether this activity would take this real player now (the dungeon's open roles and level range, ...). The
+    // director asks before whispering a recruitment offer to a player who said "lfg bot ..." in a channel; Join
+    // still decides for good.
+    virtual bool Accepts(ActivityServices& /*services*/, Activity const& /*activity*/, Player* /*player*/)
+    {
+        return true;
+    }
+
+    // A real player the kind invited (activity.invites) accepted and was enrolled (the member is already in
+    // activity.members). True: the kind said its own welcome; false: the director whispers coa_act_join_where from
+    // the leader (the M4 behaviour).
+    virtual bool OnPlayerJoined(ActivityServices& /*services*/, Activity& /*activity*/,
+                                ActivityMember const& /*member*/)
+    {
+        return false;
+    }
 };
 
 // Helpers for the director and the kinds (ActivityKind.cpp). World thread.

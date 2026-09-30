@@ -10,8 +10,10 @@
 #include "Action.h"
 #include "ActivityMoveFarTo.h"
 #include "AttackAction.h"
+#include "ObjectGuid.h"
 
 class PlayerbotAI;
+struct ActivityMemberView;
 
 // The bot's map thread. They move the bot, attack, cast the duel spell and play emotes: never an invite, a group
 // change, a raid icon, a chat line or a channel post (those are the director's operations). Behaviour in the
@@ -112,12 +114,35 @@ public:
 };
 
 // "coa activity attack objective" (combat, M5): puts the objective first in "prioritized targets" and attacks it
-// with AttackAction::Attack.
+// with AttackAction::Attack. M5: also the non-combat "coa activity engage" node's action (the first blow).
 class CoaActivityAttackObjectiveAction : public AttackAction
 {
 public:
     CoaActivityAttackObjectiveAction(PlayerbotAI* botAI) : AttackAction(botAI, "coa activity attack objective") {}
     bool Execute(Event event) override;
+
+    // The bot's own thread. Once `row` (null: the bot left its activity) no longer holds the objective this action
+    // put into "prioritized targets" (another objective, none, or ACTIVITY_VIEW_RETREAT), the bot breaks off: that
+    // entry goes (a list a command or an RTI set since is kept), "current target" and the melee swing too when they
+    // are still on it. Called by "coa activity fall back" and by CoaActivityStrategies::AddNonCombat (every strategy
+    // reset, the leave of an activity included).
+    static void DropStale(PlayerbotAI* botAI, ActivityMemberView const* row);
+
+private:
+    void BreakOff();
+
+    ObjectGuid written;  // the objective this bot put into "prioritized targets" (empty: none)
+};
+
+// "coa activity fall back" (combat, M5; non-combat too since the M5 fixes): ACTIVITY_VIEW_RETREAT: clears
+// "prioritized targets", stops attacking the former objective (DropStale) and walks to a stable jitter of
+// RALLY_ARRIVE_RADIUS around the center (the rally) with ActivityMoveFarTo, fighting or not.
+class CoaActivityFallBackAction : public ActivityBaseAction
+{
+public:
+    CoaActivityFallBackAction(PlayerbotAI* botAI) : ActivityBaseAction(botAI, "coa activity fall back") {}
+    bool Execute(Event event) override;
+    bool isUseful() override;  // the row still has ACTIVITY_VIEW_RETREAT, not in flight
 };
 
 #endif

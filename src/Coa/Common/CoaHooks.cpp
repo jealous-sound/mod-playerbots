@@ -17,6 +17,12 @@
 //                                           (inferred)
 // channel hook -> CoaHooks::OnChannelChat   world; map for bot speech    same, plus !lfgHandled and
 //                                           (inferred)                   ListensTo(channel)
+// whisper hook (PlayerbotsPlayerScript)     world (real sender)          Activity Running -> real sender ->
+//   -> ActivityRecruitment::OnWhisper                                    PlayerbotAI receiver -> prefix, or join
+//   (before CoaHooks::OnWhisper)                                         word to a recruiting leader -> gap/queue
+//                                                                        -> Push (own mutex); true = consumed
+// CoaLfgHeard (channel hook)                world (real speaker)         Activity Running -> real speaker ->
+//   -> ActivityRecruitment::OnLfgRequest                                 gap/queue -> Push (own mutex)
 // CoaPlayerScript::OnPlayerCanUseChat       world (real speaker);        bot check: BOT event for SAY/YELL only
 //   (4 args: SAY, YELL, EMOTE; AFK/DND      MAP (bot)                    when BotToBotEnabled(); then Enable ...
 //   ignored)                                                             realm chat filter -> Post. Always true.
@@ -50,8 +56,10 @@
 //   OnStartup, OnUpdate, OnShutdown
 // director, governor, index, templates,     world only                   COA_ASSERT_WORLD_THREAD() at public
 //   prefs writes, CoaMemoryMgr,                                          entry points
-//   ActivityDirector, activity kinds,
-//   operations, store
+//   ActivityDirector, activity kinds (M4
+//   and M5), operations, store,
+//   ActivityOrganizer, ActivityGuards,
+//   DungeonLfg, ActivityRecruitment::Drain
 // CoaChatIntent, NameMatch, sanitizer,      any                          pure, atomic, or a short lock
 //   persona For, EmoteCategoryFor,
 //   CoaVoiceConfig::Enabled/Current,

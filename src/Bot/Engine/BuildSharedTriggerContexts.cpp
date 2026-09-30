@@ -32,6 +32,7 @@
 #include "CoaGenericContext.h"
 #include "CoaActivityAiContext.h"
 #include "CoaMemoryContext.h"
+#include "CoaPartyAiContext.h"
 
 void AiObjectContext::BuildSharedTriggerContexts(SharedNamedObjectContextList<Trigger>& triggerContexts)
 {
@@ -83,4 +84,5 @@ void AiObjectContext::BuildSharedTriggerContexts(SharedNamedObjectContextList<Tr
     triggerContexts.Add(new CoaGenericTriggerContext());
     triggerContexts.Add(new CoaMemoryTriggerContext());
     triggerContexts.Add(new CoaActivityTriggerContext());
+    triggerContexts.Add(new CoaPartyTriggerContext());
 }

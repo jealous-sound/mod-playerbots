@@ -12,6 +12,7 @@
 #include "ObjectGuid.h"
 #include "Value.h"
 #include <memory>
+#include <unordered_map>
 
 class Player;
 class PlayerbotAI;
@@ -51,6 +52,13 @@ struct ActivityBotState
     uint32 celebratedActivity = 0;  // the activity id the bot already celebrated (Resolving)
     uint64 nextRoamMs = 0;          // "coa activity roam": at most every 20 s
     uint64 nextIdleMs = 0;          // "coa ring idle": every 10-20 s
+
+    // M5 "coa party".
+    uint64 nextPartyEmoteMs = 0;    // "coa party emote": the next one (15-40 s apart; dances last longer)
+    uint64 nextMountMs = 0;         // "coa party mount": at most every 60 s
+    uint64 nextGreetScanMs = 0;     // "coa party greet": the next scan for someone to greet (every 5 s)
+    ObjectGuid greetTarget;         // set by "coa party greet" for the action
+    std::unordered_map<uint32, uint64> greetedMs;  // real player guid counter -> when this bot greeted it
 };
 
 // "coa activity state".

@@ -15,6 +15,18 @@ char const* ActivityKindName(ActivityKindId kind)
             return "duel";
         case ActivityKindId::Gang:
             return "gang";
+        case ActivityKindId::Dungeon:
+            return "dungeon";
+        case ActivityKindId::Hunt:
+            return "hunt";
+        case ActivityKindId::Raid:
+            return "raid";
+        case ActivityKindId::Party:
+            return "party";
+        case ActivityKindId::Loiter:
+            return "loiter";
+        case ActivityKindId::Gurubashi:
+            return "gurubashi";
         default:
             return "none";
     }
@@ -22,10 +34,9 @@ char const* ActivityKindName(ActivityKindId kind)
 
 std::optional<ActivityKindId> ActivityKindFromName(std::string_view name)
 {
-    if (StringEqualI(name, "duel"))
-        return ActivityKindId::Duel;
-    if (StringEqualI(name, "gang"))
-        return ActivityKindId::Gang;
+    for (uint8 k = uint8(ActivityKindId::None) + 1; k < uint8(ActivityKindId::Count); ++k)
+        if (StringEqualI(name, ActivityKindName(ActivityKindId(k))))
+            return ActivityKindId(k);
     return std::nullopt;
 }
 
@@ -47,6 +58,8 @@ char const* ActivityPhaseName(ActivityPhase phase)
             return "active";
         case ActivityPhase::Resolving:
             return "resolving";
+        case ActivityPhase::Disbanding:
+            return "disbanding";
         default:
             return "unknown";
     }
@@ -78,6 +91,8 @@ char const* ActivityOutcomeName(ActivityOutcome outcome)
             return "restart";
         case ActivityOutcome::NoPlayers:
             return "no-players";
+        case ActivityOutcome::Guarded:
+            return "guarded";
         default:
             return "unknown";
     }

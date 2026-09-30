@@ -8,20 +8,26 @@
 #include "ActivityConfig.h"
 #include "ActivityDuelCooldowns.h"
 #include "ActivityRegistry.h"
+#include "BootyRun.h"
 #include "BrainService.h"
 #include "BrainSink.h"
 #include "CharacterCache.h"
+#include "CityLoiter.h"
 #include "CoaThread.h"
 #include "CoaTime.h"
 #include "DBCStores.h"
 #include "DuelGathering.h"
+#include "DungeonRun.h"
+#include "EliteHunt.h"
 #include "GangParty.h"
 #include "Group.h"
 #include "GroupMgr.h"
+#include "InnParty.h"
 #include "Log.h"
 #include "Map.h"
 #include "MapMgr.h"
 #include "ObjectAccessor.h"
+#include "OutpostRaid.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "Playerbots.h"
@@ -50,6 +56,8 @@ constexpr uint32 ORGANIZER_SINK_CAPACITY = 64;
 constexpr uint32 JOIN_LEVEL_MARGIN = 5;
 constexpr uint32 RAID_MEMBERS_MAX = 40;
 constexpr uint64 RESTORE_INTERVAL_MS = 1000;  // activities off: how often the pending restores look for their bots
+constexpr uint64 JOIN_REQUEST_HOLD_MS = 10 * 1000;  // a chat join request waits for budget at most this long
+constexpr uint32 JOIN_REQUEST_OPS = 2;              // operations a chat join answer may need (invite + whisper)
 constexpr float FAR_AWAY = std::numeric_limits<float>::infinity();
 
 // Where a member is this tick.
@@ -78,8 +86,6 @@ Presence Locate(ActivityMember const& member, Player*& out)
     return Presence::Here;
 }
 
-bool IsGroupKind(ActivityKindId kind) { return kind == ActivityKindId::Gang; }
-
 char const* TeamName(uint8 team)
 {
     return team == TEAM_ALLIANCE ? "alliance" : team == TEAM_HORDE ? "horde" : "neutral";
@@ -93,6 +99,18 @@ char const* KindKey(ActivityKindId kind)
             return "Duel";
         case ActivityKindId::Gang:
             return "Gang";
+        case ActivityKindId::Dungeon:
+            return "Dungeon";
+        case ActivityKindId::Hunt:
+            return "Hunt";
+        case ActivityKindId::Raid:
+            return "Raid";
+        case ActivityKindId::Party:
+            return "Party";
+        case ActivityKindId::Loiter:
+            return "Loiter";
+        case ActivityKindId::Gurubashi:
+            return "Gurubashi";
         default:
             return "None";
     }
@@ -118,7 +136,8 @@ std::string FlagNames(uint8 flags)
     static std::pair<uint8, char const*> const Names[] = {
         {ACTIVITY_VIEW_MAY_CHALLENGE, "may-challenge"}, {ACTIVITY_VIEW_MAY_CHALLENGE_REAL, "may-challenge-real"},
         {ACTIVITY_VIEW_HOLD, "hold"},                   {ACTIVITY_VIEW_CELEBRATE, "celebrate"},
-        {ACTIVITY_VIEW_HUNT, "hunt"}};
+        {ACTIVITY_VIEW_HUNT, "hunt"},                   {ACTIVITY_VIEW_RECRUITING, "recruiting"},
+        {ACTIVITY_VIEW_RETREAT, "retreat"},             {ACTIVITY_VIEW_QUIET, "quiet"}};
     std::string out;
     for (auto const& [flag, name] : Names)
         if (flags & flag)
@@ -193,7 +212,8 @@ ActivityKind* ActivityDirector::KindOf(ActivityKindId kind) const
 
 ActivityServices ActivityDirector::Services(uint64 nowMs, uint32 nowUnix)
 {
-    return ActivityServices{*config, ops, candidates, ActivityDuelCooldowns::Instance(), realPlayers, nowMs, nowUnix};
+    return ActivityServices{*config,     ops,     candidates, ActivityDuelCooldowns::Instance(), realPlayers,
+                            nowMs,       nowUnix, organizer,  census};
 }
 
 // --- Lifecycle ---
@@ -234,6 +254,7 @@ void ActivityDirector::OnConfigReload()
 
     duelRules.store(config->duelEnable, std::memory_order_relaxed);
     duelAmbient.store(config->duelEnable && config->duelAmbient, std::memory_order_relaxed);
+    census.SetRaidMinLevel(uint8(config->raidMinLevel));
     for (auto& [id, activity] : activities)
         if (!config->KindEnabled(activity->kind))
             activity->Finish(ActivityOutcome::Disabled, std::string(ActivityKindName(activity->kind)) + " disabled");
@@ -272,6 +293,19 @@ void ActivityDirector::StartRunning(bool fromReload)
         kinds[std::size_t(ActivityKindId::Duel)] = CreateDuelGatheringKind();
     if (!kinds[std::size_t(ActivityKindId::Gang)])
         kinds[std::size_t(ActivityKindId::Gang)] = CreateGangPartyKind();
+    if (!kinds[std::size_t(ActivityKindId::Dungeon)])
+        kinds[std::size_t(ActivityKindId::Dungeon)] = CreateDungeonRunKind();
+    if (!kinds[std::size_t(ActivityKindId::Hunt)])
+        kinds[std::size_t(ActivityKindId::Hunt)] = CreateEliteHuntKind();
+    if (!kinds[std::size_t(ActivityKindId::Raid)])
+        kinds[std::size_t(ActivityKindId::Raid)] = CreateOutpostRaidKind();
+    if (!kinds[std::size_t(ActivityKindId::Party)])
+        kinds[std::size_t(ActivityKindId::Party)] = CreateInnPartyKind();
+    if (!kinds[std::size_t(ActivityKindId::Loiter)])
+        kinds[std::size_t(ActivityKindId::Loiter)] = CreateCityLoiterKind();
+    if (!kinds[std::size_t(ActivityKindId::Gurubashi)])
+        kinds[std::size_t(ActivityKindId::Gurubashi)] = CreateBootyRunKind();
+    census.SetRaidMinLevel(uint8(config->raidMinLevel));
     if (!organizerSink)
         organizerSink = std::make_shared<BrainSink>(ORGANIZER_SINK_CAPACITY);
 
@@ -289,8 +323,13 @@ void ActivityDirector::StartRunning(bool fromReload)
     running.store(true, std::memory_order_relaxed);
     duelRules.store(config->duelEnable, std::memory_order_relaxed);
     duelAmbient.store(config->duelEnable && config->duelAmbient, std::memory_order_relaxed);
-    LOG_INFO(LOGGER, "CoA activities on: duel {}, gang {}, {} duel spots", config->duelEnable ? "on" : "off",
-             config->gangEnable ? "on" : "off", config->duelSpots.size());
+    auto const onOff = [](bool on) { return on ? "on" : "off"; };
+    LOG_INFO(LOGGER,
+             "CoA activities on: duel {}, gang {}, {} duel spots, dungeon {}, hunt {}, raid {}, party {}, loiter {}, "
+             "gurubashi {}",
+             onOff(config->duelEnable), onOff(config->gangEnable), config->duelSpots.size(),
+             onOff(config->dungeonEnable), onOff(config->huntEnable), onOff(config->raidEnable),
+             onOff(config->partyEnable), onOff(config->loiterEnable), onOff(config->gurubashiEnable));
     LOG_DEBUG(LOGGER, "CoA activity director started from {}", fromReload ? "a config reload" : "startup");
 }
 
@@ -303,6 +342,7 @@ void ActivityDirector::StopRunning(ActivityOutcome outcome)
     uint32 const nowUnix = uint32(time(nullptr));
     CollectRealPlayers();
     ops.BeginTick(config->maxOpsPerTick, &realPlayers);
+    organizer.BeginTick(config.get(), organizerSink, CoaTime::NowMs());
 
     std::vector<uint32> ids;
     ids.reserve(activities.size());
@@ -325,6 +365,10 @@ void ActivityDirector::StopRunning(ActivityOutcome outcome)
     if (schedule.active && schedule.jobId && !schedule.answered)
         brain->Cancel(schedule.jobId);
     schedule = PendingSchedule();
+    organizer.Clear();
+    ActivityRecruitment::Clear();
+    heldRequests.clear();
+    recruitOffers.clear();
 
     held.clear();
     dirty = true;
@@ -360,6 +404,9 @@ void ActivityDirector::Shutdown()
         ops.BeginTick(config->maxOpsPerTick, nullptr);
         RestorePending();
     }
+    organizer.Clear();
+    ActivityRecruitment::Clear();
+    heldRequests.clear();
     // The sinks exist only once the director ran (never with activities off: nothing to close then).
     if (organizerSink)
     {
@@ -419,6 +466,7 @@ void ActivityDirector::Tick(uint64 nowMs, uint32 nowUnix)
 
     CollectRealPlayers();
     ops.BeginTick(config->maxOpsPerTick, &realPlayers);
+    organizer.BeginTick(config.get(), organizerSink, nowMs);
     RebuildHeld();
     candidates.BeginTick(nowMs, &held, &botCooldownUntilMs);
     store.ProcessCallbacks();
@@ -436,6 +484,7 @@ void ActivityDirector::Tick(uint64 nowMs, uint32 nowUnix)
     RouteDuelResults(nowMs, nowUnix);
     DrainOrganizer();
     RestorePending();
+    JoinRequests(nowMs, nowUnix);
 
     std::vector<uint32> ids;
     ids.reserve(activities.size());
@@ -601,9 +650,10 @@ void ActivityDirector::DrainOrganizer()
         if (schedule.active && result.tag == schedule.tag)
         {
             schedule.answered = true;
-            schedule.choice = ActivityBrain::ReadNextKind(result, schedule.eligible);
+            schedule.pick = ActivityBrain::ReadNext(result, schedule.options);
             continue;
         }
+        bool planned = false;
         for (PendingPlan& pending : plans)
         {
             if (pending.planId != result.tag || pending.answered)
@@ -613,9 +663,13 @@ void ActivityDirector::DrainOrganizer()
                 if (answers[i] >= 0 && pending.asked[i] < pending.plan.decisions.size())
                     pending.plan.decisions[pending.asked[i]] = answers[i];
             pending.answered = true;
+            planned = true;
             LOG_DEBUG(LOGGER, "activity plan {}: join answers in ({})", pending.planId, BrainErrorName(result.error));
             break;
         }
+        // The kinds' own questions (line key, retreat, closing emote); anything else is stale.
+        if (!planned && result.tag >= ActivityOrganizer::ORGANIZER_TAG_BASE)
+            organizer.Deliver(result);
     }
 }
 
@@ -672,7 +726,7 @@ void ActivityDirector::SyncRestoring()
 
 void ActivityDirector::MemberPass(Activity& activity, uint64 nowMs, uint32 nowUnix)
 {
-    bool const groupKind = IsGroupKind(activity.kind);
+    bool const groupKind = ActivityKindIsGroup(activity.kind);
     bool const formed = groupKind && !activity.groupGuid.IsEmpty();
     if (formed)
         groupSinceMs.emplace(activity.id, nowMs);
@@ -680,6 +734,24 @@ void ActivityDirector::MemberPass(Activity& activity, uint64 nowMs, uint32 nowUn
     Player* leader = nullptr;
     if (ActivityMember* const leaderMember = activity.Leader(); leaderMember && leaderMember->In())
         Locate(*leaderMember, leader);
+
+    // M5: a real player member the bots follow (the dungeon run once the player leads). A followed member who left
+    // (or never was one) is dropped, and the leader rule below gives the bots their master back in this pass. In the
+    // activity but not in the group yet: masters stay as they are.
+    if (!activity.follow.IsEmpty())
+    {
+        ActivityMember const* const followedMember = activity.FindMember(activity.follow);
+        if (!followedMember || !followedMember->In() || followedMember->isBot)
+            activity.SetFollow(ObjectGuid::Empty);
+    }
+    Player* followed = nullptr;
+    if (formed && !activity.follow.IsEmpty())
+    {
+        followed = activity.FollowedPlayer();
+        Group* const group = sGroupMgr->GetGroupByGUID(activity.groupGuid.GetCounter());
+        if (followed && (!group || !group->IsMember(followed->GetGUID())))
+            followed = nullptr;
+    }
 
     for (std::size_t i = 0; i < activity.members.size(); ++i)
     {
@@ -734,8 +806,18 @@ void ActivityDirector::MemberPass(Activity& activity, uint64 nowMs, uint32 nowUn
             continue;
         }
 
-        // The leader leads nobody's follower; followers follow the leader, whoever else joined or relogged.
-        if (inGroup)
+        // The leader leads nobody's follower; followers follow the leader, whoever else joined or relogged. With a
+        // followed player (M5) every bot, the leader too, follows that player.
+        if (inGroup && !activity.follow.IsEmpty())
+        {
+            PlayerbotAI* const ai = GET_PLAYERBOT_AI(player);
+            if (followed && ai->GetMaster() != followed)
+            {
+                ai->SetMaster(followed);
+                ai->SetCoaStrategiesDirty();
+            }
+        }
+        else if (inGroup)
         {
             PlayerbotAI* const ai = GET_PLAYERBOT_AI(player);
             if (member.role == ActivityRole::Leader)
@@ -750,6 +832,17 @@ void ActivityDirector::MemberPass(Activity& activity, uint64 nowMs, uint32 nowUn
             {
                 ai->SetMaster(leader);
                 ai->SetCoaStrategiesDirty();
+            }
+            else if (!leader)
+            {
+                // No leader to follow: a real player who left the group (a followed player, M5) is nobody's master.
+                Player* const master = ai->GetMaster();
+                if (master && master->GetSession() && !master->GetSession()->IsBot() &&
+                    !group->IsMember(master->GetGUID()))
+                {
+                    ai->SetMaster(nullptr);
+                    ai->SetCoaStrategiesDirty();
+                }
             }
         }
 
@@ -942,32 +1035,40 @@ void ActivityDirector::Invitations(Activity& activity, Player* leader, uint64 no
         return;
     Group* const group =
         activity.groupGuid.IsEmpty() ? nullptr : sGroupMgr->GetGroupByGUID(activity.groupGuid.GetCounter());
-    for (auto it = activity.invites.begin(); it != activity.invites.end();)
+    // Over a copy: the kind's OnPlayerJoined may change the invitations.
+    std::vector<std::pair<ObjectGuid, uint64>> const invites(activity.invites.begin(), activity.invites.end());
+    for (auto const& [guid, expiryMs] : invites)
     {
-        Player* const player = ObjectAccessor::FindConnectedPlayer(it->first);
-        if (player && player->IsInWorld() && group && group->IsMember(it->first))
+        Player* const player = ObjectAccessor::FindConnectedPlayer(guid);
+        if (player && player->IsInWorld() && group && group->IsMember(guid))
         {
-            ActivityMember const* const existing = activity.FindMember(it->first);
-            if (!existing || !existing->In())
+            activity.invites.erase(guid);
+            ActivityMember const* const existing = activity.FindMember(guid);
+            if (existing && existing->In())
+                continue;
+            activity.Enroll(guid, 0, false, player->GetLevel(), nowUnix);
+            ActivityStore::Instance().InsertMember(activity.id, guid.GetCounter(), false, ActivityRole::Member,
+                                                   nowUnix);
+            LOG_DEBUG(LOGGER, "activity #{}: player {} joined", activity.id, player->GetName());
+
+            // The kind may say its own welcome (M5); otherwise the leader's M4 whisper.
+            bool welcomed = false;
+            if (ActivityKind* const kind = KindOf(activity.kind))
             {
-                activity.Enroll(it->first, 0, false, player->GetLevel(), nowUnix);
-                ActivityStore::Instance().InsertMember(activity.id, it->first.GetCounter(), false,
-                                                       ActivityRole::Member, nowUnix);
-                LOG_DEBUG(LOGGER, "activity #{}: player {} joined", activity.id, player->GetName());
-                if (leader)
-                {
-                    std::string const line =
-                        JoinLine("coa_act_join_where", "Welcome! We are in %zone, come find us.",
-                                 {{"%zone", ActivityWorld::AreaName(activity.center.zoneId)}, {"%gang", activity.name}});
-                    ops.PostToChannel(leader->GetGUID(), ActivityChatTarget::Whisper, line, it->first);
-                }
+                ActivityMember const member = *activity.FindMember(guid);
+                ActivityServices services = Services(nowMs, nowUnix);
+                welcomed = kind->OnPlayerJoined(services, activity, member);
             }
-            it = activity.invites.erase(it);
+            if (!welcomed && leader)
+            {
+                std::string const line =
+                    JoinLine("coa_act_join_where", "Welcome! We are in %zone, come find us.",
+                             {{"%zone", ActivityWorld::AreaName(activity.center.zoneId)}, {"%gang", activity.name}});
+                ops.PostToChannel(leader->GetGUID(), ActivityChatTarget::Whisper, line, guid);
+            }
         }
-        else if (!player || nowMs >= it->second)
-            it = activity.invites.erase(it);
-        else
-            ++it;
+        else if (!player || nowMs >= expiryMs)
+            activity.invites.erase(guid);
     }
 }
 
@@ -1030,7 +1131,7 @@ void ActivityDirector::HandleLeaves(Activity& activity, uint32 nowUnix)
         {
             RestoreRuleset(member);
             // Offline members too: a bot that logged out must not come back into the activity's group.
-            if (IsGroupKind(activity.kind) && !activity.groupGuid.IsEmpty())
+            if (ActivityKindIsGroup(activity.kind) && !activity.groupGuid.IsEmpty())
                 ops.Leave(activity.groupGuid, member.guid);
             botCooldownUntilMs[member.guid.GetCounter()] = nowMs + uint64(config->botCooldownMinutes) * 60000;
         }
@@ -1082,6 +1183,9 @@ void ActivityDirector::EndActivity(Activity& activityRef, ActivityOutcome outcom
         ActivityServices services = Services(nowMs, nowUnix);
         kind->OnEnd(services, activity);
     }
+    organizer.Forget(activity.id);
+    recruitOffers.erase(recruitOffers.lower_bound({activity.id, ObjectGuid::Empty}),
+                        recruitOffers.lower_bound({activity.id + 1, ObjectGuid::Empty}));
 
     ActivityStore& store = ActivityStore::Instance();
     uint32 bots = 0;
@@ -1151,6 +1255,8 @@ void ActivityDirector::Publish()
             view.objective = activity->objective;
             view.ringDuelEndMs = activity->ringDuelEndMs;
             view.flags = activity->viewFlags;
+            view.style = activity->viewStyle;
+            view.emote = activity->closingEmote;
 
             uint32 const low = member.guid.GetCounter();
             snapshot->members[low] = view;
@@ -1227,18 +1333,7 @@ uint32 ActivityDirector::LiveCount(ActivityKindId kind) const
     return count;
 }
 
-uint32 ActivityDirector::MinBots(ActivityKindId kind) const
-{
-    switch (kind)
-    {
-        case ActivityKindId::Duel:
-            return config->duelMinBots;
-        case ActivityKindId::Gang:
-            return config->gangMinBots;
-        default:
-            return 0;
-    }
-}
+uint32 ActivityDirector::MinBots(ActivityKindId kind) const { return config->KindMinBots(kind); }
 
 std::vector<ActivityKindId> ActivityDirector::EligibleKinds() const
 {
@@ -1293,7 +1388,43 @@ ActivityBrain::Scene ActivityDirector::SceneNow() const
     return scene;
 }
 
-void ActivityDirector::Schedule(uint64 nowMs, uint32 /*nowUnix*/)
+std::vector<ActivityBrain::NextOption> ActivityDirector::NextOptions(std::vector<ActivityKindId>& eligible,
+                                                                     Player* nearPlayer, uint64 nowMs, uint32 nowUnix)
+{
+    std::vector<ActivityBrain::NextOption> options;
+    std::vector<ActivityKindId> kept;
+    kept.reserve(eligible.size());
+    for (ActivityKindId const kind : eligible)
+    {
+        ActivityKind* const kindImpl = KindOf(kind);
+        if (!kindImpl)
+            continue;
+        ActivityStartRequest request;
+        request.kind = kind;
+        request.nearPlayer = nearPlayer;
+        request.capacity = Capacity();
+        ActivityServices services = Services(nowMs, nowUnix);
+        std::optional<std::vector<std::string>> const targets = kindImpl->Targets(services, request);
+        if (!targets)
+        {
+            options.push_back({kind, ""});
+            kept.push_back(kind);
+            continue;
+        }
+        if (targets->empty())
+        {
+            LOG_DEBUG(LOGGER, "activity schedule: {} has no target now", ActivityKindName(kind));
+            continue;
+        }
+        for (std::size_t i = 0; i < targets->size() && i < 4; ++i)
+            options.push_back({kind, (*targets)[i]});
+        kept.push_back(kind);
+    }
+    eligible = std::move(kept);
+    return options;
+}
+
+void ActivityDirector::Schedule(uint64 nowMs, uint32 nowUnix)
 {
     if (paused || suspended || !plans.empty() || schedule.active || nowMs < nextScheduleMs)
         return;
@@ -1301,10 +1432,14 @@ void ActivityDirector::Schedule(uint64 nowMs, uint32 /*nowUnix*/)
     if (config->requireRealPlayerOnline && realPlayers.empty())
         return;
 
-    std::vector<ActivityKindId> const eligible = EligibleKinds();
+    std::vector<ActivityKindId> eligible = EligibleKinds();
     if (eligible.empty())
         return;
     Player* const nearPlayer = PickNear();
+    // Kinds with targets (hunts, raids) offer each target that fits now; a kind with none leaves the list.
+    std::vector<ActivityBrain::NextOption> options = NextOptions(eligible, nearPlayer, nowMs, nowUnix);
+    if (eligible.empty())
+        return;
 
     if (config->useBrainOrganizer)
     {
@@ -1314,8 +1449,7 @@ void ActivityDirector::Schedule(uint64 nowMs, uint32 /*nowUnix*/)
             uint64 const tag = nextPlanId++;
             uint64 const deadline = nowMs + config->brainDeadlineMs;
             BrainTicket const ticket =
-                brain->Submit(ActivityBrain::BuildNextKindJob(SceneNow(), eligible, tag, deadline), organizerSink,
-                              nullptr);
+                brain->Submit(ActivityBrain::BuildNextJob(SceneNow(), options, tag, deadline), organizerSink, nullptr);
             if (ticket.status == BrainSubmit::Queued)
             {
                 schedule = PendingSchedule();
@@ -1323,9 +1457,11 @@ void ActivityDirector::Schedule(uint64 nowMs, uint32 /*nowUnix*/)
                 schedule.jobId = ticket.jobId;
                 schedule.deadlineMs = deadline;
                 schedule.eligible = eligible;
+                schedule.options = std::move(options);
                 schedule.nearGuid = nearPlayer ? nearPlayer->GetGUID() : ObjectGuid::Empty;
                 schedule.active = true;
-                LOG_DEBUG(LOGGER, "activity schedule: asked the brain ({} kinds eligible)", eligible.size());
+                LOG_DEBUG(LOGGER, "activity schedule: asked the brain ({} kinds eligible, {} options)", eligible.size(),
+                          schedule.options.size());
                 return;
             }
             LOG_DEBUG(LOGGER, "activity schedule: brain {}, dice", BrainSubmitName(ticket.status));
@@ -1334,7 +1470,7 @@ void ActivityDirector::Schedule(uint64 nowMs, uint32 /*nowUnix*/)
     DicePlan(eligible, nearPlayer);
 }
 
-void ActivityDirector::ResolveSchedule(uint64 nowMs, uint32 /*nowUnix*/)
+void ActivityDirector::ResolveSchedule(uint64 nowMs, uint32 nowUnix)
 {
     if (!schedule.active)
         return;
@@ -1357,29 +1493,35 @@ void ActivityDirector::ResolveSchedule(uint64 nowMs, uint32 /*nowUnix*/)
     if (config->requireRealPlayerOnline && !nearPlayer)
         return;
 
-    std::vector<ActivityKindId> const eligible = EligibleKinds();
+    std::vector<ActivityKindId> eligible = EligibleKinds();
     if (eligible.empty())
         return;
 
-    if (done.answered && done.choice.valid)
+    if (done.answered && done.pick.valid)
     {
-        if (done.choice.none)
+        if (done.pick.none)
         {
             LOG_DEBUG(LOGGER, "activity schedule: the brain chose nothing");
             return;
         }
-        if (std::find(eligible.begin(), eligible.end(), done.choice.kind) != eligible.end())
+        ActivityBrain::NextOption const& option = done.options[std::size_t(done.pick.index)];
+        if (std::find(eligible.begin(), eligible.end(), option.kind) != eligible.end())
         {
             ActivityStartRequest request;
-            request.kind = done.choice.kind;
+            request.kind = option.kind;
             request.nearPlayer = nearPlayer;
             request.capacity = Capacity();
+            request.target = option.target;
             std::string why;
             if (!BeginPlan(request, config->useBrainOrganizer, why))
                 LOG_DEBUG(LOGGER, "activity schedule: {} not planned: {}", ActivityKindName(request.kind), why);
             return;
         }
     }
+    // The dice over the kinds that have something to do now (request.target stays empty: Plan chooses).
+    NextOptions(eligible, nearPlayer, nowMs, nowUnix);
+    if (eligible.empty())
+        return;
     DicePlan(eligible, nearPlayer);
 }
 
@@ -1651,11 +1793,25 @@ std::vector<std::string> ActivityDirector::List() const
     lines.push_back(Acore::StringFormat("duels: challenges {}, declines {}, fought vs players {}, brain asked {}",
                                         duels.Challenges(), duels.Declines(), duels.RealDuels(), duels.BrainAsked()));
     auto const ended = [this](ActivityOutcome outcome) { return endedCount[std::size_t(outcome)]; };
-    lines.push_back(Acore::StringFormat(
-        "ended: success {}, timeout {}, too-few {}, leader-gone {}, load {}, stopped {}, disabled {}, no-players {}",
-        ended(ActivityOutcome::Success), ended(ActivityOutcome::Timeout), ended(ActivityOutcome::TooFew),
-        ended(ActivityOutcome::LeaderGone), ended(ActivityOutcome::LoadAbort), ended(ActivityOutcome::Stopped),
-        ended(ActivityOutcome::Disabled), ended(ActivityOutcome::NoPlayers)));
+    lines.push_back(Acore::StringFormat("ended: success {}, timeout {}, too-few {}, leader-gone {}, load {}, "
+                                        "stopped {}, disabled {}, no-players {}, guarded {}",
+                                        ended(ActivityOutcome::Success), ended(ActivityOutcome::Timeout),
+                                        ended(ActivityOutcome::TooFew), ended(ActivityOutcome::LeaderGone),
+                                        ended(ActivityOutcome::LoadAbort), ended(ActivityOutcome::Stopped),
+                                        ended(ActivityOutcome::Disabled), ended(ActivityOutcome::NoPlayers),
+                                        ended(ActivityOutcome::Guarded)));
+    if (config->raidEnable)
+    {
+        uint32 const nowUnix = uint32(time(nullptr));
+        auto const pool = [&](uint8 team)
+        {
+            std::optional<uint32> const p10 = census.RaidPoolP10(team, nowUnix);
+            return p10 ? std::to_string(*p10) : std::string("-");
+        };
+        uint32 const needs = (config->raidMinBots * ActivityThreshold::RAID_CENSUS_PERCENT + 99) / 100;
+        lines.push_back(Acore::StringFormat("raid gate: alliance p10 {}, horde p10 {} (needs {})", pool(TEAM_ALLIANCE),
+                                            pool(TEAM_HORDE), needs));
+    }
     return lines;
 }
 
@@ -1680,10 +1836,12 @@ std::vector<std::string> ActivityDirector::Info(uint32 id) const
                                         activity.center.mapId, activity.center.x, activity.center.y, activity.center.z,
                                         EnglishAreaName(activity.center.zoneId), activity.radius,
                                         TravelName(activity.travel), FlagNames(activity.viewFlags)));
-    if (IsGroupKind(activity.kind))
-        lines.push_back(Acore::StringFormat("leader {} group {}",
+    if (ActivityKindIsGroup(activity.kind))
+        lines.push_back(Acore::StringFormat("leader {} group {}{}",
                                             activity.leader.IsEmpty() ? std::string("-") : CharacterName(activity.leader),
-                                            activity.groupGuid.GetCounter()));
+                                            activity.groupGuid.GetCounter(),
+                                            activity.follow.IsEmpty() ? std::string()
+                                                                      : " follow " + CharacterName(activity.follow)));
 
     for (ActivityMember const& member : activity.members)
     {
@@ -1746,6 +1904,7 @@ std::vector<std::string> ActivityDirector::Start(ActivityStartRequest request, P
     uint32 const nowUnix = uint32(time(nullptr));
     CollectRealPlayers();
     ops.BeginTick(config->maxOpsPerTick, &realPlayers);
+    organizer.BeginTick(config.get(), organizerSink, nowMs);
     RebuildHeld();
     candidates.BeginTick(nowMs, &held, &botCooldownUntilMs);
 
@@ -1786,6 +1945,7 @@ std::vector<std::string> ActivityDirector::Stop(uint32 id)
     uint32 const nowUnix = uint32(time(nullptr));
     CollectRealPlayers();
     ops.BeginTick(config->maxOpsPerTick, &realPlayers);
+    organizer.BeginTick(config.get(), organizerSink, CoaTime::NowMs());
 
     if (!id)
     {
@@ -1838,55 +1998,61 @@ std::string ActivityDirector::Join(Player* player, uint32 id)
     if (!player->IsInWorld())
         return none;
 
-    uint32 const level = player->GetLevel();
-    auto const levelFits = [level](Activity const& activity)
-    {
-        return level + JOIN_LEVEL_MARGIN >= activity.minLevel && level <= uint32(activity.maxLevel) + JOIN_LEVEL_MARGIN;
-    };
+    Activity* const target = JoinTarget(player, id);
+    if (!target)
+        return none;
+    // This tick's players again (the kind may check who sees what); the operation budget is the tick's.
+    CollectRealPlayers();
+    organizer.BeginTick(config.get(), organizerSink, CoaTime::NowMs());
+    return JoinChecked(player, *target);
+}
 
-    Activity* target = nullptr;
+Activity* ActivityDirector::JoinTarget(Player* player, uint32 id)
+{
     if (id)
     {
         auto const it = activities.find(id);
-        if (it == activities.end())
-            return none;
-        target = it->second.get();
-    }
-    else
-    {
-        // The nearest one this player may join: group kinds first, then distance.
-        float best = FAR_AWAY;
-        bool bestGroup = false;
-        for (auto const& [activityId, activity] : activities)
-        {
-            if (activity->finishing || activity->phase == ActivityPhase::Resolving ||
-                activity->team != uint8(player->GetTeamId()) || !activity->center.set ||
-                activity->center.mapId != player->GetMapId() || !levelFits(*activity))
-                continue;
-            bool const group = IsGroupKind(activity->kind);
-            float const distance = Distance(player, activity->center);
-            if (!target || (group && !bestGroup) || (group == bestGroup && distance < best))
-            {
-                target = activity.get();
-                best = distance;
-                bestGroup = group;
-            }
-        }
-        if (!target)
-            return none;
+        return it == activities.end() ? nullptr : it->second.get();
     }
 
-    Activity& activity = *target;
+    // The nearest one this player may join: group kinds first, then distance.
+    uint32 const level = player->GetLevel();
+    Activity* target = nullptr;
+    float best = FAR_AWAY;
+    bool bestGroup = false;
+    for (auto const& [activityId, activity] : activities)
+    {
+        if (activity->finishing || activity->phase == ActivityPhase::Resolving ||
+            activity->team != uint8(player->GetTeamId()) || !activity->center.set ||
+            activity->center.mapId != player->GetMapId() || level + JOIN_LEVEL_MARGIN < activity->minLevel ||
+            level > uint32(activity->maxLevel) + JOIN_LEVEL_MARGIN)
+            continue;
+        bool const group = ActivityKindIsGroup(activity->kind);
+        float const distance = Distance(player, activity->center);
+        if (!target || (group && !bestGroup) || (group == bestGroup && distance < best))
+        {
+            target = activity.get();
+            best = distance;
+            bestGroup = group;
+        }
+    }
+    return target;
+}
+
+std::string ActivityDirector::JoinChecked(Player* player, Activity& activity)
+{
+    std::string const none = JoinLine("coa_act_join_none", "No bot activity you can join right now.");
+    uint32 const level = player->GetLevel();
     if (ActivityMember const* const member = activity.FindMember(player->GetGUID()); member && member->In())
         return JoinLine("coa_act_join_already", "You are already in that activity.");
     if (activity.team != uint8(player->GetTeamId()))
         return JoinLine("coa_act_join_faction", "That activity is for the other faction.");
-    if (!levelFits(activity))
+    if (level + JOIN_LEVEL_MARGIN < activity.minLevel || level > uint32(activity.maxLevel) + JOIN_LEVEL_MARGIN)
         return JoinLine("coa_act_join_level", "That activity is for levels %min to %max.",
                         {{"%min", std::to_string(uint32(activity.minLevel))},
                          {"%max", std::to_string(uint32(activity.maxLevel))}});
 
-    bool const groupKind = IsGroupKind(activity.kind);
+    bool const groupKind = ActivityKindIsGroup(activity.kind);
     Group* const group =
         activity.groupGuid.IsEmpty() ? nullptr : sGroupMgr->GetGroupByGUID(activity.groupGuid.GetCounter());
     if (groupKind && player->GetGroup())
@@ -1903,11 +2069,120 @@ std::string ActivityDirector::Join(Player* player, uint32 id)
     ActivityKind* const kind = KindOf(activity.kind);
     if (!kind)
         return none;
-    // This tick's players again (the kind may teleport or check who sees what); the operation budget is the tick's.
-    CollectRealPlayers();
     ActivityServices services = Services(CoaTime::NowMs(), uint32(time(nullptr)));
     std::string line = kind->Join(services, activity, player);
     if (activity.viewDirty || activity.membershipDirty)
         dirty = true;
     return line;
+}
+
+// --- Chat recruitment (M5) ---
+
+void ActivityDirector::JoinRequests(uint64 nowMs, uint32 nowUnix)
+{
+    std::vector<ActivityJoinRequest> requests = std::move(heldRequests);
+    heldRequests.clear();
+    ActivityRecruitment::Drain(requests);
+    for (ActivityJoinRequest const& request : requests)
+    {
+        if (JoinFromChat(request, nowMs, nowUnix))
+            continue;
+        if (nowMs < request.atMs + JOIN_REQUEST_HOLD_MS)
+            heldRequests.push_back(request);
+        else
+            LOG_DEBUG(LOGGER, "activity chat join: request of player {} dropped (no budget for 10 s)",
+                      request.player.GetCounter());
+    }
+}
+
+bool ActivityDirector::JoinFromChat(ActivityJoinRequest const& request, uint64 nowMs, uint32 nowUnix)
+{
+    Player* const player = ObjectAccessor::FindConnectedPlayer(request.player);
+    if (!player || !player->IsInWorld() || !player->GetSession() || player->GetSession()->IsBot())
+        return true;
+    // An answer may take an invitation and a whisper (or two offers): short of budget, the request waits for the
+    // next tick before anything happened.
+    if (ops.Used() + std::min(JOIN_REQUEST_OPS, config->maxOpsPerTick) > config->maxOpsPerTick)
+        return false;
+
+    uint32 const level = player->GetLevel();
+    if (request.source == ActivityJoinSource::LfgRequest)
+    {
+        // "lfg bot ...": recruiting leaders that would take this player whisper an offer, once per activity.
+        if (player->GetGroup() || suspended)
+            return true;
+        uint32 offered = 0;
+        for (auto const& [id, owned] : activities)
+        {
+            if (offered >= ActivityThreshold::RECRUIT_OFFERS_PER_REQUEST)
+                break;
+            Activity& activity = *owned;
+            if (activity.finishing || !(activity.viewFlags & ACTIVITY_VIEW_RECRUITING) ||
+                activity.team != uint8(player->GetTeamId()) || level + JOIN_LEVEL_MARGIN < activity.minLevel ||
+                level > uint32(activity.maxLevel) + JOIN_LEVEL_MARGIN ||
+                recruitOffers.count({id, request.player}))
+                continue;
+            ActivityKind* const kind = KindOf(activity.kind);
+            if (!kind)
+                continue;
+            ActivityServices services = Services(nowMs, nowUnix);
+            if (!kind->Accepts(services, activity, player))
+                continue;
+            ActivityMember const* const leaderMember = activity.Leader();
+            Player* const leader =
+                leaderMember && leaderMember->In() ? ActivityWorld::FindMember(*leaderMember) : nullptr;
+            if (!leader)
+                continue;
+            std::string const line = JoinLine("coa_act_recruit_offer",
+                                              "We have a group for %target and room for you. Whisper me inv.",
+                                              {{"%target", activity.name}});
+            ActivityOpResult const result =
+                ops.PostToChannel(leader->GetGUID(), ActivityChatTarget::Whisper, line, request.player);
+            if (result == ActivityOpResult::Done)
+            {
+                recruitOffers.insert({id, request.player});
+                ++offered;
+                LOG_DEBUG(LOGGER, "activity #{}: offer whispered to player {}", id, request.player.GetCounter());
+            }
+            else if (result == ActivityOpResult::Deferred)
+                return false;
+        }
+        return true;
+    }
+
+    // A join word to a recruiting leader: that activity, while it still recruits. "!join [id]": that activity, or
+    // the nearest one the player may join.
+    Activity* activity = nullptr;
+    if (request.source == ActivityJoinSource::Keyword)
+    {
+        auto const it = activities.find(request.activityId);
+        if (it != activities.end() && !it->second->finishing && (it->second->viewFlags & ACTIVITY_VIEW_RECRUITING))
+            activity = it->second.get();
+    }
+    else
+        activity = JoinTarget(player, request.activityId);
+
+    std::string const line = activity ? JoinChecked(player, *activity)
+                                      : JoinLine("coa_act_join_none", "No bot activity you can join right now.");
+
+    // The bot whispered to answers; else the activity's leader.
+    Player* speaker = ObjectAccessor::FindConnectedPlayer(request.bot);
+    if (!speaker || !speaker->IsInWorld() || !speaker->GetSession() || !speaker->GetSession()->IsBot() ||
+        !GET_PLAYERBOT_AI(speaker))
+    {
+        speaker = nullptr;
+        if (activity)
+            if (ActivityMember const* const leaderMember = activity->Leader(); leaderMember && leaderMember->In())
+                speaker = ActivityWorld::FindMember(*leaderMember);
+    }
+    LOG_DEBUG(LOGGER, "activity chat join: player {} ({}) -> #{}", request.player.GetCounter(),
+              request.source == ActivityJoinSource::Keyword ? "join word" : "prefix", activity ? activity->id : 0);
+    if (!speaker)
+        return true;
+    ActivityOpResult const result =
+        ops.PostToChannel(speaker->GetGUID(), ActivityChatTarget::Whisper, line, request.player);
+    if (result != ActivityOpResult::Done)
+        LOG_DEBUG(LOGGER, "activity chat join: answer to player {} not whispered ({})", request.player.GetCounter(),
+                  ActivityOpResultName(result));
+    return true;
 }

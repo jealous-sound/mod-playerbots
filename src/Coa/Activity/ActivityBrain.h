@@ -83,6 +83,59 @@ struct DuelFeatures
 BrainJob BuildDuelJob(DuelFeatures const& features, uint64 botGuidRaw, uint64 tag, uint64 deadlineMs);
 // nullopt: no valid "duel_accept" answer.
 std::optional<bool> ReadDuel(BrainResult const& result, float threshold);
+
+// --- M5: Organizer lane, BrainUse::Organizer, never cached, English wording (contract section 12) ---
+
+constexpr char const* SITUATION_LINE = "activity_line";
+constexpr char const* SITUATION_RETREAT = "activity_retreat";
+constexpr char const* SITUATION_EMOTE = "activity_emote";
+
+// One option of the "next" question: a kind, or a kind and one of its targets (ActivityKind::Targets).
+struct NextOption
+{
+    ActivityKindId kind = ActivityKindId::None;
+    std::string target;  // empty: the kind alone
+};
+
+// "next" with the kinds and the kind-target pairs of `options` (keys "<kind>" or "<kind>_<target>") plus "none".
+// With no target in `options` the question is exactly BuildNextKindJob's (M4 unchanged).
+BrainJob BuildNextJob(Scene const& scene, std::vector<NextOption> const& options, uint64 tag, uint64 deadlineMs);
+
+struct NextPick
+{
+    bool valid = false;  // a usable answer came back
+    bool none = false;   // "none": nothing new this time
+    int32 index = -1;    // into `options` when valid and not none
+};
+NextPick ReadNext(BrainResult const& result, std::vector<NextOption> const& options);
+
+// "line" (Choice) among recruitment text names (`keys`, e.g. coa_act_lfm_dungeon and coa_act_lfm_dungeon_alt); the
+// options carry each key's English first row as its description. `where`: the zone in English words.
+BrainJob BuildLineJob(ActivityKindId kind, std::string const& where, std::vector<std::string> const& keys,
+                      std::vector<std::string> const& englishRows, uint64 tag, uint64 deadlineMs);
+// Index into `keys`; nullopt: no valid answer (the dice pick).
+std::optional<std::size_t> ReadLine(BrainResult const& result, std::size_t count);
+
+// "retreat" (YesNo): should the raid fall back now?
+struct RetreatFeatures
+{
+    uint32 botsIn = 0;
+    uint32 botsAlive = 0;
+    uint32 playersIn = 0;
+    uint8 targetHealthPct = 100;
+    uint32 engagedSeconds = 0;
+    bool defenderNear = false;  // a real player of the defending faction within Raid.QuestGiverGuardYards
+};
+BrainJob BuildRetreatJob(ActivityKindId kind, RetreatFeatures const& features, uint64 tag, uint64 deadlineMs);
+// nullopt: no valid answer; else p >= 0.5.
+std::optional<bool> ReadRetreat(BrainResult const& result);
+
+// "emote" (Choice) among TextEmotes ids (`emotes`, keys their English emote words: "cheer", "roar", ...) to close an
+// activity. `success`: the activity reached its goal.
+BrainJob BuildEmoteJob(ActivityKindId kind, bool success, std::vector<uint32> const& emotes, uint64 tag,
+                       uint64 deadlineMs);
+// Index into `emotes`; nullopt: no valid answer.
+std::optional<std::size_t> ReadEmote(BrainResult const& result, std::size_t count);
 }  // namespace ActivityBrain
 
 #endif

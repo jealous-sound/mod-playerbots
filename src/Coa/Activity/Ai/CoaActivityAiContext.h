@@ -55,6 +55,8 @@ public:
         creators["coa duel unanswered"] = &CoaActivityTriggerContext::duel_unanswered;
         creators["coa ring idle"] = &CoaActivityTriggerContext::ring_idle;
         creators["coa activity objective"] = &CoaActivityTriggerContext::objective;
+        creators["coa activity engage"] = &CoaActivityTriggerContext::engage;
+        creators["coa activity retreat"] = &CoaActivityTriggerContext::retreat;
     }
 
 private:
@@ -69,6 +71,8 @@ private:
     static Trigger* duel_unanswered(PlayerbotAI* botAI) { return new CoaDuelUnansweredTrigger(botAI); }
     static Trigger* ring_idle(PlayerbotAI* botAI) { return new CoaRingIdleTrigger(botAI); }
     static Trigger* objective(PlayerbotAI* botAI) { return new CoaActivityObjectiveTrigger(botAI); }
+    static Trigger* engage(PlayerbotAI* botAI) { return new CoaActivityEngageTrigger(botAI); }
+    static Trigger* retreat(PlayerbotAI* botAI) { return new CoaActivityRetreatTrigger(botAI); }
 };
 
 class CoaActivityActionContext : public NamedObjectContext<Action>
@@ -87,6 +91,7 @@ public:
         creators["coa duel cancel"] = &CoaActivityActionContext::duel_cancel;
         creators["coa ring idle"] = &CoaActivityActionContext::ring_idle;
         creators["coa activity attack objective"] = &CoaActivityActionContext::attack_objective;
+        creators["coa activity fall back"] = &CoaActivityActionContext::fall_back;
     }
 
 private:
@@ -101,6 +106,7 @@ private:
     static Action* duel_cancel(PlayerbotAI* botAI) { return new CoaDuelCancelAction(botAI); }
     static Action* ring_idle(PlayerbotAI* botAI) { return new CoaRingIdleAction(botAI); }
     static Action* attack_objective(PlayerbotAI* botAI) { return new CoaActivityAttackObjectiveAction(botAI); }
+    static Action* fall_back(PlayerbotAI* botAI) { return new CoaActivityFallBackAction(botAI); }
 };
 
 class CoaActivityValueContext : public NamedObjectContext<UntypedValue>

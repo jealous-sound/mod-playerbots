@@ -10,6 +10,7 @@
 #include "Player.h"
 #include "RandomPlayerbotMgr.h"
 #include "StringFormat.h"
+#include "Timer.h"
 #include <algorithm>
 
 namespace
@@ -34,6 +35,7 @@ void ActivityCensus::Update(uint32 nowUnix, std::unordered_set<uint32> const& he
 
     Sample sample;
     sample.unixTime = nowUnix;
+    sample.hour = uint8(Acore::Time::GetHours(Seconds(nowUnix)));
     uint32 online = 0;
     for (auto it = sRandomPlayerbotMgr.GetPlayerBotsBegin(); it != sRandomPlayerbotMgr.GetPlayerBotsEnd(); ++it)
     {
@@ -48,6 +50,8 @@ void ActivityCensus::Update(uint32 nowUnix, std::unordered_set<uint32> const& he
         uint16& count = sample.free[team][ActivityBracket(bot->GetLevel())];
         if (count < 0xFFFF)
             ++count;
+        if (bot->GetLevel() >= raidMinLevel && sample.raidFree[team] < 0xFFFF)
+            ++sample.raidFree[team];
     }
     sample.online = uint16(std::min<uint32>(online, 0xFFFF));
 
@@ -94,9 +98,45 @@ std::vector<std::string> ActivityCensus::Report(uint32 nowUnix, uint32 hours) co
                                                 uint32(counts.back())));
         }
     }
+    for (uint8 team = 0; team < 2; ++team)
+    {
+        std::vector<uint16> counts;
+        counts.reserve(kept.size());
+        for (Sample const* sample : kept)
+            counts.push_back(sample->raidFree[team]);
+        std::sort(counts.begin(), counts.end());
+        std::vector<uint16> const hourCounts = HourCounts(team, nowUnix);
+        std::optional<uint32> const hourP10 = RaidPoolP10(team, nowUnix);
+        lines.push_back(Acore::StringFormat("{} raid pool (level {}+): p10 {}, p50 {}, max {}; this hour p10 {} "
+                                            "over {} samples",
+                                            Teams[team], uint32(raidMinLevel), NearestRank(counts, 10),
+                                            NearestRank(counts, 50), uint32(counts.back()),
+                                            hourP10 ? std::to_string(*hourP10) : std::string("-"), hourCounts.size()));
+    }
     lines.push_back(Acore::StringFormat("census: {} samples over {} h (every 10 min), {} bots online now", kept.size(),
                                         hours, uint32(newest->online)));
     return lines;
+}
+
+std::vector<uint16> ActivityCensus::HourCounts(uint8 team, uint32 nowUnix) const
+{
+    std::vector<uint16> counts;
+    if (team > 1)
+        return counts;
+    uint8 const hour = uint8(Acore::Time::GetHours(Seconds(nowUnix)));
+    for (Sample const& sample : ring)
+        if (sample.hour == hour)
+            counts.push_back(sample.raidFree[team]);
+    std::sort(counts.begin(), counts.end());
+    return counts;
+}
+
+std::optional<uint32> ActivityCensus::RaidPoolP10(uint8 team, uint32 nowUnix) const
+{
+    std::vector<uint16> const counts = HourCounts(team, nowUnix);
+    if (counts.size() < ActivityThreshold::CENSUS_MIN_HOUR_SAMPLES)
+        return std::nullopt;
+    return NearestRank(counts, 10);
 }
 
 void ActivityCensus::Clear()

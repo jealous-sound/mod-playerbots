@@ -6,8 +6,12 @@
 
 #include "ActivityOperations.h"
 #include "ActivityKind.h"
+#include "Channel.h"
+#include "ChannelMgr.h"
+#include "CoaChannels.h"
 #include "CoaText.h"
 #include "CoaThread.h"
+#include "DBCStores.h"
 #include "Group.h"
 #include "GroupMgr.h"
 #include "Log.h"
@@ -20,6 +24,9 @@
 #include "SharedDefines.h"
 #include "WorldPacket.h"
 #include "WorldSession.h"
+#include <algorithm>
+#include <cctype>
+#include <utility>
 
 namespace
 {
@@ -49,6 +56,38 @@ void MemberSteps(Player* member, Player* leader)
         ai->SetMaster(leader);
     ai->SetCoaStrategiesDirty();
     ai->Reset();
+}
+
+// A channel named after the place its players stand in ("Zone - Elwynn Forest", "General - Westfall"). A bot stays
+// on the ones of the zones it walked through (JoinBotChannels never leaves them), so a post needs the place's name.
+bool PlaceBound(Channel const* channel)
+{
+    uint32 const id = channel->GetChannelId();
+    return id && (id == sPlayerbotAIConfig.zoneChannelId || id == uint32(ChatChannelId::GENERAL) ||
+                  id == uint32(ChatChannelId::LOCAL_DEFENSE));
+}
+
+// The names a place-bound channel of `zone` carries, best first: the zone's, then the area's when the bot stands in
+// that zone (the CoA client names its zone channel after the area wherever the two differ, see JoinBotChannels).
+std::vector<std::string> PlaceNames(AreaTableEntry const* zone, AreaTableEntry const* here, AreaTableEntry const* area)
+{
+    std::vector<std::string> names;
+    if (!zone)
+        return names;
+    names.push_back(PlayerbotAI::GetLocalizedAreaName(zone));
+    if (zone == here && area && area != zone)
+        if (std::string areaName = PlayerbotAI::GetLocalizedAreaName(area); areaName != names.front())
+            names.push_back(std::move(areaName));
+    return names;
+}
+
+// The index of the first of `places` that `name` carries, or places.size().
+std::size_t PlaceRank(std::string const& name, std::vector<std::string> const& places)
+{
+    for (std::size_t i = 0; i < places.size(); ++i)
+        if (!places[i].empty() && name.find(places[i]) != std::string::npos)
+            return i;
+    return places.size();
 }
 }  // namespace
 
@@ -261,6 +300,88 @@ ActivityOpResult ActivityOperations::PostToChannel(ObjectGuid botGuid, ActivityC
             break;
     }
     return Report("post", botGuid, said ? ActivityOpResult::Done : ActivityOpResult::Failed);
+}
+
+ActivityOpResult ActivityOperations::PostToChannels(ObjectGuid botGuid, std::vector<std::string> const& prefixes,
+                                                    std::string const& text, uint32 zoneId)
+{
+    COA_ASSERT_WORLD_THREAD();
+    if (!Spend())
+        return Report("post channels", botGuid, ActivityOpResult::Deferred);
+
+    Player* const bot = ObjectAccessor::FindConnectedPlayer(botGuid);
+    if (!IsBot(bot) || !bot->IsInWorld())
+        return Report("post channels", botGuid, ActivityOpResult::Gone);
+    if (text.empty())
+        return Report("post channels", botGuid, ActivityOpResult::Failed);
+    if (bot->IsInCombat())
+        return Report("post channels", botGuid, ActivityOpResult::Refused);
+
+    ChannelMgr* const mgr = ChannelMgr::forTeam(bot->GetTeamId());
+    if (!mgr)
+        return Report("post channels", botGuid, ActivityOpResult::Failed);
+
+    std::string line = text;
+    CoaText::CutUtf8Bytes(line, 255);
+    PlayerbotAI* const ai = GET_PLAYERBOT_AI(bot);
+
+    // The places a place-bound channel may name: the activity's zone, else (no zone given, or the bot is on no
+    // channel of it) the zone the bot stands in. Never another place whose channel the bot is still on.
+    AreaTableEntry const* const here = ai->GetCurrentZone();
+    AreaTableEntry const* const area = ai->GetCurrentArea();
+    AreaTableEntry const* const target = zoneId ? sAreaTableStore.LookupEntry(zoneId) : here;
+    std::vector<std::string> const wanted = PlaceNames(target ? target : here, here, area);
+    std::vector<std::string> const fallback =
+        target && target != here ? PlaceNames(here, here, area) : std::vector<std::string>();
+
+    // "General - Elwynn Forest" matches the prefix "general". Only channels the bot is really on (CoaChannels::IsOn:
+    // Player::IsInChannel compares ids, and every "Zone - <place>" channel has the same one).
+    std::vector<std::pair<std::size_t, Channel*>> placed;
+    std::vector<std::pair<std::size_t, Channel*>> placedHere;
+    std::vector<Channel*> placeless;
+    for (auto const& [key, channel] : mgr->GetChannels())
+    {
+        if (!channel || channel->GetName().empty())
+            continue;
+        std::string name = channel->GetName();
+        std::transform(name.begin(), name.end(), name.begin(),
+                       [](unsigned char c) { return char(std::tolower(c)); });
+        bool const listed = std::any_of(prefixes.begin(), prefixes.end(), [&name](std::string const& prefix)
+                                        { return !prefix.empty() && name.rfind(prefix, 0) == 0; });
+        if (!listed || !CoaChannels::IsOn(bot, channel))
+            continue;
+        if (!PlaceBound(channel))
+            placeless.push_back(channel);
+        else if (std::size_t const rank = PlaceRank(channel->GetName(), wanted); rank < wanted.size())
+            placed.emplace_back(rank, channel);
+        else if (std::size_t const rankHere = PlaceRank(channel->GetName(), fallback); rankHere < fallback.size())
+            placedHere.emplace_back(rankHere, channel);
+    }
+
+    // The place's own channels first (the zone's name before the area's), then the listed channels of no place.
+    std::vector<std::pair<std::size_t, Channel*>>& chosen = placed.empty() ? placedHere : placed;
+    std::stable_sort(chosen.begin(), chosen.end(), [](auto const& a, auto const& b) { return a.first < b.first; });
+    std::vector<Channel*> targets;
+    for (auto const& entry : chosen)
+        targets.push_back(entry.second);
+    targets.insert(targets.end(), placeless.begin(), placeless.end());
+
+    std::string spoken;
+    uint32 said = 0;
+    for (Channel* const channel : targets)
+    {
+        if (said >= 2)
+            break;
+        channel->Say(bot->GetGUID(), line, LANG_UNIVERSAL);
+        ai->LogChat("tells channel " + channel->GetName(), line);
+        spoken += (said ? ", " : "") + channel->GetName();
+        ++said;
+    }
+
+    if (!said)
+        return Report("post channels", botGuid, ActivityOpResult::Failed);
+    LOG_DEBUG(LOGGER, "activity op post channels {} (zone {}): {}", botGuid.GetCounter(), zoneId, spoken);
+    return ActivityOpResult::Done;
 }
 
 ActivityOpResult ActivityOperations::SetIcon(ObjectGuid setter, uint8 icon, ObjectGuid target)

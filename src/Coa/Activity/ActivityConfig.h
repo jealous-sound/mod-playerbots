@@ -28,6 +28,40 @@ struct ActivityDuelSpot
     uint8 maxLevel = 60;
 };
 
+// M5: a named elite hunts go for (CoaActivity.Hunt.Targets "name:spawn:team;..."). The entry, map, position and
+// level come from the spawn (creature.guid) at use; a spawn the world does not know is skipped with one LOG_WARN.
+struct ActivityHuntTarget
+{
+    std::string name;     // [a-z0-9_]{1,24}: the `target` column, the start command's word, the brain option
+    uint32 spawnId = 0;   // creature.guid
+    uint8 team = 0;       // TeamId whose bots hunt it
+};
+
+// M5: an outpost raid target (CoaActivity.Raid.Targets "name:spawn:team[:rallyX:rallyY];..."): the attacking team, and
+// where it rallies before the march (z from the ground). Without a rally the raid rallies RAID_RALLY_FALLBACK_YARDS
+// from the target on the ground, in a random direction.
+struct ActivityRaidTarget
+{
+    std::string name;     // [a-z0-9_]{1,24}
+    uint32 spawnId = 0;   // creature.guid of the quest giver
+    uint8 team = 0;       // the attacking TeamId
+    bool rallySet = false;
+    float rallyX = 0.0f;
+    float rallyY = 0.0f;
+};
+
+// M5: a place for an inn party or a city crowd (CoaActivity.Party.Spots, Loiter.Spots: "name:team:map:x:y:z;...",
+// team alliance, horde or any). Checked like a duel spot before its first use (ground height).
+struct ActivitySpot
+{
+    std::string name;     // [a-z0-9_]{1,24}
+    uint8 team = 0;       // TeamId; TEAM_NEUTRAL (2) for any
+    uint32 mapId = 0;
+    float x = 0.0f;
+    float y = 0.0f;
+    float z = 0.0f;
+};
+
 // AiPlayerbot.CoaActivity.* (plus the four AiPlayerbot.CoaBrain keys the activity reads) as one immutable snapshot.
 // Load runs on every config load (startup, .reload config, .playerbots activity reload) and CoaWorldScript publishes
 // it. With Enable = 0 only that key is read. Load runs before PlayerbotAIConfig::Initialize at startup, and before
@@ -87,6 +121,90 @@ struct ActivityConfig
     uint32 chatMaxPosts = 4;             // Zone/World posts per activity
     uint32 chatMinGapSeconds = 60;
 
+    // M5 chat recruitment.
+    std::vector<std::string> chatChannels{"zone"};       // Chat.Channels: lower-case channel name prefixes where
+                                                         // recruitment posts go (Chat.Channel = zone), bot on them
+    uint32 chatRecruitEverySeconds = 180;                // Chat.RecruitEverySeconds: between two recruitment posts
+    std::vector<std::string> chatJoinWords{"inv", "x", "moi"};  // Chat.JoinWords: whole-message whisper words a
+                                                         // recruiting leader takes as a join request (lower case)
+    std::string whisperPrefix = "!";                     // WhisperPrefix: "!join", "!rejoindre" whispered to any bot
+
+    // M5 dungeon runs.
+    bool dungeonEnable = true;
+    uint32 weightDungeon = 30;
+    uint32 dungeonBots = 4;              // [3, 4] bots; the real player (or players) fill the rest of the five
+    uint32 dungeonLevelSpread = 3;       // [0, 5] bots within the player's level +- this
+    uint32 dungeonMax = 1;               // [0, 4]
+    uint32 dungeonRecruitMinutes = 10;   // [2, 60] the LFM stays up this long without a taker
+    uint32 dungeonQueueMinutes = 10;     // [2, 60] role check, queue and proposal must be done within this
+    uint32 dungeonLfgTries = 2;          // [1, 5] Dungeon Finder attempts before walking to the portal
+    bool dungeonUseLfg = true;           // 0: always walk to the portal
+    uint32 dungeonMaxMinutes = 120;      // [30, 360] a run lasts at most this (+ HARD_DEADLINE_EXTRA_MIN)
+    uint32 dungeonIdleDisbandMinutes = 5;  // [1, 60] the bots leave this long after the player left or the run ended
+    uint32 dungeonPlayerCooldownMinutes = 60;  // [0, 1440] a player is not planned for again before this
+    bool dungeonSwitchSpecs = true;      // a bot of the right class but another role takes a specialization of the
+                                         // role (PrepareCoaRecruit, as an "lfg bot" recruit does; it keeps it)
+    std::vector<uint32> dungeonIds;      // Dungeon.Ids: LFG dungeon ids allowed; empty: every classic normal 5-man
+
+    // M5 elite hunts.
+    bool huntEnable = true;
+    uint32 weightHunt = 15;
+    std::vector<ActivityHuntTarget> huntTargets;
+    uint32 huntMinBots = 3;              // [2, 10]
+    uint32 huntMaxBots = 6;              // [MinBots, 10]
+    uint32 huntMax = 1;                  // [0, 4]
+    uint32 huntRecruitSeconds = 120;     // [0, 1800] the leader recruits players this long before the gathering
+    uint32 huntMinutes = 20;             // [5, 120] recruiting to the kill at most (+ HARD_DEADLINE_EXTRA_MIN)
+    uint32 huntLevelBelow = 2;           // [0, 10] bots from the target's level - this
+    uint32 huntLevelAbove = 3;           // [0, 10] to the target's level + this
+
+    // M5 outpost raids.
+    bool raidEnable = false;
+    uint32 weightRaid = 5;
+    std::vector<ActivityRaidTarget> raidTargets;
+    uint32 raidMinLevel = 45;            // [1, 80] bots of this level and above (the census counts them)
+    uint32 raidMinBots = 6;              // [2, 40]
+    uint32 raidMaxBots = 15;             // [MinBots, 39]
+    uint32 raidMax = 1;                  // [0, 2]
+    uint32 raidRecruitMinutes = 10;      // [1, 60]
+    uint32 raidTimeoutMinutes = 25;      // [5, 180] after the recruitment (+ HARD_DEADLINE_EXTRA_MIN)
+    uint32 raidQuestGiverGuardYards = 100;  // [0, 500] no engagement while a real defender is this close
+    uint32 raidMaxPerTargetPerDay = 2;   // [0, 24] raids started per target and UTC day (0: no cap)
+    bool raidSkipIfDefenderInZone = true;
+    uint8 raidLootMethod = 3;            // Raid.LootMethod: free 0, round-robin 1, master 2, group 3, need 4
+    uint8 raidLootThreshold = 2;         // [0, 6] ItemQualities
+
+    // M5 inn parties.
+    bool partyEnable = true;
+    uint32 weightParty = 10;
+    uint32 partyMinBots = 4;             // [2, 12]
+    uint32 partyMaxBots = 8;             // [MinBots, 12]
+    uint32 partyMax = 1;                 // [0, 4]
+    uint32 partyMinutes = 15;            // [5, 120], +- 5 per party
+    uint32 partyLevelSpread = 5;         // [0, 20] bots within the player's level +- this
+    uint32 partyDancePercent = 30;       // [0, 100] dance parties among parties
+    uint32 partyMaxYards = 2000;         // [100, 10000] the inn is this close to the player it is placed for
+    std::vector<ActivitySpot> partySpots;  // empty: every friendly innkeeper of the world
+
+    // M5 city loitering.
+    bool loiterEnable = true;
+    uint32 weightLoiter = 10;
+    uint32 loiterMinBots = 3;            // [2, LOITER_MAX_BOTS]
+    uint32 loiterMaxBots = 8;            // [MinBots, LOITER_MAX_BOTS]
+    uint32 loiterMax = 2;                // [0, 6] crowds at a time, never two in one city
+    uint32 loiterMinutes = 30;           // [5, 240], +- 10 per crowd
+    uint32 loiterMinLevel = 20;          // [1, 80]
+    std::vector<ActivitySpot> loiterSpots;  // empty after parsing: DefaultLoiterSpots()
+
+    // M5 Gurubashi booty run.
+    bool gurubashiEnable = true;
+    uint32 weightGurubashi = 20;
+    uint32 gurubashiMinBots = 4;         // [2, 8]
+    uint32 gurubashiMaxBots = 8;         // [MinBots, 8]
+    uint32 gurubashiMinLevel = 35;       // [1, 80]
+    uint32 gurubashiMinutes = 25;        // [5, 120]
+    bool gurubashiBotsMayWin = false;    // 0: participants never loot or open anything (the chest is the players')
+
     // AiPlayerbot.CoaBrain.Use.Duel, Use.Organizer, Duel.DeadlineMs, Duel.AcceptThreshold (read here, not by
     // BrainConfig: the brain only transports).
     bool useBrainDuel = false;
@@ -96,8 +214,16 @@ struct ActivityConfig
 
     bool KindEnabled(ActivityKindId kind) const;
     uint32 KindWeight(ActivityKindId kind) const;
-    uint32 KindMax(ActivityKindId kind) const;
+    uint32 KindMax(ActivityKindId kind) const;  // M5: Gurubashi 1
+    // M5: the bots a kind needs at least (duelMinBots, gangMinBots, dungeonBots, huntMinBots, raidMinBots,
+    // partyMinBots, loiterMinBots, gurubashiMinBots); 0 for None.
+    uint32 KindMinBots(ActivityKindId kind) const;
     ActivityDuelSpot const* FindSpot(std::string const& name) const;
+    // M5, case-insensitive; null when absent.
+    ActivityHuntTarget const* FindHuntTarget(std::string const& name) const;
+    ActivityRaidTarget const* FindRaidTarget(std::string const& name) const;
+    ActivitySpot const* FindPartySpot(std::string const& name) const;
+    ActivitySpot const* FindLoiterSpot(std::string const& name) const;
 
     // World thread. Reads and clamps the keys (the contract lists the clamps); a bad Duel.Spots entry is skipped
     // with one LOG_ERROR, and an empty list after parsing falls back to the defaults.
@@ -113,6 +239,12 @@ struct ActivityConfig
     // The compiled-in spots used when Duel.Spots is empty: Orgrimmar and Ironforge gates (levels 10-60), Razor Hill
     // and Goldshire (levels 1-12). Approximate coordinates: the director checks them before use.
     static char const* DefaultDuelSpots();
+    // M5 defaults (the conf ships the same strings): Hogger and Grand Foreman Puzik Gallywix; Magistrate Henry Maleb
+    // and High Executor Darthalia with their rallies; the six classic capitals' banks (approximate, checked before
+    // use).
+    static char const* DefaultHuntTargets();
+    static char const* DefaultRaidTargets();
+    static char const* DefaultLoiterSpots();
 };
 
 #endif

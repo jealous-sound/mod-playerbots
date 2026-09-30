@@ -12,6 +12,8 @@
 #include "ActivityCensus.h"
 #include "ActivityKind.h"
 #include "ActivityOperations.h"
+#include "ActivityOrganizer.h"
+#include "ActivityRecruitment.h"
 #include "ActivityStore.h"
 #include "ActivityTypes.h"
 #include "Define.h"
@@ -20,9 +22,11 @@
 #include <atomic>
 #include <map>
 #include <memory>
+#include <set>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 class BrainSink;
@@ -110,9 +114,10 @@ private:
         uint64 jobId = 0;
         uint64 deadlineMs = 0;
         std::vector<ActivityKindId> eligible;
+        std::vector<ActivityBrain::NextOption> options;  // M5: what the "next" question offered (kinds, targets)
         ObjectGuid nearGuid;      // the real player it is for, looked up again when the answer comes
         bool answered = false;
-        ActivityBrain::Choice choice;
+        ActivityBrain::NextPick pick;
         bool active = false;
     };
 
@@ -155,6 +160,19 @@ private:
     ActivityBrain::Scene SceneNow() const;
     Player* PickNear() const;
     void MarkStrategiesDirty(uint32 botLow, uint64 epoch, bool anyEpoch) const;
+    // M5.
+    // The next options for the eligible kinds (ActivityKind::Targets); a kind with an empty target list leaves
+    // `eligible`.
+    std::vector<ActivityBrain::NextOption> NextOptions(std::vector<ActivityKindId>& eligible, Player* nearPlayer,
+                                                       uint64 nowMs, uint32 nowUnix);
+    // The chat join requests of this tick (and those held from the last one).
+    void JoinRequests(uint64 nowMs, uint32 nowUnix);
+    // One request; false: not answered for lack of budget (held for the next tick).
+    bool JoinFromChat(ActivityJoinRequest const& request, uint64 nowMs, uint32 nowUnix);
+    // Join's choice: the activity `id`, or with 0 the nearest one the player may join; null when none.
+    Activity* JoinTarget(Player* player, uint32 id);
+    // Join's checks once the activity is chosen, then kind->Join: the player's line.
+    std::string JoinChecked(Player* player, Activity& activity);
 
     // The gates (static: the seams read them without the instance).
     inline static std::atomic<bool> running{false};
@@ -168,6 +186,7 @@ private:
     std::vector<PendingPlan> plans;
     PendingSchedule schedule;
     std::shared_ptr<BrainSink> organizerSink;           // Organizer jobs' results (drained here)
+    ActivityOrganizer organizer;                        // M5: the kinds' own Organizer questions
     ActivityOperations ops;
     ActivityCandidates candidates;
     ActivityCensus census;
@@ -199,9 +218,11 @@ private:
     bool dirty = false;                                 // republish at the end of the tick
     bool stopped = false;                               // Shutdown ran
     bool tablesMissingLogged = false;
+    std::vector<ActivityJoinRequest> heldRequests;      // M5: chat join requests waiting for budget (<= 10 s)
+    std::set<std::pair<uint32, ObjectGuid>> recruitOffers;  // M5: (activity id, player) offers whispered once
     // Counters for List(): started, ended per outcome, operations refused.
     uint64 startedCount = 0;
-    std::array<uint64, 11> endedCount{};
+    std::array<uint64, 12> endedCount{};
 };
 
 #endif

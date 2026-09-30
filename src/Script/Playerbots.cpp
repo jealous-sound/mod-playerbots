@@ -6,6 +6,7 @@
 
 #include "Playerbots.h"
 #include "CoaSpecialization.h"
+#include "ActivityRecruitment.h"
 #include "BattleGroundTactics.h"
 #include "BattlefieldScript.h"
 #include "Channel.h"
@@ -222,6 +223,12 @@ public:
         {
             return true;
         }
+
+        // CoA activity: a join word whispered to a recruiting leader, or "!join" to any bot, is the activity
+        // director's; the bot answers on the director's next tick and nothing else sees it. One relaxed load with
+        // activities off.
+        if (ActivityRecruitment::OnWhisper(player, receiver, msg))
+            return true;
 
         // Voice mode: when the director takes the whisper as conversation, it answers or refuses by itself.
         bool const quiet = CoaVoiceConfig::Enabled() && CoaHooks::OnWhisper(player, receiver, msg);

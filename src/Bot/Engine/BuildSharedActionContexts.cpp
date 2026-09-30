@@ -32,6 +32,7 @@
 #include "CoaGenericContext.h"
 #include "CoaActivityAiContext.h"
 #include "CoaMemoryContext.h"
+#include "CoaPartyAiContext.h"
 
 void AiObjectContext::BuildSharedActionContexts(SharedNamedObjectContextList<Action>& actionContexts)
 {
@@ -83,4 +84,5 @@ void AiObjectContext::BuildSharedActionContexts(SharedNamedObjectContextList<Act
     actionContexts.Add(new CoaGenericActionContext());
     actionContexts.Add(new CoaMemoryActionContext());
     actionContexts.Add(new CoaActivityActionContext());
+    actionContexts.Add(new CoaPartyActionContext());
 }

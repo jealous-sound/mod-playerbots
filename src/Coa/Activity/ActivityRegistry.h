@@ -33,6 +33,8 @@ struct ActivityMemberView
     ObjectGuid objective;              // M5: the target held in combat ("coa activity combat"); empty in M4
     uint64 ringDuelEndMs = 0;          // duel rings: when the last duel between ring members ended (spectators cheer)
     uint8 flags = 0;                   // ActivityViewFlag bits
+    uint8 style = 0;                   // M5: ActivityViewStyle of solo kinds ("coa party"); 0 for every other kind
+    uint32 emote = 0;                  // M5: TextEmotes id every bot plays when it celebrates (0: its own pick)
 
     bool Has(ActivityViewFlag flag) const { return (flags & flag) != 0; }
 };

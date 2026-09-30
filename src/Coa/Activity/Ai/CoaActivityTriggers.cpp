@@ -55,7 +55,7 @@ bool AreaAllowsDuels(uint32 areaId)
 bool CoaActivityTravelTrigger::IsActive()
 {
     ActivityMemberView const* r = CoaActivityBot::Refresh(botAI).row;
-    if (!r || bot->IsInCombat() || bot->IsInFlight())
+    if (!r || r->Has(ACTIVITY_VIEW_QUIET) || bot->IsInCombat() || bot->IsInFlight())
         return false;
 
     // Another map (FLT_MAX): the director teleports.
@@ -75,13 +75,15 @@ bool CoaActivityTravelTrigger::IsActive()
 bool CoaActivityHoldTrigger::IsActive()
 {
     ActivityMemberView const* r = CoaActivityBot::Refresh(botAI).row;
-    return r && r->role == ActivityRole::Leader && r->Has(ACTIVITY_VIEW_HOLD) && !bot->IsInCombat();
+    return r && r->role == ActivityRole::Leader && r->Has(ACTIVITY_VIEW_HOLD) && !r->Has(ACTIVITY_VIEW_QUIET) &&
+           !bot->IsInCombat();
 }
 
 bool CoaActivityAwayTrigger::IsActive()
 {
     ActivityMemberView const* r = CoaActivityBot::Refresh(botAI).row;
-    if (!r || r->phase != ActivityPhase::Active || CoaActivityBot::IsFollowing(*r) || bot->IsInCombat() || bot->duel)
+    if (!r || r->phase != ActivityPhase::Active || r->Has(ACTIVITY_VIEW_QUIET) || CoaActivityBot::IsFollowing(*r) ||
+        bot->IsInCombat() || bot->duel)
         return false;
 
     float const dist = CoaActivityBot::DistanceToCenter(bot, *r);
@@ -91,7 +93,8 @@ bool CoaActivityAwayTrigger::IsActive()
 bool CoaActivityCatchUpTrigger::IsActive()
 {
     ActivityMemberView const* r = CoaActivityBot::Refresh(botAI).row;
-    if (!r || !CoaActivityBot::IsFollowing(*r) || r->phase <= ActivityPhase::Gathering || bot->IsInCombat())
+    if (!r || r->Has(ACTIVITY_VIEW_QUIET) || !CoaActivityBot::IsFollowing(*r) || r->phase <= ActivityPhase::Gathering ||
+        bot->IsInCombat())
         return false;
 
     Player* leader = CoaActivityBot::LeaderOnMap(bot, *r);
@@ -110,12 +113,22 @@ bool CoaActivityRoamTrigger::IsActive()
 {
     ActivityBotState& s = CoaActivityBot::Refresh(botAI);
     ActivityMemberView const* r = s.row;
-    if (!r || !r->Has(ACTIVITY_VIEW_HUNT) || CoaActivityBot::IsFollowing(*r) || bot->IsInCombat() ||
-        bot->isMoving() || CoaTime::NowMs() < s.nextRoamMs)
+    if (!r || !r->Has(ACTIVITY_VIEW_HUNT) || r->Has(ACTIVITY_VIEW_QUIET) || CoaActivityBot::IsFollowing(*r) ||
+        bot->IsInCombat() || bot->isMoving() || CoaTime::NowMs() < s.nextRoamMs)
         return false;
 
     // Grind found something to hunt: it goes first.
     return !AI_VALUE(Unit*, "grind target");
+}
+
+bool CoaActivityEngageTrigger::IsActive()
+{
+    ActivityMemberView const* r = CoaActivityBot::Refresh(botAI).row;
+    if (!r || r->objective.IsEmpty() || r->Has(ACTIVITY_VIEW_RETREAT) || r->Has(ACTIVITY_VIEW_QUIET) ||
+        !bot->IsAlive() || bot->IsInCombat())
+        return false;
+
+    return CoaActivityBot::ObjectiveInReach(botAI, *r) != nullptr;
 }
 
 // --- "coa duel" ---
@@ -328,9 +341,20 @@ bool CoaRingIdleTrigger::IsActive()
 bool CoaActivityObjectiveTrigger::IsActive()
 {
     ActivityMemberView const* r = CoaActivityBot::Refresh(botAI).row;
-    if (!r || r->objective.IsEmpty())
+    if (!r || r->objective.IsEmpty() || r->Has(ACTIVITY_VIEW_RETREAT))
         return false;
 
     Unit* objective = CoaActivityBot::ObjectiveInReach(botAI, *r);
     return objective && AI_VALUE(Unit*, "current target") != objective;
+}
+
+bool CoaActivityRetreatTrigger::IsActive()
+{
+    ActivityMemberView const* r = CoaActivityBot::Refresh(botAI).row;
+    if (!r || !r->Has(ACTIVITY_VIEW_RETREAT))
+        return false;
+
+    // Another map or no center (FLT_MAX): the director's travel rule brings it back.
+    float const dist = CoaActivityBot::DistanceToCenter(bot, *r);
+    return dist != FLT_MAX && dist > ActivityThreshold::RALLY_ARRIVE_RADIUS;
 }

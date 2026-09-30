@@ -12,6 +12,7 @@
 #include "Config.h"
 #include "ScriptMgr.h"
 
+#include "ActivityRecruitment.h"
 #include "ActivityRegistry.h"
 #include "BattlegroundMgr.h"
 #include "LFGMgr.h"
@@ -1011,6 +1012,14 @@ bool CoaLfgHeard(Player* player, std::string const& message, Channel* channel)
                 ++itr;
             }
         }
+    }
+
+    // CoA activity: recruiting leaders whisper this player an offer on the director's next tick (queue only).
+    {
+        uint8 mask = 0;
+        for (CoaRole const role : wanted)
+            mask |= uint8(1 << uint8(role));
+        ActivityRecruitment::OnLfgRequest(player, mask);
     }
 
     if (player->GetGroup() && player->GetGroup()->IsFull())

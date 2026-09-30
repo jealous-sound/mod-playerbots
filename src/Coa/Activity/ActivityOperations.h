@@ -68,6 +68,17 @@ public:
     ActivityOpResult PostToChannel(ObjectGuid bot, ActivityChatTarget target, std::string const& text,
                                    ObjectGuid whisperTo = ObjectGuid::Empty);
 
+    // M5 recruitment posts (Chat.Channel = zone): the bot says `text` (cut to 255 bytes) in the chat channels of its
+    // team's ChannelMgr that it is really on (CoaChannels::IsOn) and whose name starts with one of `prefixes` (lower
+    // case, compared case-insensitively, as CoaLfgChannels and CoaVoice.Channels), at most two channels. A channel
+    // named after a place (id AiPlayerbot.ZoneChannelId, General or LocalDefense) must also carry the name of the
+    // zone `zoneId` (AreaTable id), or, when `zoneId` is 0 or the bot is on no such channel of it, of the zone the
+    // bot stands in (or its area there); never another place's. One budget unit. Done when it spoke in one at least;
+    // Failed when none qualifies (or `text` is empty); Refused in combat; Gone when the bot is not in the world;
+    // Deferred without budget.
+    ActivityOpResult PostToChannels(ObjectGuid bot, std::vector<std::string> const& prefixes, std::string const& text,
+                                    uint32 zoneId = 0);
+
     // Group::SetTargetIcon(icon, setter, target) on the setter's group (M5 objectives).
     ActivityOpResult SetIcon(ObjectGuid setter, uint8 icon, ObjectGuid target);
 
