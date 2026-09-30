@@ -77,6 +77,29 @@ struct CoaVoiceConfig
     float thresholdChannel = 0.65f;
     uint32 whisperBrainPerSenderPerDay = 50;  // brain decisions per speaker account and UTC day for whispers; 0: no cap
 
+    // M6, the text lane: a generated line instead of a template one (needs CoaBrain.Enable = 1 and a usable
+    // CoaBrain.Text.Provider; its policy lives here, its transport in CoaBrain.Text.*).
+    uint32 textLlm = 0;               // TextLlm: 0 off; 1 whispers and party, raid and guild chat to a real player;
+                                      // 2 also say, yell and channel chat
+    uint32 textTimeoutMs = 6000;      // TextTimeoutMs [1000, 30000]: a line waits this long for its text, then the
+                                      // template goes
+    uint32 textPerSenderPerDay = 40;  // TextPerSenderPerDay [0, 100000]: generated lines per speaker account and
+                                      // UTC day; 0: no cap
+
+    // M6, banter: ambient lines in the zone channel where a real player is. Off by default.
+    bool banterEnable = false;                // Banter.Enable
+    uint32 banterMaxPerMinutePerZone = 4;     // Banter.MaxPerMinutePerZone [1, 20]: every bot line in that zone's
+                                              // channel counts (openers and answers)
+    uint32 banterIntervalMs = 90000;          // Banter.IntervalSeconds [15, 3600]: mean time between two exchanges of
+                                              // one eligible zone
+    uint32 banterMinGapMs = 30000;            // Banter.MinGapSeconds [5, 600]: least time between two exchanges there
+    uint32 banterMaxZones = 3;                // Banter.MaxZones [1, 20]: exchanges under way at once, realm-wide
+    uint32 banterAnswerPercent = 50;          // Banter.AnswerPercent [0, 100]: a second bot answers (needs BotToBot)
+    uint32 banterTextPercent = 50;            // Banter.TextPercent [0, 100]: an opener uses the text lane (needs
+                                              // TextLlm = 2)
+    uint32 banterQuietAfterHumanMs = 20000;   // Banter.QuietAfterHumanSeconds [0, 300]: no banter in a channel this
+                                              // long after a real player spoke in it (the players get the replies)
+
     // Whether a channel of that name is answered (case-insensitive prefix match on `channels`).
     bool ListensTo(std::string_view channelName) const;
 
@@ -85,6 +108,26 @@ struct CoaVoiceConfig
 
     // The brain's reply threshold for that scope (thresholdSay for Yell and the emotes, thresholdParty for Raid).
     float ThresholdFor(CoaVoiceScopeKind kind) const;
+
+    // M6. Whether TextLlm lets that scope have generated lines: 1 -> Whisper, Party, Raid, Guild; 2 -> also Say, Yell,
+    // Channel. Never the emotes (CustomEmote, TextEmote).
+    bool TextLaneFor(CoaVoiceScopeKind kind) const
+    {
+        switch (kind)
+        {
+            case CoaVoiceScopeKind::Whisper:
+            case CoaVoiceScopeKind::Party:
+            case CoaVoiceScopeKind::Raid:
+            case CoaVoiceScopeKind::Guild:
+                return textLlm >= 1;
+            case CoaVoiceScopeKind::Say:
+            case CoaVoiceScopeKind::Yell:
+            case CoaVoiceScopeKind::Channel:
+                return textLlm >= 2;
+            default:
+                return false;
+        }
+    }
 
     // World thread. Reads every key through sConfigMgr->GetOption and clamps the values (see the contract).
     static std::shared_ptr<CoaVoiceConfig const> Load();

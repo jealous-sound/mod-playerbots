@@ -26,13 +26,22 @@ std::shared_ptr<IBrain> Current();
 // The director tests this before anything else, so with the brain off its path is exactly M1's.
 bool ChatActive();
 
+// M6. Any thread, one relaxed load: running, accepting, and a usable CoaBrain.Text.Provider (the text queue has
+// workers). False with the brain off or Text.Provider = none, so the text lane and the banter's text cost one load.
+bool TextActive();
+
+// M6. Any thread, one relaxed load: TextActive() and the text engine may receive players' words (its effective
+// SendPlayerText). The voice lane needs this; the banter does not (its prompts hold no player word).
+bool TextWithWords();
+
 // Any thread. Whether a brain ever ran in this process (CoaWorldScript then pumps BrainUsageStore and BrainAdmin).
 bool EverStarted();
 
 // World thread. Makes the service match `config` and the runtime override: starts, stops, restarts (Workers,
-// CaBundle or TlsVerify changed) or reconfigures the brain; configures BrainGovernor and BrainCache; publishes
-// `config` (BrainConfig::Publish). The caller has loaded the usage (BrainUsageStore::LoadSync) and the question
-// set (QuestionRegistry::Reload) before a start. Logs one INFO line when the brain starts or stops.
+// CaBundle, TlsVerify, Text.Workers or whether a text engine exists changed) or reconfigures the brain; configures
+// BrainGovernor and BrainCache; publishes `config` (BrainConfig::Publish). The caller has loaded the usage
+// (BrainUsageStore::LoadSync) and the question set (QuestionRegistry::Reload) before a start. Logs one INFO line when
+// the brain starts or stops. M6: the brain starts when an engine of the chain or the text generator is usable.
 void Apply(std::shared_ptr<BrainConfig const> config);
 
 // World thread (.playerbots brain on|off). -1: follow the conf; 0: off; 1: on. .reload config sets it back to -1.

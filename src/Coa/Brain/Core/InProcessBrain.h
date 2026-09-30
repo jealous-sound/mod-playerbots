@@ -27,6 +27,12 @@ class BrainResolver;
 // Lifetime. Everything the workers use (queue, engine set, clients, stop flag) sits in a Shared block owned by
 // shared_ptr: each worker holds one, so a worker detached at shutdown keeps its state alive and exits on its own.
 // Reconfigure swaps the engine set; a call in flight finishes on the set it started with.
+//
+// M6. A second family lives beside the decision engines: the text generator (ITextEngine, from CoaBrain.Text.*).
+// Its jobs (BrainJobKind::Text) wait in their own BrainQueue (the same three lanes) and are served by
+// CoaBrain.Text.Workers threads of their own, each with its own BrainHttpClient, so a slow model call never holds a
+// decision worker. The governor, the sink, the resolver, the usage table and the breaker are shared: the text
+// generator is the governor row "text".
 class InProcessBrain final : public IBrain
 {
 public:
@@ -34,8 +40,10 @@ public:
     ~InProcessBrain() override;  // Shutdown(0) when still running
 
     // World thread. Builds the engines (BrainEngines::Create; unusable ones are kept, skipped and shown by
-    // status), starts the resolver for the hosted engines' host names, then the workers. False, with `error`,
-    // when no engine of the chain is usable or JSON support is missing (BrainJson::Available()).
+    // status) and the text engine when Text.Provider is usable (TextEngines::Create), starts the resolver for the
+    // hosted engines' host names (the text host included), then the decision workers and the text workers. False,
+    // with `error`, when no engine of the chain and no text engine is usable, or JSON support is missing
+    // (BrainJson::Available()).
     bool Start(std::string& error);
 
     // World thread. New chain, engines, timeouts and privacy from `config`; the workers, the TLS settings and the
@@ -53,7 +61,7 @@ public:
     // the resolver (detached, never joined).
     void Shutdown(uint32 deadlineMs);
 
-    // IBrain.
+    // IBrain. Active(Text): the text engine exists; the other uses: the decision chain has a usable engine.
     bool Active(BrainUse use) const override;
     bool ChainCalibrated() const override;
     BrainTicket Submit(BrainJob&& job, std::shared_ptr<BrainSink> const& sink, BrainResult* inlineHit) override;
@@ -61,8 +69,13 @@ public:
 
     // Any thread.
     std::shared_ptr<BrainConfig const> Config() const;
-    uint32 QueueDepth(BrainLane lane) const;
+    uint32 QueueDepth(BrainLane lane) const;  // the decision queue
     uint32 WorkerCount() const { return uint32(workers.size()); }
+    // M6. The text queue's depth, the text workers, and whether a text engine exists / may get players' words.
+    uint32 TextQueueDepth(BrainLane lane) const;
+    uint32 TextWorkerCount() const { return uint32(textWorkers.size()); }
+    bool TextUsable() const { return textUsable.load(std::memory_order_relaxed); }
+    bool TextWithWords() const { return textWithWords.load(std::memory_order_relaxed); }
 
 private:
     InProcessBrain(InProcessBrain const&) = delete;
@@ -73,6 +86,11 @@ private:
     // Worker `index`: takes jobs until the queue closes. Owns a reference to `shared` for its whole life, so a
     // worker detached at shutdown never uses freed state.
     static void Work(std::shared_ptr<Shared> shared, uint32 index);
+    // M6. Text worker `index` (its slot in Shared::done and Shared::clients follows the decision workers'): takes
+    // text jobs until the text queue closes. Per job: Governor::Acquire("text"), ITextEngine::Generate, Record,
+    // the job's BrainTextFinisher (a refusal of it makes the result Rejected, the call stays a success for the
+    // governor), Settle, exactly one Post. Same try/catch and deadline rules as Work.
+    static void WorkText(std::shared_ptr<Shared> shared, uint32 index);
 
     // World thread. Builds the engines of `config` and swaps the new set in; `problems` lists the engines left out.
     // False when no engine of the chain could be built.
@@ -81,10 +99,14 @@ private:
     std::shared_ptr<Shared> shared;
     std::shared_ptr<BrainResolver> resolver;
     std::vector<std::thread> workers;
+    std::vector<std::thread> textWorkers;  // M6: empty when Text.Provider is none or unusable
     std::atomic<bool> accepting{false};
     std::atomic<bool> running{false};
     std::atomic<bool> useChatReply{false};     // the engine set's CoaBrain.Use.ChatReply
     std::atomic<bool> chainCalibrated{false};  // an engine of the set's chain is calibrated
+    std::atomic<bool> chainUsable{false};      // M6: the set's chain holds a usable engine
+    std::atomic<bool> textUsable{false};       // M6: the set has a text engine and text workers run
+    std::atomic<bool> textWithWords{false};    // M6: that engine's effective SendPlayerText
     std::atomic<uint32> tooLateSkips{0};       // Submit's TooLate refusals, to let one in 32 through
     bool stopped = false;  // world thread
 };

@@ -25,7 +25,9 @@ class IBrain
 public:
     virtual ~IBrain() = default;
 
-    // Any thread, relaxed atomics: running, accepting submits, and for ChatReply CoaBrain.Use.ChatReply.
+    // Any thread, relaxed atomics: running, accepting submits, and for ChatReply CoaBrain.Use.ChatReply. M6: Text
+    // also needs a usable CoaBrain.Text.Provider (TextActive); every other use needs a usable engine in
+    // Decision.Chain, so a brain that runs for its text generator alone answers false to them.
     virtual bool Active(BrainUse use) const = 0;
 
     // Any thread. Whether an engine of Decision.Chain is Engine.<n>.Calibrated (its probabilities come from the
@@ -33,6 +35,9 @@ public:
     virtual bool ChainCalibrated() const = 0;
 
     // Any game thread; short locks only. Check-then-commit: a refused job leaves no token, reservation or charge.
+    // M6: a job of kind Text goes to the text queue and its own workers (a 6 s model call never holds a decision
+    // worker), is never cached, and needs job.textUser; one with textPlayerWords is refused (Invalid) unless the
+    // text engine may receive player words. Its result carries `text` (after job.textFinisher).
     // Queued: exactly one BrainResult reaches `sink` later, unless Cancel() removes the job first or the brain
     // shuts down. Answered (cache hit): `inlineHit`, when not null, holds the result and nothing is posted.
     virtual BrainTicket Submit(BrainJob&& job, std::shared_ptr<BrainSink> const& sink, BrainResult* inlineHit) = 0;

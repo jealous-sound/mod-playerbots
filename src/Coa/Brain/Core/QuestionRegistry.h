@@ -43,6 +43,9 @@ struct BrainQuestionSet
 
     std::string lineInstructions;
     std::string lineSilent;  // description of the "silent" option
+    // M6: description of the "free_text" option, added to the line question only while the text lane applies to the
+    // message (group "free_text" in the cache). Question file key: "line" -> "free_text".
+    std::string lineFreeText;
     // Short reply name -> the English kind tag put in front of each line option ("greet" -> "GREETING"). Code
     // order: greet bye thanks question about_me help lfg trade insult compliment joke duel name generic.
     std::vector<std::pair<std::string, std::string>> lineTags;

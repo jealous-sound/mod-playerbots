@@ -11,6 +11,8 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 // An http:// or https:// URL, split. Pure; any thread.
 struct BrainUrl
@@ -39,6 +41,9 @@ struct BrainHttpRequest
     std::string authHeader = "Authorization";
     std::string authorization;  // the header's whole value ("Bearer ..."); empty: no header. Never logged.
     std::string body;           // JSON, sent as application/json
+    // M6: further headers (Anthropic's anthropic-version and anthropic-beta), sent after the auth header. Names are
+    // tokens and values have no CR or LF (Post refuses the request with BadResponse otherwise); never logged.
+    std::vector<std::pair<std::string, std::string>> extraHeaders;
     uint32 connectTimeoutMs = 2000;
     uint32 totalTimeoutMs = 4000;  // connect, TLS handshake, write and read together
 };

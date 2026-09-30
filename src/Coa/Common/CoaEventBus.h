@@ -66,6 +66,10 @@ struct CoaEvent
     std::string channelName;  // CHAT_MSG_CHANNEL: the channel's name as the core holds it
     std::string text;         // the line as sent (the core caps player chat at 255 bytes)
     uint64 postedMs = 0;      // CoaTime::NowMs() when posted
+    // M6: a BOT event made by a banter opener: the chance in percent that a bot answers it
+    // (CoaVoiceLine::answerPercent). The director uses it instead of the scope's HeuristicChance, decayed per hop
+    // after the first. 0: the scope's own.
+    uint8 answerPercent = 0;
 
     // M3 memory events only (see CoaEventKind).
     uint64 epoch = 0;        // BotLogin, BotLogout

@@ -67,6 +67,66 @@ struct BrainEngineConfig
     std::string problem;
 };
 
+// The text generator (M6): where short chat lines come from. Not a decision engine: it is not in Decision.Chain, has
+// its own keys (AiPlayerbot.CoaBrain.Text.*), workers and queue, and shows in the governor as the engine "text".
+enum class BrainTextProvider : uint8
+{
+    None = 0,   // Text.Provider = none (the default): nothing in this family runs
+    OpenAi,     // an OpenAI-compatible POST {Url} (Ollama, llama.cpp, vLLM, LM Studio, OpenRouter, DeepSeek, Groq...)
+    Anthropic,  // POST https://api.anthropic.com/v1/messages (raw HTTP, x-api-key)
+    Mock        // no network: scripted replies and injected faults, for tests and soaks
+};
+
+char const* BrainTextProviderName(BrainTextProvider provider);  // "none", "openai", "anthropic", "mock"
+
+// AiPlayerbot.CoaBrain.Text.* as read by BrainConfig::Load, with its clamps applied (see the contract).
+struct BrainTextConfig
+{
+    BrainTextProvider provider = BrainTextProvider::None;
+    std::string providerName = "none";
+
+    std::string url;  // as configured, or the provider's default
+    bool tls = true;  // parsed from url
+    std::string host;
+    uint16 port = 443;
+    std::string target = "/";
+    bool hostIsIp = false;
+    bool loopback = false;  // 127.0.0.0/8, ::1 or localhost
+
+    std::string model;         // Anthropic: the model id, claude-opus-5 by default; OpenAI: required
+    std::string apiKey;        // never logged or printed: see BrainConfig::Mask
+    std::string apiKeySource;  // "conf", "env AC_...", "env <ApiKeyEnv>", or "" when there is none
+
+    // Effective: Text.SendPlayerText and (a loopback URL, or CoaBrain.Privacy.SendPlayerText = 1). Without it the
+    // voice lane never applies (the model could not answer without the words); banter sends no player word.
+    bool sendPlayerText = false;
+
+    uint32 maxTokens = 1024;   // Text.MaxTokens [16, 8192]
+    uint32 timeoutMs = 6000;   // Text.TimeoutMs [500, 60000]: one call's whole budget, capped by the job's time left
+    uint32 workers = 1;        // Text.Workers [1, 4]: threads serving the text queue
+
+    double priceInPerMTok = 0.0;   // USD per million input tokens, when the response reports no cost
+    double priceOutPerMTok = 0.0;
+    uint64 maxUsdMicrosPerDay = 500000;  // Text.MaxUsdPerDay (0.50)
+    uint32 maxRequestsPerDay = 500;      // Text.MaxRequestsPerDay
+
+    bool hasTemperature = false;  // Text.Temperature set (OpenAI always; Anthropic only for models that allow it)
+    float temperature = 0.0f;
+    std::string reasoningEffort;  // Text.ReasoningEffort: OpenAI "reasoning_effort"; Anthropic low|medium|high
+
+    bool anthropicServerFallbacks = true;  // Text.Anthropic.ServerFallbacks (claude-opus-5 only)
+    bool anthropicPromptCache = true;      // Text.Anthropic.PromptCache (known models only)
+
+    // Mock only (Text.Mock.*).
+    uint32 mockLatencyMs = 150;
+    std::string mockFault = "none";  // none, refusal, timeout, 402, 429, 500, garbage, empty, injection, long, mixed
+    uint32 mockFaultPercent = 0;
+    uint64 mockUsdMicrosPerCall = 0;
+
+    bool usable = false;  // false: no text job is accepted; `problem` says why (status shows it)
+    std::string problem;
+};
+
 // AiPlayerbot.CoaBrain.* as one immutable snapshot. Load builds it on the world thread (CoaWorldScript's
 // OnAfterConfigLoad, and .playerbots brain on); BrainService::Apply publishes the snapshot it runs; readers
 // copy the shared_ptr. Times are held in milliseconds, money in micro-USD.
@@ -93,6 +153,14 @@ struct BrainConfig
     bool useChatReply = true;
     uint32 probeMaxPerDay = 300;
 
+    // M6, read only with Enable = 1.
+    BrainTextConfig text;              // Text.*
+    bool useRpgNext = false;           // Use.RpgNext: BrainRpgAdvice asks which NewRpg status comes next
+    bool useEmote = false;             // Use.Emote: a banter opener's emote is asked of the brain
+    float rpgInfluence = 0.5f;         // Rpg.Influence [0, 1]: the weight of the advice in NewRpg's status pick
+    uint32 rpgAdviceTtlSeconds = 600;  // Rpg.AdviceTtlSeconds [60, 86400]
+    uint32 rpgMinBots = 3;             // Rpg.MinBots [1, 100]: random bots a group needs before it is asked about
+
     std::string questionFile;    // "" = compiled-in wording; relative paths are under the config directory
     std::string dialectFile;     // "" = compiled-in dialect table
     std::string fixtureDir;      // mock engine and .playerbots brain test selftest; "" = compiled-in
@@ -101,7 +169,9 @@ struct BrainConfig
     bool tlsVerify = true;
 
     BrainEngineConfig const* Find(std::string_view name) const;
-    bool AnyUsable() const;
+    bool AnyUsable() const;                   // an engine of Decision.Chain is usable
+    bool TextUsable() const { return text.usable; }
+    bool AnyUsableOrText() const { return AnyUsable() || text.usable; }  // the brain starts when this holds
     std::string ChainText() const;  // "openrouter,mock"
 
     // World thread. Reads Enable; when it is 0 (and forceEnable is false) returns at once, so a conf without the

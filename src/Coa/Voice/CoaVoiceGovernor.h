@@ -40,6 +40,11 @@ public:
     void Reserve(CoaVoiceConfig const& config, ObjectGuid bot, CoaVoiceScope const& scope, ObjectGuid sender,
                  std::string const& line, uint64 nowMs);
 
+    // M6. Records `line` in the bot's and the scope's repetition history at nowMs, with no cooldown, rate or sender
+    // effect. A text line is reserved with an empty line (Reserve) when it is decided, and its real text (the
+    // generated line, or the template that replaced it) is noted here when it is sent.
+    void NoteLine(ObjectGuid bot, uint64 scopeKey, std::string const& line, uint64 nowMs);
+
     // A real player spoke in that scope (every human event notes it).
     void NoteHumanSpoke(uint64 scopeKey, uint64 nowMs);
     bool HumanSpokeWithin(uint64 scopeKey, uint64 nowMs, uint64 windowMs) const;

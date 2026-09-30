@@ -27,6 +27,20 @@ enum class CoaVoiceScopeKind : uint8
     Count
 };
 
+// M6: what a banter opener is about. The text rows are coa_banter_<name> (CoaBanterTextName); the text lane is told
+// the topic in words.
+enum class CoaBanterTopic : uint8
+{
+    Zone = 0,     // a remark about the zone
+    Weather,      // weather talk in general terms (the core exposes no weather state to read)
+    Level,        // a joke about levels
+    Class,        // a joke about classes
+    Barrens,      // classic Barrens chat memes
+    Quest,        // quests
+    Dungeon,      // dungeons (never a group post)
+    Count
+};
+
 // Why an event, a candidate or a line came to nothing. Counted by the director, shown by .playerbots voice stats.
 enum class CoaVoiceDrop : uint8
 {
@@ -54,6 +68,7 @@ enum class CoaVoiceDrop : uint8
     Filtered,         // at send time: the realm's chat filter matched the line
     SendFailed,       // at send time: the route refused (no channel, no guild right...)
     BrainSilent,      // the brain (calibrated) decided nobody answers
+    Invalid,          // M6, at send time: CoaVoiceSanitizer::Validate refused a generated or banter line
     Count
 };
 
@@ -101,10 +116,24 @@ struct CoaVoiceLine
     uint8 depth = 0;      // bot-to-bot hop count of this line (1 for an answer to a real player)
     CoaIntent intent = CoaIntent::None;
     bool isDeny = false;  // a whisper refusal sent because the voice stayed silent
+
+    // M6. A text line: `text` is the best-ranked template line, sent when the generated one does not come.
+    uint64 textJobId = 0;       // the text job whose line replaces `text` at send time; 0: none
+    uint64 textDeadlineMs = 0;  // past it `text` goes as it is and the job is cancelled
+    uint32 textEpoch = 0;       // the director's brainEpoch at submit: another epoch's result is stale
+    bool generated = false;     // set by ResolveLineText when the generated line replaced `text` (Send counts it)
+    // A banter opener in a channel (CoaVoiceBanter): the chance in percent that a second bot answers it through the
+    // BOT event path (the echo event carries it as CoaEvent::answerPercent); 0 for every other line.
+    uint8 answerPercent = 0;
+    bool banter = false;
 };
 
 char const* CoaVoiceScopeName(CoaVoiceScopeKind kind);  // "whisper", "party"...
 char const* CoaVoiceDropName(CoaVoiceDrop drop);        // "chance", "bot-cooldown"...
+// M6, defined in CoaVoiceBanter.cpp: "zone", "weather", "level", "class", "barrens", "quest", "dungeon"; and the
+// text row names "coa_banter_zone", "coa_banter_weather", ... (never null).
+char const* CoaBanterTopicName(CoaBanterTopic topic);
+char const* CoaBanterTextName(CoaBanterTopic topic);
 
 // While the director makes a bot speak on the world thread, this holds that line's depth; 0 on every other
 // thread and at every other time. The say/yell hook copies it into the BOT event of that speech, so an answer

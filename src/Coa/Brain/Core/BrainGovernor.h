@@ -80,6 +80,10 @@ struct BrainAdmitRequest
     std::string_view situation;    // an engine with this situation disabled does not count as usable
     std::string_view forceEngine;  // probe: only that engine is considered (its breaker is ignored)
     uint64 estimateMicros = 0;     // reserved from the global budget until Settle
+    // M6. A text job: only the engine "text" is considered (never a chain engine), and the lane's watermark also
+    // applies to the text row's own daily cap (Text.MaxUsdPerDay x LaneStopAt[lane] / 100, reservations included),
+    // so the Ambient lane (banter) stops at half of the text budget and leaves the rest to players' replies.
+    bool textJob = false;
 };
 
 // What one HTTP call (or one attempt that never left) came to.
@@ -106,20 +110,26 @@ public:
     // World thread (BrainService::Apply: every config load, .playerbots brain on/off). Caps and the chain order.
     // An engine that stays keeps its counters, breaker and exhausted mark, and loses its auth-failed,
     // misconfigured and disabled-situation marks (the new config may have fixed the key or the URL); a new one
-    // starts clean; one that left keeps its row until the day ends.
+    // starts clean; one that left keeps its row until the day ends. M6: when config.text.provider is not None the
+    // row BRAIN_TEXT_ENGINE ("text") is configured like an engine (caps from Text.MaxUsdPerDay and
+    // Text.MaxRequestsPerDay, dialect = the provider's name) and listed after the chain; it is flagged as the text
+    // row, which ExpectedMs and the decision jobs' Admit never consider.
     void Configure(BrainConfig const& config);
 
     // Any thread (Submit). In order: global budget with the lane's watermark (spent + reserved + estimate <=
-    // cap x LaneStopAt[lane] / 100) -> OverBudget; probe cap (probes) -> OverBudget; at least one engine usable
-    // (forceEngine: that one, breaker ignored) -> NoEngine; the MaxRequestsPerMinute bucket -> Throttled. When all
-    // pass, takes one token, reserves the estimate and returns Queued.
+    // cap x LaneStopAt[lane] / 100) -> OverBudget; for a text job the text row's daily cap with the same watermark
+    // and its request cap -> OverBudget; probe cap (probes) -> OverBudget; at least one engine usable (forceEngine:
+    // that one, breaker ignored; a text job: the text row) -> NoEngine; the MaxRequestsPerMinute bucket ->
+    // Throttled. When all pass, takes one token, reserves the estimate and returns Queued.
     BrainSubmit Admit(BrainAdmitRequest const& request, uint64 nowMs);
 
     // Any thread. Exactly once per admitted job, whatever its end (answered, failed, cancelled, evicted, dropped at
     // shutdown, refused by the queue after Admit): returns the reservation and, for a probe, its in-flight slot.
-    void Settle(uint64 reservedMicros, bool probe);
+    // `textJob`: the job was admitted with BrainAdmitRequest::textJob (its reservation also sits on the text row).
+    void Settle(uint64 reservedMicros, bool probe, bool textJob = false);
 
-    // Worker thread, before each engine of the chain. False, with `why`, when the engine is not usable, is
+    // Worker thread, before each engine of the chain (the text worker: the engine BRAIN_TEXT_ENGINE). False, with
+    // `why`, when the engine is not usable, is
     // exhausted, auth-failed or misconfigured, has `situation` disabled, is past its own daily caps, has an
     // open breaker (a half-open one lets one trial through), or when timeLeftMs is under its p50. A probe
     // ignores the breaker, the disabled situations and the p50.
@@ -133,8 +143,13 @@ public:
     void Record(std::string_view engine, std::string_view situation, BrainCallOutcome const& outcome, uint64 nowMs);
 
     // Any thread (Submit's TooLate test). The p95 of the first usable engine of the chain (or of forceEngine),
-    // ConnectTimeoutMs / 2 while it has fewer than BrainLatency::MinSamples samples.
+    // ConnectTimeoutMs / 2 while it has fewer than BrainLatency::MinSamples samples. The text row is never a
+    // candidate here.
     uint32 ExpectedMs(std::string_view forceEngine, uint64 nowMs) const;
+
+    // M6. Any thread (Submit's TooLate test for text jobs). The p95 of the text row when it is usable, else 0; while
+    // it has fewer than BrainLatency::MinSamples samples, `fallbackMs` (Submit passes Text.TimeoutMs / 3).
+    uint32 ExpectedTextMs(uint64 nowMs, uint32 fallbackMs) const;
 
     // World thread (BrainUsageStore). Rows changed since the last call: today's, and the final rows of the day
     // that just ended. The caller writes them; they are not returned again unless they change.
@@ -180,6 +195,7 @@ private:
         BrainUsageRow today;
         bool dirty = false;
         BrainLatency latency;
+        bool textRow = false;      // M6: the row of the text generator
     };
 
     // Guarded by lock. A later UTC day moves every row to `finished` and starts clean ones; an earlier one (the
@@ -207,6 +223,7 @@ private:
     uint32 probesInFlight = 0;
     double tokens = 0.0;
     uint64 lastRefillMs = 0;
+    uint64 textReservedMicros = 0;  // M6: the part of reservedMicros held by text jobs
     // From Configure.
     uint64 capMicros = 1500000;
     std::array<uint32, 3> laneStopPercent{100, 80, 50};

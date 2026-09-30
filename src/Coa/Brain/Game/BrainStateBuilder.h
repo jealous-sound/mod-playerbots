@@ -65,9 +65,15 @@ struct BrainChatLine
 // What the director keeps to read the answers back.
 struct BrainChatPlan
 {
-    std::vector<BrainChatLine> lines;  // line option keys, in the order sent ("silent" is not listed here)
+    std::vector<BrainChatLine> lines;  // line option keys, in the order sent ("silent" and "free_text" are not listed)
     uint32 whoCount = 0;               // options b0..b(whoCount-1) of the who question; 0 when not asked
+    // M6: the line question also offers "free_text" (BrainQuestionSet::lineFreeText, group "free_text"): the text
+    // lane applies to this message. The job's cache key gets "|t", so answers with and without the option never mix.
+    bool freeText = false;
 };
+
+// M6: the line option key and cache group of "a generated line".
+constexpr char const* BRAIN_FREE_TEXT_KEY = "free_text";
 
 // Builds what the brain is asked about one human message: the features-only state text and the questions. The
 // pure functions work on plain facts (probes and the self-test use them without a Player); the others read
@@ -85,8 +91,9 @@ std::string ChatState(BrainChatFacts const& facts, BrainQuestionSet const& quest
 std::string DescribeBot(BrainBotFacts const& bot);
 
 // Pure. Questions in this order: reply (YesNo); who (Choice b0..bN-1, not cacheable) when askWho and more than one
-// bot; line (Choice: each plan line as "[TAG] <NeutralTokens(row)>" with group = replyName, then "silent" with group
-// "silent") when plan.lines is not empty; tone (Score, 5 levels); emote (Choice over QuestionRegistry::EmoteKeys());
+// bot; line (Choice: each plan line as "[TAG] <NeutralTokens(row)>" with group = replyName, then, when plan.freeText,
+// "free_text" (BrainQuestionSet::lineFreeText, group "free_text"), then "silent" with group "silent") when plan.lines
+// is not empty or plan.freeText; tone (Score, 5 levels); emote (Choice over QuestionRegistry::EmoteKeys());
 // then, when facts.askRating (M3): friendliness (Score, 5 levels), insult (YesNo), thanks (YesNo), all cacheable.
 std::vector<BrainQuestion> ChatQuestions(BrainChatFacts const& facts, BrainChatPlan const& plan,
                                          BrainQuestionSet const& questions, bool askWho);
@@ -107,7 +114,8 @@ std::vector<BrainChatLine> ChatLines(CoaIntent intent, bool named, uint32 locale
 // World thread. The whole chat_reply job: use ChatReply, lane Player, situation "chat_reply", state (ChatState
 // with CoaBrain.StateMaxChars), playerText (the message: control characters and "<<<", ">>>" removed, cut to 255
 // bytes), questions (ChatQuestions), cacheKey (see the contract; "" unless BrainFeatures::CacheText is not empty;
-// M3: "|r" appended with askRating, "|m<16 hex digits of CoaHash::Bytes of the joined memory lines>" with memory).
+// M3: "|r" appended with askRating, "|m<16 hex digits of CoaHash::Bytes of the joined memory lines>" with memory;
+// M6: "|t" appended with plan.freeText).
 // The caller sets tag, epoch, botGuid and deadlineMs. False when there is nothing to ask.
 bool BuildChatJob(BrainChatFacts const& facts, std::string_view text, BrainChatPlan const& plan, bool askWho,
                   BrainJob& job);

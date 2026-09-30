@@ -8,6 +8,7 @@
 #define PLAYERBOTS_BRAINTYPES_H
 
 #include "Define.h"
+#include <memory>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -27,15 +28,28 @@ enum class BrainLane : uint8
 
 // What a job is for. ChatReply is gated by CoaBrain.Use.ChatReply; Probe and Test are GM tools. Duel and Organizer
 // (M4) are gated by their consumer (ActivityConfig reads CoaBrain.Use.Duel and Use.Organizer): the brain's Active()
-// only says whether it runs and accepts.
+// only says whether it runs and accepts. M6: Text jobs need a usable CoaBrain.Text.Provider (not a decision engine),
+// every other use needs a usable engine of Decision.Chain; Rpg and Emote are gated by their consumers
+// (CoaBrain.Use.RpgNext, CoaBrain.Use.Emote).
 enum class BrainUse : uint8
 {
     ChatReply = 0,  // the voice director's decision for one human message
-    Probe,          // one engine (BrainJob::forceEngine), no cache, no chain
-    Test,           // the chain, no cache, nothing is said in game
+    Probe,          // one engine (BrainJob::forceEngine), no cache, no chain; or a text probe (kind Text)
+    Test,           // the chain, no cache, nothing is said in game; or a text test (kind Text)
     Duel,           // a bot's yes/no to a real player's duel challenge (Player lane)
     Organizer,      // the activity director: which activity next, who joins (Organizer lane)
+    Text,           // M6: a text job: one generated chat line for the voice lane (Player lane) or a banter (Ambient)
+    Rpg,            // M6: the RPG advice question of one (zone, level band, role) group (Ambient lane)
+    Emote,          // M6: the emote of a banter opener (Ambient lane)
     Count
+};
+
+// Decision jobs ask typed questions of a decision engine (Jev); text jobs send one system prompt and one user
+// message to the text generator and get one short line back.
+enum class BrainJobKind : uint8
+{
+    Decision = 0,
+    Text
 };
 
 // Submit's verdict. Anything but Queued or Answered means: the caller runs today's code now.
@@ -69,6 +83,8 @@ enum class BrainError : uint8
     Exhausted,      // HTTP 402, 429 or a spend-limit error text: off until the next UTC day or reset
     BadResponse,    // a 200 whose body is not the dialect's shape, or larger than 64 KiB
     NotBuilt,       // an engine kind that is not built yet (openai-constrained before M2b)
+    Refused,        // M6 text: the model refused (stop_reason refusal, content_filter) or left no text (cut off)
+    Rejected,       // M6 text: the answer came back but BrainTextFinisher refused it (sanitizer, validator)
     Count
 };
 
@@ -118,6 +134,19 @@ struct BrainUsage
     bool costReported = false;  // usage.cost was in the response
 };
 
+// The worker hands the model's raw text to this before it posts the result (M6, text jobs). Built by the game side
+// with immutable copies of what it needs (byte cap, blocked words), so the worker touches no game state and reads no
+// reloadable setting: it must not call anything that does (CoaChatIntent::LooksLikeCommand reads sPlayerbotAIConfig:
+// the world thread checks that at emit time). Thread-safe, never throws.
+class BrainTextFinisher
+{
+public:
+    virtual ~BrainTextFinisher() = default;
+    // `line` is the raw text; on true it holds the line to keep (cleaned), on false `reason` says why not (a
+    // CoaVoiceRejectName) and `line` is unspecified.
+    virtual bool Finish(std::string& line, std::string& reason) const = 0;
+};
+
 struct BrainJob
 {
     uint64 id = 0;    // set by Submit
@@ -135,6 +164,17 @@ struct BrainJob
     bool record = false;      // Probe: the result keeps the raw request and response bodies
     uint64 submitMs = 0;      // CoaTime::NowMs(), set by Submit
     uint64 deadlineMs = 0;    // CoaTime::NowMs() clock; after it the result is useless to the caller
+
+    // M6. kind Text: `questions`, `state`, `playerText`, `cacheKey` and `forceEngine` stay empty; situation is
+    // "text_reply", "text_banter", "text_test" or "text_probe"; use Text (or Test/Probe for the GM tools).
+    BrainJobKind kind = BrainJobKind::Decision;
+    std::string textSystem;        // the system prompt, its stable prefix first (prompt caching)
+    uint32 textStableBytes = 0;    // the first bytes of textSystem that are identical from call to call
+    std::string textUser;          // the one user message
+    uint32 textMaxTokens = 0;      // 0: CoaBrain.Text.MaxTokens
+    bool textPlayerWords = false;  // the prompt holds a player's words: Submit refuses it (Invalid) unless the text
+                                   // engine's effective SendPlayerText is on
+    std::shared_ptr<BrainTextFinisher const> textFinisher;  // null: the raw text is returned as it is
 };
 
 struct BrainResult
@@ -158,16 +198,25 @@ struct BrainResult
     std::string url;           // record only: where the request went
     std::string rawRequest;    // record only
     std::string rawResponse;   // record only
+    std::string text;          // M6 text jobs: error None: the line, after BrainTextFinisher (still holding {name});
+                               // error Rejected: the raw text, cut to 512 bytes (detail holds the reason)
+    std::string finishReason;  // M6 text jobs: the provider's finish_reason / stop_reason, "" when absent
 
     // The answer to the question of that name, null when absent.
     BrainAnswer const* Find(std::string_view name) const;
 };
 
 char const* BrainLaneName(BrainLane lane);                  // "player", "organizer", "ambient"
-char const* BrainUseName(BrainUse use);                     // "chat-reply", "probe", "test", "duel", "organizer"
+char const* BrainUseName(BrainUse use);                     // "chat-reply", "probe", "test", "duel", "organizer",
+                                                            // "text", "rpg", "emote"
 char const* BrainSubmitName(BrainSubmit submit);            // "queued", "answered", "off", "invalid", ...
-char const* BrainErrorName(BrainError error);               // "none", "too-late", "cancelled", ...
+char const* BrainErrorName(BrainError error);               // "none", "too-late", ... "refused", "rejected"
+char const* BrainJobKindName(BrainJobKind kind);            // "decision", "text"
 char const* BrainQuestionTypeName(BrainQuestionType type);  // "choice", "yes-no", "score"
+
+// The governor row, the usage row (`engine` column) and the status line of the text generator. A name in
+// CoaBrain.Decision.Chain may not be this one.
+constexpr char const* BRAIN_TEXT_ENGINE = "text";
 
 // UTC calendar days: the budgets reset at UTC midnight.
 namespace BrainClock

@@ -78,6 +78,12 @@ ChatReplyType LegacyReplyType(CoaIntent intent, bool named);
 // 0 for none. Uses urand: world thread.
 uint32 ReplyEmoteFor(CoaIntent intent, CoaVoicePersona const& persona);
 
+// M6. Pure. A generated line with its name tokens filled: every "{name}" and every word equal to the pseudonym
+// (BrainTextPrompt::PSEUDONYM, "Joueur1", case-insensitive, whole word) becomes `name`. With an empty `name` the token
+// is removed instead (and the spaces around it collapsed, a leftover space before punctuation dropped), so a say or
+// channel line to nobody in particular still reads well. No other change.
+std::string FillGenerated(std::string text, std::string const& name);
+
 class Placeholders
 {
 public:
