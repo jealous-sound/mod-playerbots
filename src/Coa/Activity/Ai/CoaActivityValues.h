@@ -13,6 +13,8 @@
 #include "Value.h"
 #include <memory>
 #include <unordered_map>
+#include <utility>
+#include <vector>
 
 class Player;
 class PlayerbotAI;
@@ -22,6 +24,12 @@ class Unit;
 // AI objects on its map thread; never saved, so it restarts empty at each login.
 struct ActivityBotState
 {
+    struct ControlledGuard
+    {
+        ObjectGuid guid;
+        uint8 react = 0;
+        bool aiEnabled = false;
+    };
     // The bot's registry row, re-read only when ActivityRegistry::Version() changed (CoaActivityBot::Refresh).
     uint64 version = 0;
     std::shared_ptr<ActivityRegistrySnapshot const> snapshot;  // keeps `row` alive
@@ -50,6 +58,7 @@ struct ActivityBotState
 
     // Activity life.
     uint32 celebratedActivity = 0;  // the activity id the bot already celebrated (Resolving)
+    std::vector<ControlledGuard> m7ControlledReact;
     uint64 nextRoamMs = 0;          // "coa activity roam": at most every 20 s
     uint64 nextIdleMs = 0;          // "coa ring idle": every 10-20 s
 
@@ -78,7 +87,7 @@ namespace CoaActivityBot
 ActivityBotState& Refresh(PlayerbotAI* botAI);
 
 // Helpers shared by the triggers and the actions (the bot's own Player and players on its map only).
-// 2D distance from the bot to the row's center; FLT_MAX when the center is unset or on another map.
+// Distance to the center: 3D for RareScout's ground camp, otherwise 2D; FLT_MAX when unset or on another map.
 float DistanceToCenter(Player* bot, ActivityMemberView const& row);
 // A group member that follows the leader (not the leader, not a solo participant).
 bool IsFollowing(ActivityMemberView const& row);

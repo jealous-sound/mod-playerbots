@@ -40,6 +40,11 @@ float CoaActivityBot::DistanceToCenter(Player* bot, ActivityMemberView const& ro
     if (!row.center.IsSet() || row.center.mapId != bot->GetMapId())
         return FLT_MAX;
 
+    // A rare's camp can be above/below the bot on a ridge or another floor. Keep walking until its ground point
+    // is reached; horizontal proximity alone must not stop Gathering before the kind's height check accepts it.
+    if (row.kind == ActivityKindId::RareScout)
+        return bot->GetExactDist(row.center.x, row.center.y, row.center.z);
+
     return bot->GetExactDist2d(row.center.x, row.center.y);
 }
 

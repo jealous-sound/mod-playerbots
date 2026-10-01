@@ -97,6 +97,7 @@ struct Activity
     ObjectGuid follow;                // group kinds: a real player member every bot member (the leader included)
                                       // takes as master; the director keeps it so. Empty: the M4 rule (the leader
                                       // has no master, the others follow the leader)
+    ObjectGuid requester;             // M7 escort owner, kept even before the invitation is accepted
     uint8 viewStyle = 0;              // ActivityViewStyle copied into every member's view
     uint32 closingEmote = 0;          // TextEmotes id copied into every member's view (0: each bot picks its own)
 
@@ -169,6 +170,7 @@ struct ActivityPlan
 {
     ActivityKindId kind = ActivityKindId::None;
     bool gm = false;
+    ObjectGuid requester;             // M7: plain identifier copied into the live activity by the director
     uint8 team = 0;
     uint8 minLevel = 1;
     uint8 maxLevel = 60;

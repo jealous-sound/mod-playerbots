@@ -61,6 +61,10 @@ char const* KindWords(ActivityKindId kind)
             return "city crowd";
         case ActivityKindId::Gurubashi:
             return "arena booty run";
+        case ActivityKindId::Escort:
+            return "player escort";
+        case ActivityKindId::RareScout:
+            return "rare scout";
         default:
             return "activity";
     }
@@ -86,6 +90,10 @@ char const* KindOption(ActivityKindId kind)
             return "a city crowd: bots loiter at a capital's bank and show off their mounts";
         case ActivityKindId::Gurubashi:
             return "the Gurubashi booty run: bots gather in the arena while the chest is up for grabs";
+        case ActivityKindId::Escort:
+            return "a player escort: nearby bots accompany a requesting player to a named overworld destination";
+        case ActivityKindId::RareScout:
+            return "a rare scout: one bot watches a rare spawn and reports sightings without attacking or looting";
         default:
             return "";
     }
@@ -328,8 +336,15 @@ BrainJob BuildNextJob(Scene const& scene, std::vector<NextOption> const& options
     // The running line goes with the realm: what already runs, per kind.
     std::string running = "running:";
     for (uint8 kind = uint8(ActivityKindId::None) + 1; kind < uint8(ActivityKindId::Count); ++kind)
+    {
+        // Preserve the earlier prompt exactly when neither M7 kind is live or offered.
+        if (kind >= uint8(ActivityKindId::Escort) && !scene.running[kind] &&
+            std::none_of(options.begin(), options.end(),
+                         [kind](NextOption const& option) { return uint8(option.kind) == kind; }))
+            continue;
         running += std::string(kind > 1 ? ", " : " ") + ActivityKindName(ActivityKindId(kind)) + " " +
                    std::to_string(scene.running[kind]);
+    }
     lines.insert(lines.end() - 1, std::move(running));
     job.state = Join(lines);
 

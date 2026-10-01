@@ -5,6 +5,7 @@
  */
 
 #include "AttackersValue.h"
+#include "ActivityPvePolicy.h"
 #include "CellImpl.h"
 #include "GridNotifiers.h"
 #include "GridNotifiersImpl.h"
@@ -135,6 +136,9 @@ bool AttackersValue::IsPossibleTarget(Unit* attacker, Player* bot, float /*range
 
     // Basic check
     if (!attacker)
+        return false;
+
+    if (!ActivityPvePolicy::AttackAllowed(botAI, attacker))
         return false;
 
     // bool inCannon = botAI->IsInVehicle(false, true);

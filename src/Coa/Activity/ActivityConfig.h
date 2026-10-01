@@ -205,6 +205,27 @@ struct ActivityConfig
     uint32 gurubashiMinutes = 25;        // [5, 120]
     bool gurubashiBotsMayWin = false;    // 0: participants never loot or open anything (the chest is the players')
 
+    // M7 player-requested escorts. Weight is always zero; there are no implicit destinations.
+    bool escortEnable = false;
+    uint32 escortBots = 2;              // [1, 4], leaving room for the requesting player in an ordinary party
+    uint32 escortMax = 2;               // [0, 4]
+    uint32 escortMinutes = 15;          // [1, 30]
+    uint32 escortInviteSeconds = 60;    // [10, 120]
+    uint32 escortPlayerCooldownMinutes = 60;  // [0, 1440], starts only when an activity actually begins
+    uint32 escortLevelSpread = 5;       // [0, 10]
+    uint32 escortNearbyYards = 200;     // [20, 1000], candidates already near the requesting player
+    uint32 escortArrivalYards = 20;     // [5, 100]
+    std::vector<ActivitySpot> escortSpots;  // name:team:map:x:y:z; empty means no destinations
+
+    // M7 rare scouts: solo observers, never acquire an objective or loot a rare.
+    bool rareScoutEnable = false;
+    uint32 weightRareScout = 0;         // [0, 1000], zero keeps ambient scheduling off
+    uint32 rareScoutMax = 1;            // [0, 4]
+    uint32 rareScoutMinutes = 15;       // [1, 60]
+    uint32 rareScoutLevelSpread = 5;    // [0, 10]
+    uint32 rareScoutNearbyYards = 500;  // [20, 2000]
+    std::vector<ActivityHuntTarget> rareScoutTargets;  // name:spawn:team; no implicit rare spawns
+
     // AiPlayerbot.CoaBrain.Use.Duel, Use.Organizer, Duel.DeadlineMs, Duel.AcceptThreshold (read here, not by
     // BrainConfig: the brain only transports).
     bool useBrainDuel = false;
@@ -224,6 +245,10 @@ struct ActivityConfig
     ActivityRaidTarget const* FindRaidTarget(std::string const& name) const;
     ActivitySpot const* FindPartySpot(std::string const& name) const;
     ActivitySpot const* FindLoiterSpot(std::string const& name) const;
+    ActivitySpot const* FindEscortSpot(std::string const& name) const;
+    ActivityHuntTarget const* FindRareScoutTarget(std::string const& name) const;
+    // Pure offline checks of parser rejection, legacy enums and request ownership/throttling; no config reads.
+    static std::vector<std::string> SelfTest();
 
     // World thread. Reads and clamps the keys (the contract lists the clamps); a bad Duel.Spots entry is skipped
     // with one LOG_ERROR, and an empty list after parsing falls back to the defaults.

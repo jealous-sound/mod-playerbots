@@ -90,6 +90,7 @@
 // ActivityDuelCooldowns' own mutex; the director drains the results on the world thread.
 
 #include "CoaHooks.h"
+#include "ActivityPvePolicy.h"
 #include "ActivityDirector.h"
 #include "ActivityDuelCooldowns.h"
 #include "Channel.h"
@@ -332,10 +333,25 @@ namespace
 class CoaPlayerScript : public PlayerScript
 {
 public:
+    void OnPlayerSave(Player* player) override
+    {
+        PlayerbotAI* const ai = player ? GET_PLAYERBOT_AI(player) : nullptr;
+        if (ai)
+            ActivityPvePolicy::PreparePetSave(ai);
+    }
+
+    void OnPlayerBeforeLogout(Player* player) override
+    {
+        PlayerbotAI* const ai = player ? GET_PLAYERBOT_AI(player) : nullptr;
+        if (ai)
+            ActivityPvePolicy::Release(ai);
+    }
+
     CoaPlayerScript()
         : PlayerScript("CoaPlayerScript", {PLAYERHOOK_CAN_PLAYER_USE_CHAT, PLAYERHOOK_ON_TEXT_EMOTE,
                                            PLAYERHOOK_ON_DUEL_END, PLAYERHOOK_ON_CREATURE_KILL,
-                                           PLAYERHOOK_ON_DELETE_FROM_DB})
+                                           PLAYERHOOK_ON_DELETE_FROM_DB, PLAYERHOOK_ON_BEFORE_LOGOUT,
+                                           PLAYERHOOK_ON_SAVE})
     {
     }
 
@@ -471,7 +487,20 @@ public:
 class CoaUnitScript : public UnitScript
 {
 public:
-    CoaUnitScript() : UnitScript("CoaUnitScript", true, {UNITHOOK_ON_UNIT_DEATH}) {}
+    CoaUnitScript() : UnitScript("CoaUnitScript", true,
+        {UNITHOOK_ON_UNIT_DEATH, UNITHOOK_ON_UNIT_UPDATE, UNITHOOK_ON_DAMAGE}) {}
+
+    void OnUnitUpdate(Unit* unit, uint32 /*diff*/) override
+    {
+        if (unit)
+            if (Creature* const creature = unit->ToCreature())
+                ActivityPvePolicy::OnCreatureAddWorld(creature);
+    }
+
+    void OnDamage(Unit* attacker, Unit* victim, uint32& damage) override
+    {
+        ActivityPvePolicy::OnDamage(attacker, victim, damage);
+    }
 
     void OnUnitDeath(Unit* victim, Unit* killer) override
     {
@@ -575,6 +604,33 @@ public:
         CoaEventBus::Instance().Post(std::move(event));
     }
 };
+class CoaActivityCreatureScript : public AllCreatureScript
+{
+public:
+    CoaActivityCreatureScript() : AllCreatureScript("CoaActivityCreatureScript") {}
+
+    void OnCreatureAddWorld(Creature* creature) override
+    {
+        ActivityPvePolicy::OnCreatureAddWorld(creature);
+    }
+};
+
+class CoaActivitySpellScript : public AllSpellScript
+{
+public:
+    CoaActivitySpellScript() : AllSpellScript("CoaActivitySpellScript",
+        {ALLSPELLHOOK_CAN_PREPARE, ALLSPELLHOOK_ON_CALCULATED_TARGET}) {}
+
+    bool CanPrepare(Spell* spell, SpellCastTargets const* /*targets*/, AuraEffect const* /*triggeredByAura*/) override
+    {
+        return ActivityPvePolicy::CanPrepare(spell);
+    }
+
+    void OnSpellCalculatedTarget(Spell* spell, Unit* /*target*/, TargetInfo& targetInfo) override
+    {
+        ActivityPvePolicy::GuardReflection(spell, targetInfo);
+    }
+};
 }  // namespace
 
 void AddSC_coa_hooks()
@@ -582,4 +638,6 @@ void AddSC_coa_hooks()
     new CoaPlayerScript();
     new CoaUnitScript();
     new CoaGroupScript();
+    new CoaActivityCreatureScript();
+    new CoaActivitySpellScript();
 }

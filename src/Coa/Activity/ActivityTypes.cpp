@@ -27,6 +27,10 @@ char const* ActivityKindName(ActivityKindId kind)
             return "loiter";
         case ActivityKindId::Gurubashi:
             return "gurubashi";
+        case ActivityKindId::Escort:
+            return "escort";
+        case ActivityKindId::RareScout:
+            return "rare";
         default:
             return "none";
     }
@@ -34,6 +38,8 @@ char const* ActivityKindName(ActivityKindId kind)
 
 std::optional<ActivityKindId> ActivityKindFromName(std::string_view name)
 {
+    if (StringEqualI(name, "rarescout"))
+        return ActivityKindId::RareScout;
     for (uint8 k = uint8(ActivityKindId::None) + 1; k < uint8(ActivityKindId::Count); ++k)
         if (StringEqualI(name, ActivityKindName(ActivityKindId(k))))
             return ActivityKindId(k);

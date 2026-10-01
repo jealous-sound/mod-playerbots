@@ -114,6 +114,18 @@ void CoaActivityStrategies::AddNonCombat(Player* player, PlayerbotAI* facade, En
     engine->removeStrategy("lfg", false);
     engine->removeStrategy("bg", false);
 
+    if (row->kind == ActivityKindId::Escort || row->kind == ActivityKindId::RareScout)
+    {
+        engine->removeStrategy("grind", false);
+        engine->removeStrategy("new rpg", false);
+        engine->removeStrategy("rpg", false);
+        engine->removeStrategy("move random", false);
+        engine->removeStrategy("travel", false);
+        engine->removeStrategy("gather", false);
+        if (row->kind == ActivityKindId::RareScout)
+            engine->removeStrategy("loot", false);
+    }
+
     // Solo participants and the leader (AiFactory's own test; a gang in Forming has no group yet): the activity
     // decides where they go. A gang leader keeps "grind": it hunts with it.
     if (!player->GetGroup() || player->GetGroup()->GetLeaderGUID() == player->GetGUID())

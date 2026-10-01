@@ -238,10 +238,11 @@ std::vector<Entry> ParseEntries(char const* key, std::string const& text, bool l
 }
 
 // Hunt.Targets: name:spawn:team.
-std::vector<ActivityHuntTarget> ParseHuntTargets(std::string const& text, bool logErrors)
+std::vector<ActivityHuntTarget> ParseHuntTargets(std::string const& text, bool logErrors,
+                                               char const* key = "Hunt.Targets")
 {
     return ParseEntries<ActivityHuntTarget>(
-        "Hunt.Targets", text, logErrors,
+        key, text, logErrors,
         [](std::vector<std::string> const& fields, ActivityHuntTarget& target, std::string& why)
         {
             if (fields.size() != 3)
@@ -359,6 +360,10 @@ bool ActivityConfig::KindEnabled(ActivityKindId kind) const
             return loiterEnable;
         case ActivityKindId::Gurubashi:
             return gurubashiEnable;
+        case ActivityKindId::Escort:
+            return escortEnable;
+        case ActivityKindId::RareScout:
+            return rareScoutEnable;
         default:
             return false;
     }
@@ -384,6 +389,10 @@ uint32 ActivityConfig::KindWeight(ActivityKindId kind) const
             return weightLoiter;
         case ActivityKindId::Gurubashi:
             return weightGurubashi;
+        case ActivityKindId::Escort:
+            return 0;  // explicit player request only, regardless of config or brain
+        case ActivityKindId::RareScout:
+            return weightRareScout;
         default:
             return 0;
     }
@@ -409,6 +418,10 @@ uint32 ActivityConfig::KindMax(ActivityKindId kind) const
             return loiterMax;
         case ActivityKindId::Gurubashi:
             return 1;
+        case ActivityKindId::Escort:
+            return escortMax;
+        case ActivityKindId::RareScout:
+            return rareScoutMax;
         default:
             return 0;
     }
@@ -434,6 +447,9 @@ uint32 ActivityConfig::KindMinBots(ActivityKindId kind) const
             return loiterMinBots;
         case ActivityKindId::Gurubashi:
             return gurubashiMinBots;
+        case ActivityKindId::Escort:
+        case ActivityKindId::RareScout:
+            return 1;
         default:
             return 0;
     }
@@ -471,6 +487,105 @@ ActivitySpot const* ActivityConfig::FindPartySpot(std::string const& name) const
 ActivitySpot const* ActivityConfig::FindLoiterSpot(std::string const& name) const
 {
     return FindNamed(loiterSpots, name);
+}
+
+ActivitySpot const* ActivityConfig::FindEscortSpot(std::string const& name) const
+{
+    return FindNamed(escortSpots, name);
+}
+
+ActivityHuntTarget const* ActivityConfig::FindRareScoutTarget(std::string const& name) const
+{
+    return FindNamed(rareScoutTargets, name);
+}
+
+std::vector<std::string> ActivityConfig::SelfTest()
+{
+    uint32 passed = 0;
+    uint32 failed = 0;
+    std::vector<std::string> lines;
+    auto const check = [&](bool ok, char const* name)
+    {
+        if (ok)
+            ++passed;
+        else
+        {
+            ++failed;
+            lines.push_back(std::string("FAIL M7 config/request: ") + name);
+        }
+    };
+    check(uint8(ActivityKindId::Duel) == 1 && uint8(ActivityKindId::Gang) == 2 &&
+              uint8(ActivityKindId::Dungeon) == 3 && uint8(ActivityKindId::Hunt) == 4 &&
+              uint8(ActivityKindId::Raid) == 5 && uint8(ActivityKindId::Party) == 6 &&
+              uint8(ActivityKindId::Loiter) == 7 && uint8(ActivityKindId::Gurubashi) == 8 &&
+              uint8(ActivityKindId::Escort) == 9 && uint8(ActivityKindId::RareScout) == 10,
+          "append-only kind ids");
+    for (uint8 k = 1; k < uint8(ActivityKindId::Count); ++k)
+    {
+        auto const parsed = ActivityKindFromName(ActivityKindName(ActivityKindId(k)));
+        check(parsed && uint8(*parsed) == k, "kind name round trip");
+    }
+    check(ActivityKindFromName("ESCORT") == ActivityKindId::Escort &&
+              ActivityKindFromName("RareScout") == ActivityKindId::RareScout &&
+              !ActivityKindFromName("none") && !ActivityKindFromName("unknown"),
+          "case insensitive names, rare alias and invalid names");
+    check(ActivityKindIsGroup(ActivityKindId::Escort) && !ActivityKindIsGroup(ActivityKindId::RareScout) &&
+              ActivityKindIsGroup(ActivityKindId::Gang) && !ActivityKindIsGroup(ActivityKindId::Party),
+          "group and solo kind dispatch");
+    ActivityConfig config;
+    config.escortEnable = true;
+    check(config.KindWeight(ActivityKindId::Escort) == 0 && config.KindWeight(ActivityKindId::RareScout) == 0 &&
+              config.KindMinBots(ActivityKindId::Escort) == 1 && config.KindMinBots(ActivityKindId::RareScout) == 1,
+          "explicit escort scheduling and single-bot minimums");
+    check(!config.rareScoutEnable && config.KindWeight(ActivityKindId::Duel) == 30 &&
+              config.KindWeight(ActivityKindId::Gang) == 20 && config.KindWeight(ActivityKindId::Dungeon) == 30 &&
+              config.KindWeight(ActivityKindId::Hunt) == 15 && config.KindWeight(ActivityKindId::Raid) == 5 &&
+              config.KindWeight(ActivityKindId::Party) == 10 && config.KindWeight(ActivityKindId::Loiter) == 10 &&
+              config.KindWeight(ActivityKindId::Gurubashi) == 20,
+          "legacy weights unchanged");
+    config.escortSpots = ParsePlaces("Escort.Spots",
+                                     "Goldshire:any:0:-9456:72:56;razor_hill:horde:1:325:-4705:14", false);
+    check(config.escortSpots.size() == 2 && config.FindEscortSpot("GOLDSHIRE") &&
+              config.FindEscortSpot("goldshire")->team == 2 && !config.FindEscortSpot("missing"),
+          "configured destination parsing and lookup");
+    check(ParsePlaces("Escort.Spots", "", false).empty(), "no implicit escort destinations");
+    check(ParsePlaces("Escort.Spots", "spot:wrong:0:1:2:3;spot2:any:-1:1:2:3;spot3:any:0:nan:2:3;"
+                                      "spot4:any:0:1:inf:3;spot5:any:0:1:2:3x;spot6:any:0:1:2", false).empty(),
+          "reject invalid destination team, map, floats and fields");
+    check(ParsePlaces("Escort.Spots", "town:alliance:0:1:2:3;TOWN:horde:1:4:5:6", false).size() == 1,
+          "duplicate destination names are folded and rejected");
+    config.rareScoutTargets = ParseHuntTargets("narg:80647:alliance;thuros:81107:alliance", false,
+                                               "RareScout.Targets");
+    check(config.rareScoutTargets.size() == 2 && config.FindRareScoutTarget("NARG") &&
+              config.FindRareScoutTarget("narg")->spawnId == 80647 && !config.FindRareScoutTarget("missing"),
+          "rare target parsing and lookup");
+    check(ParseHuntTargets("", false, "RareScout.Targets").empty(), "no implicit rare spawns");
+    check(ParseHuntTargets("a:0:alliance;b:-1:horde;c:4294967296:alliance;d:12:any;e:12:alliance:extra", false,
+                            "RareScout.Targets").empty(),
+          "reject zero, negative, oversized and malformed rare targets");
+    check(ParseHuntTargets("narg:80647:alliance;NARG:81107:alliance", false, "RareScout.Targets").size() == 1,
+          "duplicate rare target names are rejected");
+    check(ActivityRequestRules::OwnsEscort(ActivityKindId::Escort, 42, 42) &&
+              !ActivityRequestRules::OwnsEscort(ActivityKindId::Escort, 42, 43) &&
+              !ActivityRequestRules::OwnsEscort(ActivityKindId::Escort, 0, 0) &&
+              !ActivityRequestRules::OwnsEscort(ActivityKindId::Hunt, 42, 42),
+          "cancellation belongs only to the nonempty requesting GUID");
+    check(ActivityRequestRules::RequestThrottled(1000, 1000) &&
+              ActivityRequestRules::RequestThrottled(1000, 5999) &&
+              !ActivityRequestRules::RequestThrottled(1000, 6000) &&
+              ActivityRequestRules::RequestThrottled(1000, 999) &&
+              ActivityRequestRules::RequestThrottled(UINT64_MAX - 300, UINT64_MAX),
+          "request gap boundary, clock rewind and addition overflow");
+    check(ActivityRequestRules::SameRareTarget("narg", 0, "narg", 0) &&
+              !ActivityRequestRules::SameRareTarget("narg", 0, "thuros", 0) &&
+              !ActivityRequestRules::SameRareTarget("narg", 0, "narg", 1) &&
+              !ActivityRequestRules::SameRareTarget("", 0, "", 0) &&
+              ActivityRequestRules::SameRareTarget("narg", 0, "alias", 1, 80647, 80647) &&
+              !ActivityRequestRules::SameRareTarget("narg", 0, "alias", 1, 80647, 81107),
+          "target exclusivity covers canonical name/team and aliases of one spawn");
+    lines.insert(lines.begin(), "M7 config/request self-test: " + std::to_string(passed) + " passed, " +
+                                   std::to_string(failed) + " failed");
+    return lines;
 }
 
 char const* ActivityConfig::DefaultHuntTargets() { return "hogger:80531:alliance;gallywix:14412:horde"; }
@@ -673,6 +788,26 @@ std::shared_ptr<ActivityConfig const> ActivityConfig::Load()
     config->gurubashiMinLevel = Int("Gurubashi.MinLevel", 35, 1, 80);
     config->gurubashiMinutes = Int("Gurubashi.Minutes", 25, 5, 120);
     config->gurubashiBotsMayWin = Bool("Gurubashi.BotsMayWin", false);
+
+    // M7: opt-in kinds do not inherit destinations or spawns when their lists are empty or malformed.
+    config->escortEnable = Bool("Escort.Enable", false);
+    config->escortBots = Int("Escort.Bots", 2, 1, 4);
+    config->escortMax = Int("Escort.Max", 2, 0, 4);
+    config->escortMinutes = Int("Escort.Minutes", 15, 1, 30);
+    config->escortInviteSeconds = Int("Escort.InviteSeconds", 60, 10, 120);
+    config->escortPlayerCooldownMinutes = Int("Escort.PlayerCooldownMinutes", 60, 0, 1440);
+    config->escortLevelSpread = Int("Escort.LevelSpread", 5, 0, 10);
+    config->escortNearbyYards = Int("Escort.NearbyYards", 200, 20, 1000);
+    config->escortArrivalYards = Int("Escort.ArrivalYards", 20, 5, 100);
+    config->escortSpots = ParsePlaces("Escort.Spots", Option("Escort.Spots", ""), true);
+
+    config->rareScoutEnable = Bool("RareScout.Enable", false);
+    config->weightRareScout = Int("Weight.RareScout", 0, 0, 1000);
+    config->rareScoutMax = Int("RareScout.Max", 1, 0, 4);
+    config->rareScoutMinutes = Int("RareScout.Minutes", 15, 1, 60);
+    config->rareScoutLevelSpread = Int("RareScout.LevelSpread", 5, 0, 10);
+    config->rareScoutNearbyYards = Int("RareScout.NearbyYards", 500, 20, 2000);
+    config->rareScoutTargets = ParseHuntTargets(Option("RareScout.Targets", ""), true, "RareScout.Targets");
 
     config->useBrainDuel = sConfigMgr->GetOption<bool>("AiPlayerbot.CoaBrain.Use.Duel", false);
     config->useBrainOrganizer = sConfigMgr->GetOption<bool>("AiPlayerbot.CoaBrain.Use.Organizer", false);

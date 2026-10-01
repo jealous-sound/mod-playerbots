@@ -5,6 +5,7 @@
  */
 
 #include "AttackAction.h"
+#include "ActivityPvePolicy.h"
 #include "CreatureAI.h"
 #include "Event.h"
 #include "LastMovementValue.h"
@@ -54,6 +55,9 @@ bool AttackMyTargetAction::Execute(Event /*event*/)
 
 bool AttackAction::Attack(Unit* target, bool /*with_pet*/ /*true*/)
 {
+    if (!ActivityPvePolicy::AttackAllowed(botAI, target))
+        return false;
+
     if (!target)
     {
         if (verbose)

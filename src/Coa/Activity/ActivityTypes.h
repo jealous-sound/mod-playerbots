@@ -28,21 +28,43 @@ enum class ActivityKindId : uint8
     Party,      // M5: bots hang out at an inn: drinks, dances, greetings (InnParty); solo participants
     Loiter,     // M5: bots loiter in a capital and show their mounts (CityLoiter); solo participants
     Gurubashi,  // M5: bots gather at the Gurubashi Arena for the booty run (BootyRun); solo participants
+    Escort,     // M7: a player-requested overworld escort; one registered group, never ambient scheduled
+    RareScout,  // M7: one bot watches a whitelisted rare spawn without attacking or looting it
     Count
 };
 
-// "duel", "gang", "dungeon", "hunt", "raid", "party", "loiter", "gurubashi"; "none" otherwise. The `kind` column of
+// "duel", "gang", "dungeon", "hunt", "raid", "party", "loiter", "gurubashi", "escort", "rare"; "none" otherwise.
+// The `kind` column of
 // playerbots_coa_activity and the command words.
 char const* ActivityKindName(ActivityKindId kind);
 // Case-insensitive; nullopt for anything else ("none" included).
 std::optional<ActivityKindId> ActivityKindFromName(std::string_view name);
+
+// Pure request policy, shared by the director and its offline checks. Raw GUIDs are lifetime identifiers only.
+namespace ActivityRequestRules
+{
+inline bool OwnsEscort(ActivityKindId kind, uint64 requester, uint64 caller)
+{
+    return kind == ActivityKindId::Escort && requester != 0 && requester == caller;
+}
+inline bool RequestThrottled(uint64 lastMs, uint64 nowMs)
+{
+    return nowMs < lastMs || nowMs - lastMs < 5000;
+}
+inline bool SameRareTarget(std::string_view target, uint8 team, std::string_view otherTarget, uint8 otherTeam,
+                           uint32 spawnId = 0, uint32 otherSpawnId = 0)
+{
+    return (!target.empty() && team == otherTeam && target == otherTarget) ||
+           (spawnId != 0 && spawnId == otherSpawnId);
+}
+}  // namespace ActivityRequestRules
 
 // The kinds whose bots form one group (FormGroup): the director's group rules (member pass, leaves, disband, join)
 // apply to them. The others have solo participants.
 constexpr bool ActivityKindIsGroup(ActivityKindId kind)
 {
     return kind == ActivityKindId::Gang || kind == ActivityKindId::Dungeon || kind == ActivityKindId::Hunt ||
-           kind == ActivityKindId::Raid;
+           kind == ActivityKindId::Raid || kind == ActivityKindId::Escort;
 }
 
 // Phases. The value is the `state` column of playerbots_coa_activity while the activity lives (0-7); an ended one is

@@ -3515,6 +3515,39 @@ AiPlayerbot.CoaActivity.Gurubashi.Minutes = 25
 
 AiPlayerbot.CoaActivity.Gurubashi.BotsMayWin = 0
 
+# M7: player-requested PvE escorts. The player accepts a normal group invitation,
+# leads the party and walks to a configured destination. Arrival, cancellation,
+# logout, unsafe ruleset, invitation expiry and timeout release the bots.
+# No automatic scheduling, bot teleports, rewards or NPC mutations.
+# Spots use name:team:map:x:y:z; names are lowercase identifiers, team is
+# alliance, horde or any. Empty means no destinations. Use verified overworld
+# coordinates for this realm. Example: "goldshire:alliance:0:-9459:42:56".
+AiPlayerbot.CoaActivity.Escort.Enable = 0
+AiPlayerbot.CoaActivity.Escort.Spots = ""
+AiPlayerbot.CoaActivity.Escort.Bots = 2
+AiPlayerbot.CoaActivity.Escort.Max = 2
+AiPlayerbot.CoaActivity.Escort.Minutes = 15
+AiPlayerbot.CoaActivity.Escort.InviteSeconds = 60
+AiPlayerbot.CoaActivity.Escort.PlayerCooldownMinutes = 60
+AiPlayerbot.CoaActivity.Escort.LevelSpread = 5
+AiPlayerbot.CoaActivity.Escort.NearbyYards = 200
+AiPlayerbot.CoaActivity.Escort.ArrivalYards = 20
+
+# M7: one scout per configured rare spawn, watching and announcing its appearance.
+# Targets use name:creature_spawn_guid:team; accepted creature ranks are rare (4)
+# and rare elite (2), level 1..60, with verified overworld spawn coordinates.
+# Scouts walk from nearby positions, wait for a visible live spawn and report
+# through the existing bounded activity channels. They do not tag rares or loot.
+# Empty targets or zero weight prevents ambient scheduling; GM start accepts
+# a target name: .playerbots activity start rare <target>.
+AiPlayerbot.CoaActivity.RareScout.Enable = 0
+AiPlayerbot.CoaActivity.RareScout.Targets = ""
+AiPlayerbot.CoaActivity.RareScout.Max = 1
+AiPlayerbot.CoaActivity.RareScout.Minutes = 15
+AiPlayerbot.CoaActivity.RareScout.LevelSpread = 5
+AiPlayerbot.CoaActivity.RareScout.NearbyYards = 500
+AiPlayerbot.CoaActivity.Weight.RareScout = 0
+
 #
 #    Rulesets of the gangs and the outpost raids.
 #

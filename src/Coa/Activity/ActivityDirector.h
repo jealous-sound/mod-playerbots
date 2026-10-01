@@ -79,6 +79,9 @@ public:
 
     std::vector<std::string> List() const;
     std::vector<std::string> Info(uint32 id) const;
+    // GM diagnostic: current RareScout member/registry and loaded target only. Synthetic hook arguments;
+    // no spell preparation, effects, packets, registry changes or gameplay mutations.
+    std::vector<std::string> VerifyM7(uint32 id);
     // Plans and starts at once (no roll; caps and the load guard kept). The join decisions are the dice (no brain
     // wait). `gmPlayer` places it when the request names no spot (may be null from the console).
     std::vector<std::string> Start(ActivityStartRequest request, Player* gmPlayer);
@@ -90,6 +93,12 @@ public:
     // SEC_PLAYER. id 0: the nearest joinable activity (group kinds first: same team, band +-5, same map). Returns the
     // player's line (coa_act_join_*, localized; coa_act_off when not running).
     std::string Join(Player* player, uint32 id);
+    // M7 SEC_PLAYER: explicit escort request, ordinary invite only; requester GUID owns cancellation.
+    // Rejected requests are throttled for 5 s; the player cooldown starts only after a live activity is created.
+    std::vector<std::string> RequestEscort(Player* player, std::string target);
+    std::vector<std::string> CancelEscort(Player* player);
+    // Configured names on the player's map/team only, bounded to 16 names and a 384-byte localized line.
+    std::vector<std::string> EscortDestinations(Player* player) const;
 
 private:
     ActivityDirector();
@@ -154,6 +163,8 @@ private:
     uint32 ResolvePlan(PendingPlan& pending, uint64 nowMs, uint32 nowUnix);
     std::vector<ActivityKindId> EligibleKinds() const;
     uint32 LiveCount(ActivityKindId kind) const;
+    bool RareTargetBusy(std::string const& target, uint8 team) const;
+    void PruneEscortRequests(uint64 nowMs);
     uint32 MinBots(ActivityKindId kind) const;
     uint32 Participants() const;
     uint32 ParticipantCap() const;
@@ -193,6 +204,8 @@ private:
     std::vector<Player*> realPlayers;                   // this tick's, rebuilt every tick
     std::unordered_set<uint32> held;                    // participants + reserved, this tick (candidates' filter)
     std::unordered_map<uint32, uint64> botCooldownUntilMs;  // bot guid counter -> BotCooldownMinutes after its last
+    std::unordered_map<uint32, uint64> escortRequestAtMs;  // requester guid -> last request, rejected ones included
+    std::unordered_map<uint32, uint64> escortCooldownUntilMs;  // requester guid -> actual start's cooldown expiry
     std::unordered_map<uint32, uint32> pendingRestore;  // crash recovery: guid -> prev_ruleset, restored at login
     std::unordered_map<uint32, uint64> lastPublished;   // bot guid counter -> epoch of the last published members
                                                         // (strategy resets for those that appear, go or change)

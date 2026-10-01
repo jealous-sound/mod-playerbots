@@ -8,6 +8,7 @@
 #include "CoaSpecialization.h"
 #include "ActivityDuelRules.h"
 #include "ActivityRegistry.h"
+#include "ActivityPvePolicy.h"
 #include "AiFactory.h"
 #include "BudgetValues.h"
 #include "ChannelMgr.h"
@@ -270,6 +271,8 @@ PlayerbotAI::PlayerbotAI(Player* bot)
 
 PlayerbotAI::~PlayerbotAI()
 {
+    ActivityPvePolicy::Release(this);
+
     // Map or world thread: only a BotLogout is posted; the manager closes this life's memory on the world thread.
     CoaHooks::OnBotAiDestroyed(bot ? bot->GetGUID() : ObjectGuid::Empty, coaEpoch);
 
@@ -298,6 +301,8 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
     if (!bot || !bot->GetSession() || !bot->IsInWorld() || bot->IsBeingTeleported() ||
         bot->GetSession()->isLogingOut() || bot->IsDuringRemoveFromWorld())
         return;
+
+    ActivityPvePolicy::Update(this);
 
     // Handle cheat options (set bot health and power if cheats are enabled)
     if (bot->IsAlive() &&
@@ -3616,6 +3621,9 @@ bool PlayerbotAI::CanCastSpell(uint32 spellid, Unit* target, bool checkHasSpell,
      if (!IsValidUnit(target))
         return false;
 
+    if (!ActivityPvePolicy::CastAllowed(this, sSpellMgr->GetSpellInfo(spellid), target))
+        return false;
+
     if (Pet* pet = bot->GetPet())
         if (pet->HasSpell(spellid))
             return true;
@@ -3813,6 +3821,9 @@ bool PlayerbotAI::CanCastSpell(uint32 spellid, float x, float y, float z, bool c
     if (!spellid)
         return false;
 
+    if (!ActivityPvePolicy::CastAllowed(this, sSpellMgr->GetSpellInfo(spellid), nullptr))
+        return false;
+
     Pet* pet = bot->GetPet();
     if (pet && pet->HasSpell(spellid))
         return true;
@@ -3899,6 +3910,9 @@ bool PlayerbotAI::CastSpell(uint32 spellId, Unit* target, Item* itemTarget)
 
     SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(spellId);
     if (!spellInfo)
+        return false;
+
+    if (!ActivityPvePolicy::CastAllowed(this, spellInfo, target))
         return false;
 
     Pet* pet = bot->GetPet();
@@ -4171,6 +4185,8 @@ bool PlayerbotAI::CastSpell(uint32 spellId, float x, float y, float z, Item* ite
 
     Pet* pet = bot->GetPet();
     SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(spellId);
+    if (!ActivityPvePolicy::CastAllowed(this, spellInfo, nullptr))
+        return false;
     if (pet && pet->HasSpell(spellId))
     {
         bool autocast = false;
@@ -4301,6 +4317,9 @@ bool PlayerbotAI::CanCastVehicleSpell(uint32 spellId, Unit* target)
     if (!spellId)
         return false;
 
+    if (!ActivityPvePolicy::CastAllowed(this, sSpellMgr->GetSpellInfo(spellId), target))
+        return false;
+
     if (!IsValidUnit(target))
         return false;
 
@@ -4384,6 +4403,9 @@ bool PlayerbotAI::CanCastVehicleSpell(uint32 spellId, Unit* target)
 bool PlayerbotAI::CastVehicleSpell(uint32 spellId, Unit* target)
 {
     if (!spellId)
+        return false;
+
+    if (!ActivityPvePolicy::CastAllowed(this, sSpellMgr->GetSpellInfo(spellId), target))
         return false;
 
     if (!IsValidUnit(target))

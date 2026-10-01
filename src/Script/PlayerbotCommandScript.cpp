@@ -7,6 +7,9 @@
 #include "ActivityConfig.h"
 #include "ActivityDirector.h"
 #include "ActivityKind.h"
+#include "ActivityPvePolicy.h"
+#include "Escort.h"
+#include "RareScout.h"
 #include "ActivityTypes.h"
 #include "BattleGroundTactics.h"
 #include "BrainAdmin.h"
@@ -112,6 +115,9 @@ public:
             {"reload", HandleActivityReloadCommand, SEC_GAMEMASTER, Console::Yes},
             {"census", HandleActivityCensusCommand, SEC_GAMEMASTER, Console::Yes},
             {"join", HandleActivityJoinCommand, SEC_PLAYER, Console::No},
+            {"escort", HandleActivityEscortCommand, SEC_PLAYER, Console::No},
+            {"test", HandleActivityTestCommand, SEC_GAMEMASTER, Console::Yes},
+            {"verify", HandleActivityVerifyCommand, SEC_GAMEMASTER, Console::Yes},
         };
 
         static ChatCommandTable playerbotsCommandTable = {
@@ -727,6 +733,54 @@ public:
     }
 
     // Activity ids fit the playerbots_coa_activity `id` column (INT UNSIGNED); nine digits are plenty.
+    static bool HandleActivityEscortCommand(ChatHandler* handler, char const* args)
+    {
+        Player* const player = handler->GetSession() ? handler->GetSession()->GetPlayer() : nullptr;
+        if (!player)
+            return false;
+        std::vector<std::string> const words = BrainWords(args);
+        if (words.empty() || (words.size() == 1 && AsciiLower(words.front()) == "list"))
+            return SendBrainLines(handler, ActivityDirector::Instance().EscortDestinations(player));
+        if (words.size() != 1)
+        {
+            SendBrainLine(handler, VoiceText("coa_act_escort_usage", "Usage: .playerbots activity escort <destination>|list|stop"));
+            return true;
+        }
+        std::string const target = AsciiLower(words.front());
+        if (target == "stop")
+            return SendBrainLines(handler, ActivityDirector::Instance().CancelEscort(player));
+        return SendBrainLines(handler, ActivityDirector::Instance().RequestEscort(player, target));
+    }
+
+    static bool HandleActivityTestCommand(ChatHandler* handler, char const* args)
+    {
+        if (!BrainWords(args).empty())
+        {
+            SendBrainLine(handler, "Usage: .playerbots activity test");
+            return true;
+        }
+        std::vector<std::string> lines = ActivityPvePolicy::SelfTest();
+        std::vector<std::string> const config = ActivityConfig::SelfTest();
+        lines.insert(lines.end(), config.begin(), config.end());
+        lines.emplace_back(EscortRules::SelfTest() ? "PASS M7 escort arrival, eligibility and invitation policy"
+                                                 : "FAIL M7 escort policy");
+        lines.emplace_back(RareScoutRules::SelfTest() ? "PASS M7 rare template, observation and deadline policy"
+                                                    : "FAIL M7 rare policy");
+        return SendBrainLines(handler, lines);
+    }
+
+    static bool HandleActivityVerifyCommand(ChatHandler* handler, char const* args)
+    {
+        std::vector<std::string> const words = BrainWords(args);
+        uint32 id = 0;
+        if (words.size() != 1 || !ParseActivityNumber(words[0], 1, ACTIVITY_MAX_ID, id))
+        {
+            SendBrainLine(handler, "Usage: .playerbots activity verify <rare-scout-id>");
+            return true;
+        }
+        return SendBrainLines(handler, ActivityDirector::Instance().VerifyM7(id));
+    }
+
     static constexpr uint32 ACTIVITY_MAX_ID = 999999999;
 
     // Digits only, from `lowest` to `highest`.
@@ -752,6 +806,8 @@ public:
             case ActivityKindId::Raid:
             case ActivityKindId::Party:
             case ActivityKindId::Loiter:
+            case ActivityKindId::Escort:
+            case ActivityKindId::RareScout:
                 return true;
             default:
                 return false;
@@ -762,8 +818,8 @@ public:
     {
         SendBrainLine(handler, "Usage: .playerbots activity list|info <id>|start duel [spot] [alliance|horde] [level] "
                                "[size]|start gang|dungeon|gurubashi [alliance|horde] [level] [size]|start "
-                               "hunt|raid|party|loiter [target] [alliance|horde] [level] [size]|stop <id>|all|pause|"
-                               "resume|reload|census [hours]|join [id]");
+                               "hunt|raid|party|loiter|rare [target] [alliance|horde] [level] [size]|stop <id>|all|pause|"
+                               "resume|reload|census [hours]|join [id]|escort <destination>|list|stop|test|verify <id>");
         return true;
     }
 

@@ -418,6 +418,8 @@ public:
     // memory is off, still loading, or when this bot keeps none. SetMemoryView: world thread, CoaMemoryMgr only,
     // inside CoaWorldScript::OnUpdate while the map threads are idle; the lock only makes the swap formally safe.
     uint64 GetCoaEpoch() const { return coaEpoch; }
+    bool HasM7ControlledGuard() const { return m7ControlledGuard; }
+    void SetM7ControlledGuard(bool value) { m7ControlledGuard = value; }
     std::shared_ptr<MemoryView const> GetMemoryView() const
     {
         std::lock_guard<std::mutex> guard(memoryViewLock);
@@ -671,6 +673,7 @@ public:
 
 private:
     time_t lfgRejoinAt = 0;
+    bool m7ControlledGuard = false;
     static void _fillGearScoreData(Player* player, Item* item, std::vector<uint32>* gearScore, uint32& twoHandScore,
                                    bool mixed = false);
     bool IsTellAllowed(PlayerbotSecurityLevel securityLevel = PLAYERBOT_SECURITY_ALLOW_ALL);

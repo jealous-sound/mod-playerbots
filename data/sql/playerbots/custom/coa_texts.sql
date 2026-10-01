@@ -77,12 +77,33 @@
 -- 30600-30635, 30636-30799 spare; activity bot lines 30800-30999 (M4 30800-30871, M5 30872-30999); activity
 -- system rows 31000-31016 (M4 31000-31009, M5 31010-31016), 31017-31099 spare; M5 activity bot lines
 -- 31100-31147; banter rows (coa_banter_*, M6), 8 per name, read only with CoaVoice.Banter.Enable = 1,
--- 31148-31203, 31204-31499 spare. Re-runnable: the deletes below touch only coa_* rows, by id block (to drop
+-- 31148-31203; M7 escort/scout rows 31204-31224, 31225-31499 spare. Re-runnable: the deletes below touch only coa_* rows, by id block (to drop
 -- renamed or removed lines) and by name. The file ends by moving the table's AUTO_INCREMENT to 31500, so
 -- an insert without an id gets 31500 or above and never lands in this block.
 
 DELETE FROM `ai_playerbot_texts` WHERE `id` BETWEEN 30000 AND 31499 AND LEFT(`name`, 4) = 'coa_';
 DELETE FROM `ai_playerbot_texts` WHERE `name` IN (
+    'coa_act_escort_off',
+    'coa_act_escort_destinations',
+    'coa_act_escort_no_destinations',
+    'coa_act_escort_usage',
+    'coa_act_escort_player',
+    'coa_act_escort_gap',
+    'coa_act_escort_already',
+    'coa_act_escort_cooldown',
+    'coa_act_escort_destination',
+    'coa_act_escort_busy',
+    'coa_act_escort_load',
+    'coa_act_escort_no',
+    'coa_act_escort_requested',
+    'coa_act_escort_none',
+    'coa_act_escort_cancelled',
+    'coa_act_escort_invite',
+    'coa_act_escort_arrived',
+    'coa_act_escort_private',
+    'coa_act_escort_pending',
+    'coa_act_escort_ready',
+    'coa_act_rare_seen',
     'coa_banter_zone',
     'coa_banter_weather',
     'coa_banter_level',
@@ -1815,7 +1836,49 @@ VALUES
     (31202, 'coa_banter_dungeon', 'Who remembers their first dungeon? Mine was a disaster.', 0, 0,
      '', 'Qui se rappelle son premier donjon ? Le mien, c''était un désastre.', '', '', '', '', '', ''),
     (31203, 'coa_banter_dungeon', 'Nothing beats the loot that only drops once you''ve left, lol.', 0, 0,
-     '', 'Rien ne vaut le butin qui tombe seulement quand on est parti, mdr.', '', '', '', '', '', '');
+     '', 'Rien ne vaut le butin qui tombe seulement quand on est parti, mdr.', '', '', '', '', '', ''),
+    (31204, 'coa_act_escort_off', 'Escorts are currently unavailable.', 0, 0,
+     '', 'Les escortes sont indisponibles pour le moment.', '', '', '', '', '', ''),
+    (31205, 'coa_act_escort_player', 'An online player must request the escort.', 0, 0,
+     '', 'La demande d''escorte doit venir d''un joueur en ligne.', '', '', '', '', '', ''),
+    (31206, 'coa_act_escort_gap', 'Please wait five seconds before requesting again.', 0, 0,
+     '', 'Attendez cinq secondes avant une nouvelle demande.', '', '', '', '', '', ''),
+    (31207, 'coa_act_escort_already', 'You already have an escort; cancel it first.', 0, 0,
+     '', 'Vous avez déjà une escorte ; annulez-la d''abord.', '', '', '', '', '', ''),
+    (31208, 'coa_act_escort_cooldown', 'You must wait before requesting another escort.', 0, 0,
+     '', 'Vous devez patienter avant de demander une autre escorte.', '', '', '', '', '', ''),
+    (31209, 'coa_act_escort_destination', 'Choose one of the configured escort destinations.', 0, 0,
+     '', 'Choisissez une destination d''escorte disponible.', '', '', '', '', '', ''),
+    (31210, 'coa_act_escort_busy', 'All escort places are currently occupied.', 0, 0,
+     '', 'Toutes les places d''escorte sont occupées pour le moment.', '', '', '', '', '', ''),
+    (31211, 'coa_act_escort_load', 'The escorts are resting while the realm is busy.', 0, 0,
+     '', 'Les escortes se reposent pendant que le royaume est chargé.', '', '', '', '', '', ''),
+    (31212, 'coa_act_escort_no', 'No suitable escort can start here right now.', 0, 0,
+     '', 'Aucune escorte adaptée ne peut partir d''ici pour le moment.', '', '', '', '', '', ''),
+    (31213, 'coa_act_escort_requested', 'Your escort is gathering and will invite you shortly.', 0, 0,
+     '', 'Votre escorte se rassemble et vous invitera bientôt.', '', '', '', '', '', ''),
+    (31214, 'coa_act_escort_none', 'You have no escort to cancel.', 0, 0,
+     '', 'Vous n''avez aucune escorte à annuler.', '', '', '', '', '', ''),
+    (31215, 'coa_act_escort_cancelled', 'Your escort has ended.', 0, 0,
+     '', 'Votre escorte est terminée.', '', '', '', '', '', ''),
+    (31216, 'coa_act_escort_invite', 'Accept my invitation and we will walk with you to %target.', 0, 0,
+     '', 'Acceptez mon invitation et nous vous accompagnerons jusqu''à %target.', '', '', '', '', '', ''),
+    (31217, 'coa_act_escort_arrived', 'Here we are. Safe travels!', 0, 0,
+     '', 'Nous voilà arrivés. Bonne route !', '', '', '', '', '', ''),
+    (31218, 'coa_act_escort_private', 'That escort is reserved for the player who requested it.', 0, 0,
+     '', 'Cette escorte est réservée au joueur qui l''a demandée.', '', '', '', '', '', ''),
+    (31219, 'coa_act_escort_pending', 'Your escort invitation is pending. Accept it to start the walk.', 0, 0,
+     '', 'Votre invitation d''escorte vous attend. Acceptez-la pour partir.', '', '', '', '', '', ''),
+    (31220, 'coa_act_escort_ready', 'We are with you. Lead the way to %target.', 0, 0,
+     '', 'Nous sommes avec vous. Ouvrez la marche vers %target.', '', '', '', '', '', ''),
+    (31221, 'coa_act_rare_seen', 'I spotted %target near %area.', 0, 0,
+     '', 'J''ai aperçu %target vers %area.', '', '', '', '', '', ''),
+    (31222, 'coa_act_escort_destinations', 'Escort destinations: %destinations', 0, 0,
+     '', 'Destinations d''escorte : %destinations', '', '', '', '', '', ''),
+    (31223, 'coa_act_escort_usage', 'Usage: .playerbots activity escort <destination> or list or stop', 0, 0,
+     '', 'Commande : .playerbots activity escort <destination> ou list ou stop', '', '', '', '', '', ''),
+    (31224, 'coa_act_escort_no_destinations', 'No escort destinations are configured here.', 0, 0,
+     '', 'Aucune destination d''escorte n''est disponible ici.', '', '', '', '', '', '');
 
--- The explicit ids push the counter to 31204, inside the block; move it past (never below max(id) + 1).
+-- The explicit ids push the counter to 31225, inside the block; move it past (never below max(id) + 1).
 ALTER TABLE `ai_playerbot_texts` AUTO_INCREMENT = 31500;

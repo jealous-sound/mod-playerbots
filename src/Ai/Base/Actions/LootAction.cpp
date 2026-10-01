@@ -5,6 +5,7 @@
  */
 
 #include "LootAction.h"
+#include "ActivityPvePolicy.h"
 #include "BroadcastHelper.h"
 #include "ChatHelper.h"
 #include "Event.h"
@@ -19,6 +20,9 @@
 
 bool LootAction::Execute(Event /*event*/)
 {
+    if (!ActivityPvePolicy::LootAllowed(botAI))
+        return false;
+
     if (!AI_VALUE(bool, "has available loot"))
         return false;
 
@@ -83,6 +87,9 @@ bool OpenLootAction::Execute(Event /*event*/)
 
 bool OpenLootAction::DoLoot(LootObject& lootObject)
 {
+    if (!ActivityPvePolicy::LootAllowed(botAI))
+        return false;
+
     if (lootObject.IsEmpty())
         return false;
 
