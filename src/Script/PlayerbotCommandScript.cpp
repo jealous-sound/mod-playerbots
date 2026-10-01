@@ -11,8 +11,10 @@
 #include "BattleGroundTactics.h"
 #include "BrainAdmin.h"
 #include "BrainConfig.h"
+#include "BrainRpgAdvice.h"
 #include "BrainService.h"
 #include "BrainStateBuilder.h"
+#include "BrainTextPrompt.h"
 #include "CharacterCache.h"
 #include "Chat.h"
 #include "CoaMemoryAdmin.h"
@@ -20,6 +22,7 @@
 #include "CoaPlayerPrefs.h"
 #include "CoaSpecialization.h"
 #include "CoaVoiceDirector.h"
+#include "CoaVoiceConfig.h"
 #include "Config.h"
 #include "GuildTaskMgr.h"
 #include "ObjectAccessor.h"
@@ -33,10 +36,12 @@
 #include "ScriptMgr.h"
 #include "WorldSession.h"
 #include <cctype>
+#include <iomanip>
 #include <map>
 #include <memory>
 #include <optional>
 #include <sstream>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -65,6 +70,17 @@ public:
             {"stats", HandleVoiceStatsCommand, SEC_GAMEMASTER, Console::Yes},
         };
 
+        static ChatCommandTable playerbotsBrainTextCommandTable = {
+            {"status", HandleBrainTextStatusCommand, SEC_GAMEMASTER, Console::Yes},
+            {"test", HandleBrainTextTestCommand, SEC_GAMEMASTER, Console::Yes},
+            {"probe", HandleBrainTextProbeCommand, SEC_GAMEMASTER, Console::Yes},
+        };
+
+        static ChatCommandTable playerbotsBrainRpgCommandTable = {
+            {"status", HandleBrainRpgStatusCommand, SEC_GAMEMASTER, Console::Yes},
+            {"clear", HandleBrainRpgClearCommand, SEC_GAMEMASTER, Console::Yes},
+        };
+
         static ChatCommandTable playerbotsBrainCommandTable = {
             {"status", HandleBrainStatusCommand, SEC_GAMEMASTER, Console::Yes},
             {"on", HandleBrainOnCommand, SEC_GAMEMASTER, Console::Yes},
@@ -73,6 +89,8 @@ public:
             {"explain", HandleBrainExplainCommand, SEC_GAMEMASTER, Console::Yes},
             {"test", HandleBrainTestCommand, SEC_GAMEMASTER, Console::Yes},
             {"probe", HandleBrainProbeCommand, SEC_GAMEMASTER, Console::Yes},
+            {"text", playerbotsBrainTextCommandTable},
+            {"rpg", playerbotsBrainRpgCommandTable},
         };
 
         static ChatCommandTable playerbotsMemoryCommandTable = {
@@ -312,6 +330,71 @@ public:
                               BrainAdmin::StartProbe(RequesterAccount(handler), engine, record, std::move(jobs)));
     }
 
+    static bool HandleBrainTextStatusCommand(ChatHandler* handler, char const* /*args*/)
+    {
+        return SendBrainLines(handler, BrainAdmin::TextStatus());
+    }
+
+    static bool HandleBrainTextTestCommand(ChatHandler* handler, char const* args)
+    {
+        std::istringstream input(args ? args : "");
+        std::string word;
+        std::string message;
+        if (!(input >> std::quoted(word)) || !std::getline(input >> std::ws, message) ||
+            word.empty() || message.empty())
+            return SendBrainUsage(handler);
+        if (!BrainService::Current()->Active(BrainUse::Text))
+        {
+            SendBrainLine(handler, "CoA text generator is off");
+            return true;
+        }
+        std::string name = word;
+        Player* bot = nullptr;
+        if (normalizePlayerName(name))
+        {
+            bot = ObjectAccessor::FindPlayerByName(name);
+            if (!bot && name.find(' ') == std::string::npos)
+                bot = ObjectAccessor::FindUniquePlayerByFirstName(name);
+        }
+        if (!bot || !GET_PLAYERBOT_AI(bot))
+        {
+            SendBrainLine(handler, "brain text test " + word + ": not a bot in the world");
+            return true;
+        }
+        Player* const speaker = handler->GetSession() ? handler->GetSession()->GetPlayer() : nullptr;
+        BrainTextTestJob test;
+        std::string error;
+        if (!BrainTextPrompt::BuildTestJob(bot, speaker, message, test, error))
+        {
+            SendBrainLine(handler, "brain text test " + name + ": " + error);
+            return true;
+        }
+        return SendBrainLines(handler, BrainAdmin::StartTextTest(RequesterAccount(handler), std::move(test)));
+    }
+
+    static bool HandleBrainTextProbeCommand(ChatHandler* handler, char const* args)
+    {
+        if (!BrainWords(args).empty())
+            return SendBrainUsage(handler);
+        if (!BrainService::Current()->Active(BrainUse::Text))
+        {
+            SendBrainLine(handler, "CoA text generator is off");
+            return true;
+        }
+        return SendBrainLines(handler, BrainAdmin::StartTextProbe(
+            RequesterAccount(handler), BrainTextPrompt::BuildProbeJobs(PlayerbotTextMgr::instance().GetLocalePriority())));
+    }
+
+    static bool HandleBrainRpgStatusCommand(ChatHandler* handler, char const* /*args*/)
+    {
+        return SendBrainLines(handler, BrainRpgAdvice::Instance().FormatStatus());
+    }
+
+    static bool HandleBrainRpgClearCommand(ChatHandler* handler, char const* /*args*/)
+    {
+        return SendBrainLines(handler, BrainRpgAdvice::Instance().Clear());
+    }
+
     static uint32 RequesterAccount(ChatHandler* handler)
     {
         return handler->GetSession() ? handler->GetSession()->GetAccountId() : 0;
@@ -364,7 +447,8 @@ public:
     static bool SendBrainUsage(ChatHandler* handler)
     {
         SendBrainLine(handler, "Usage: .playerbots brain status|on|off|reset|explain <bot>|test <bot> <message>|"
-                               "test selftest|probe [engine] [record]");
+                               "test selftest|probe [engine] [record]|text status|text test <bot> <situation>|"
+                               "text probe|rpg status|rpg clear");
         return true;
     }
 
@@ -766,22 +850,37 @@ public:
 
     // M1's disclosure says nothing leaves the server, which stops being true while the brain asks a hosted engine:
     // it then gets features of the messages, and their words when Privacy.SendPlayerText allows it. "" when no
-    // hosted engine is asked. The brain rows are not in coa_texts.sql yet, so their English default is shown.
+    // hosted engine is asked. The text generator is included when it may receive player messages.
     static std::string BrainDisclosure()
     {
-        std::string host;
+        std::set<std::string> hosts;
+        std::set<std::string> wordHosts;
         bool words = false;
+        std::shared_ptr<BrainConfig const> const brain = BrainConfig::Current();
         if (BrainService::ChatActive())
         {
-            std::shared_ptr<BrainConfig const> const brain = BrainConfig::Current();
             for (BrainEngineConfig const& engine : brain->engines)
             {
                 if (!engine.usable || engine.loopback || engine.dialect == BrainDialect::Mock || engine.host.empty())
                     continue;
-                if (host.empty())
-                    host = engine.host;
-                words = words || engine.sendPlayerText;
+                hosts.insert(engine.host);
+                if (engine.sendPlayerText)
+                    wordHosts.insert(engine.host);
             }
+        }
+        if (BrainService::TextWithWords() && !brain->text.loopback && !brain->text.host.empty() &&
+            CoaVoiceConfig::Current()->textLlm > 0)
+        {
+            hosts.insert(brain->text.host);
+            wordHosts.insert(brain->text.host);
+        }
+        words = !wordHosts.empty();
+        std::string host;
+        for (std::string const& value : words ? wordHosts : hosts)
+        {
+            if (!host.empty())
+                host += " and ";
+            host += value;
         }
 
         if (host.empty())
@@ -790,10 +889,9 @@ public:
         std::map<std::string, std::string> const values = {{"%host", host}};
         if (words)
             return VoiceText("coa_voice_disclosure_brain_text",
-                             "Bots may answer your messages with ready-made lines, chosen with the help of %host, "
-                             "which receives the messages bots may answer, without your character's name. Only "
-                             "your preferences are stored. .playerbots optout ai stops this for your account, "
-                             ".playerbots optout voice makes the bots ignore you.",
+                             "Bots may reply with ready-made lines, or with lines a text model writes, via %host, "
+                             "which gets the messages they may answer, without your name. Opt out: "
+                             ".playerbots optout ai",
                              values);
         return VoiceText("coa_voice_disclosure_brain",
                          "Bots may answer your messages with ready-made lines, chosen with the help of %host, which "

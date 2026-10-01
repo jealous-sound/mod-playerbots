@@ -30,7 +30,6 @@ DialectTable MakeBuiltInTable()
         d.name = "openrouter";
         d.kind = BrainDialect::OpenRouter;
         d.defaultUrl = "https://openrouter.ai/api/alpha/decisions";
-        d.alternateUrls = {"https://openrouter.ai/api/v1/api/alpha/decisions"};
         d.defaultModel = "~typesafe/jev-latest";
         d.hosted = true;
         d.requiresKey = true;

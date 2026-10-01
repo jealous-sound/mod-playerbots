@@ -17,6 +17,8 @@
 #include "CoaThread.h"
 #include "CoaTime.h"
 #include "IDecisionEngine.h"
+#include "ITextEngine.h"
+#include "TextWire.h"
 #include "Log.h"
 #include <algorithm>
 #include <chrono>
@@ -35,14 +37,17 @@ struct InProcessBrain::Shared
         std::shared_ptr<BrainConfig const> config;
         std::vector<std::shared_ptr<IDecisionEngine>> chain;  // usable engines, Decision.Chain order
         std::unordered_map<std::string, std::shared_ptr<IDecisionEngine>> byName;
+        std::shared_ptr<ITextEngine> text;
         bool anyCalibrated = false;
         std::string chainSignature;  // "name:model:c|u,..." (c = calibrated) appended to every cache key
     };
 
     BrainQueue queue;
+    BrainQueue textQueue;
     mutable std::mutex setLock;
     std::shared_ptr<EngineSet const> set;  // guarded by setLock
     std::vector<std::shared_ptr<BrainHttpClient>> clients;  // one per worker; filled before the workers start
+    std::vector<std::shared_ptr<BrainHttpClient>> textClients;
     std::atomic<bool> stopping{false};
     std::mutex exitLock;
     std::condition_variable exited;
@@ -127,6 +132,10 @@ std::vector<std::string> HostsOf(BrainConfig const& config)
         if (std::find(hosts.begin(), hosts.end(), engine.host) == hosts.end())
             hosts.push_back(engine.host);
     }
+    BrainTextConfig const& text = config.text;
+    if (text.usable && !text.host.empty() && !text.hostIsIp && text.host != "localhost" &&
+        std::find(hosts.begin(), hosts.end(), text.host) == hosts.end())
+        hosts.push_back(text.host);
     return hosts;
 }
 
@@ -220,7 +229,34 @@ bool InProcessBrain::InstallEngines(std::shared_ptr<BrainConfig const> const& co
         set->chainSignature += engineConfig.name + ":" + engineConfig.model + (engine->Calibrated() ? ":c" : ":u");
     }
 
-    bool const any = !set->chain.empty();
+    if (config->text.usable)
+    {
+        std::string error;
+        try
+        {
+            set->text = TextEngines::Create(config->text, *config, resolver, error);
+        }
+        catch (std::exception const& e)
+        {
+            error = e.what();
+        }
+        catch (...)
+        {
+            error = "unknown exception";
+        }
+        if (!set->text)
+        {
+            LOG_ERROR("playerbots.brain", "CoA brain: text generator could not be built: {}", error);
+            note(BRAIN_TEXT_ENGINE, error);
+        }
+    }
+    else if (!config->text.problem.empty())
+        note(BRAIN_TEXT_ENGINE, config->text.problem);
+
+    bool const any = !set->chain.empty() || set->text;
+    chainUsable.store(!set->chain.empty(), std::memory_order_relaxed);
+    textUsable.store(bool(set->text), std::memory_order_relaxed);
+    textWithWords.store(set->text && config->text.sendPlayerText, std::memory_order_relaxed);
     useChatReply.store(config->useChatReply, std::memory_order_relaxed);
     chainCalibrated.store(set->anyCalibrated, std::memory_order_relaxed);
     {
@@ -253,6 +289,7 @@ bool InProcessBrain::Start(std::string& error)
     {
         error = std::move(why);
         shared->queue.Close();
+        shared->textQueue.Close();
         if (resolver)
         {
             resolver->Stop();
@@ -266,6 +303,7 @@ bool InProcessBrain::Start(std::string& error)
         return fail("no usable engine: " + (problems.empty() ? std::string("the chain is empty") : problems));
 
     uint32 const count = std::max<uint32>(1, config->workers);
+    uint32 const textCount = shared->Set()->text ? std::max<uint32>(1, config->text.workers) : 0;
     BrainTlsSettings tls;
     tls.verify = config->tlsVerify;
     tls.caBundle = BrainConfig::ResolvePath(config->caBundle);
@@ -274,6 +312,8 @@ bool InProcessBrain::Start(std::string& error)
         shared->clients.clear();
         for (uint32 i = 0; i < count; ++i)
             shared->clients.push_back(std::make_shared<BrainHttpClient>(tls));
+        for (uint32 i = 0; i < textCount; ++i)
+            shared->textClients.push_back(std::make_shared<BrainHttpClient>(tls));
     }
     catch (std::exception const& e)
     {
@@ -287,6 +327,7 @@ bool InProcessBrain::Start(std::string& error)
     bool anyTls = false;
     for (std::shared_ptr<IDecisionEngine> const& engine : shared->Set()->chain)
         anyTls = anyTls || (engine->Config().tls && !engine->Config().host.empty());
+    anyTls = anyTls || (textCount && config->text.tls && !config->text.host.empty());
     if (anyTls && !shared->clients.front()->TlsReady())
         LOG_ERROR("playerbots.brain", "CoA brain: TLS is not ready ({}); https engines will fail until it is fixed",
                   shared->clients.front()->TlsProblem());
@@ -297,8 +338,8 @@ bool InProcessBrain::Start(std::string& error)
 
     {
         std::lock_guard<std::mutex> guard(shared->exitLock);
-        shared->done.assign(count, false);
-        shared->alive = count;
+        shared->done.assign(count + textCount, false);
+        shared->alive = count + textCount;
     }
     workers.reserve(count);
     for (uint32 i = 0; i < count; ++i)
@@ -317,8 +358,32 @@ bool InProcessBrain::Start(std::string& error)
             break;
         }
     }
+    textWorkers.reserve(textCount);
+    for (uint32 i = 0; i < textCount; ++i)
+    {
+        try
+        {
+            textWorkers.emplace_back([worker = shared, i] { WorkText(worker, i); });
+        }
+        catch (std::exception const& e)
+        {
+            LOG_ERROR("playerbots.brain", "CoA brain: text worker {} could not start: {}", i, e.what());
+            std::lock_guard<std::mutex> guard(shared->exitLock);
+            for (uint32 j = i; j < textCount; ++j)
+                shared->done[count + j] = true;
+            shared->alive -= textCount - i;
+            break;
+        }
+    }
+    if (textCount && textWorkers.empty())
+    {
+        textUsable.store(false, std::memory_order_relaxed);
+        textWithWords.store(false, std::memory_order_relaxed);
+    }
+    if ((!chainUsable.load(std::memory_order_relaxed) || workers.empty()) && textWorkers.empty())
+        return fail("no usable engine has a worker thread");
     if (workers.empty())
-        return fail("no worker thread could start");
+        chainUsable.store(false, std::memory_order_relaxed);
 
     running.store(true, std::memory_order_relaxed);
     accepting.store(true, std::memory_order_relaxed);
@@ -342,6 +407,14 @@ void InProcessBrain::Reconfigure(std::shared_ptr<BrainConfig const> config)
         LOG_ERROR("playerbots.brain",
                   "CoA brain: no usable engine after the reload ({}); every decision falls back to the heuristic",
                   problems.empty() ? std::string("the chain is empty") : problems);
+    // A failed pool start may leave the other family running. Never advertise a family with no dispatch thread.
+    if (workers.empty())
+        chainUsable.store(false, std::memory_order_relaxed);
+    if (textWorkers.empty())
+    {
+        textUsable.store(false, std::memory_order_relaxed);
+        textWithWords.store(false, std::memory_order_relaxed);
+    }
 }
 
 void InProcessBrain::SetAccepting(bool value)
@@ -361,11 +434,19 @@ void InProcessBrain::Shutdown(uint32 deadlineMs)
     accepting.store(false, std::memory_order_relaxed);
     running.store(false, std::memory_order_relaxed);
     shared->stopping.store(true, std::memory_order_release);
+    textUsable.store(false, std::memory_order_relaxed);
+    textWithWords.store(false, std::memory_order_relaxed);
+    chainUsable.store(false, std::memory_order_relaxed);
 
     // Waiting jobs are dropped: nothing is posted for them, their reservations go back.
     BrainGovernor& governor = BrainGovernor::Instance();
     for (BrainQueued const& item : shared->queue.Close())
         governor.Settle(item.reservedMicros, item.job.use == BrainUse::Probe);
+    for (BrainQueued const& item : shared->textQueue.Close())
+        governor.Settle(item.reservedMicros, item.job.use == BrainUse::Probe, true);
+    for (std::shared_ptr<BrainHttpClient> const& client : shared->textClients)
+        if (client)
+            client->Interrupt();
     for (std::shared_ptr<BrainHttpClient> const& client : shared->clients)
         if (client)
             client->Interrupt();
@@ -396,6 +477,26 @@ void InProcessBrain::Shutdown(uint32 deadlineMs)
             ++detached;
         }
     }
+    for (std::size_t i = 0; i < textWorkers.size(); ++i)
+    {
+        std::thread& worker = textWorkers[i];
+        if (!worker.joinable())
+            continue;
+        bool finished = false;
+        {
+            std::lock_guard<std::mutex> guard(shared->exitLock);
+            std::size_t const slot = shared->clients.size() + i;
+            finished = slot < shared->done.size() && shared->done[slot];
+        }
+        if (finished)
+            worker.join();
+        else
+        {
+            worker.detach();
+            ++detached;
+        }
+    }
+    textWorkers.clear();
     workers.clear();
     if (detached)
         LOG_DEBUG("playerbots.brain", "CoA brain: {} worker(s) still in a call were detached at shutdown", detached);
@@ -410,7 +511,9 @@ void InProcessBrain::Shutdown(uint32 deadlineMs)
 bool InProcessBrain::Active(BrainUse use) const
 {
     return running.load(std::memory_order_relaxed) && accepting.load(std::memory_order_relaxed) &&
-           (use != BrainUse::ChatReply || useChatReply.load(std::memory_order_relaxed));
+           (use == BrainUse::Text ? textUsable.load(std::memory_order_relaxed)
+                                  : chainUsable.load(std::memory_order_relaxed) &&
+                                        (use != BrainUse::ChatReply || useChatReply.load(std::memory_order_relaxed)));
 }
 
 bool InProcessBrain::ChainCalibrated() const { return chainCalibrated.load(std::memory_order_relaxed); }
@@ -427,15 +530,25 @@ BrainTicket InProcessBrain::Submit(BrainJob&& job, std::shared_ptr<BrainSink> co
     };
 
     // Read-only checks first; nothing is reserved before Admit, which checks everything then commits.
-    if (!Active(job.use))
+    bool const textJob = job.kind == BrainJobKind::Text;
+    if (textJob ? !Active(BrainUse::Text) : !Active(job.use))
         return refuse(BrainSubmit::Off);
 
     std::shared_ptr<Shared::EngineSet const> const set = shared->Set();
-    bool valid = sink && !job.questions.empty();
-    for (BrainQuestion const& question : job.questions)
-        valid = valid && ValidQuestion(question);
-    if (valid && !job.forceEngine.empty() && !set->byName.contains(job.forceEngine))
-        valid = false;
+    bool valid = false;
+    if (textJob)
+        valid = sink && (job.use == BrainUse::Text || job.use == BrainUse::Test || job.use == BrainUse::Probe) &&
+                !job.textUser.empty() && job.textSystem.size() + job.textUser.size() <= 64 * 1024 &&
+                (!job.textPlayerWords || set->config->text.sendPlayerText) &&
+                (job.forceEngine.empty() || job.forceEngine == BRAIN_TEXT_ENGINE);
+    else
+    {
+        valid = sink && !job.questions.empty();
+        for (BrainQuestion const& question : job.questions)
+            valid = valid && ValidQuestion(question);
+        if (valid && !job.forceEngine.empty() && !set->byName.contains(job.forceEngine))
+            valid = false;
+    }
     if (!valid)
         return refuse(BrainSubmit::Invalid);
 
@@ -445,7 +558,7 @@ BrainTicket InProcessBrain::Submit(BrainJob&& job, std::shared_ptr<BrainSink> co
     if (!job.deadlineMs)
         job.deadlineMs = now + DEFAULT_DEADLINE_MS;
 
-    if (Cacheable(job))
+    if (!textJob && Cacheable(job))
     {
         BrainResult hit;
         if (BrainCache::Instance().Lookup(job.cacheKey + "|" + set->chainSignature, now, hit))
@@ -470,27 +583,34 @@ BrainTicket InProcessBrain::Submit(BrainJob&& job, std::shared_ptr<BrainSink> co
         return refuse(BrainSubmit::TooLate);
     // One refusal in 32 goes through anyway: the latency figures only change with calls, so an engine judged too
     // slow once would otherwise never be measured again.
-    if (timeLeft < governor.ExpectedMs(job.forceEngine, now) &&
+    uint32 const expected = textJob ? governor.ExpectedTextMs(now, set->config->text.timeoutMs / 3)
+                                    : governor.ExpectedMs(job.forceEngine, now);
+    if (timeLeft < expected &&
         tooLateSkips.fetch_add(1, std::memory_order_relaxed) % TOO_LATE_PROBE_EVERY != 0)
         return refuse(BrainSubmit::TooLate);
 
-    if (!shared->queue.CanPush(job.lane))
+    BrainQueue& queue = textJob ? shared->textQueue : shared->queue;
+    if (!queue.CanPush(job.lane))
         return refuse(BrainSubmit::Full);
 
     std::vector<IDecisionEngine const*> candidates;
-    if (!job.forceEngine.empty())
+    if (!textJob && !job.forceEngine.empty())
         candidates.push_back(set->byName.at(job.forceEngine).get());
     else
         for (std::shared_ptr<IDecisionEngine> const& engine : set->chain)
             candidates.push_back(engine.get());
-    uint64 const estimate = Estimate(job, candidates);
+    uint32 const textMaxTokens = job.textMaxTokens ? job.textMaxTokens : set->config->text.maxTokens;
+    uint64 const estimate = textJob ? TextWire::EstimateMicros(set->config->text,
+                                                            job.textSystem.size() + job.textUser.size(), textMaxTokens)
+                                    : Estimate(job, candidates);
 
     bool const probe = job.use == BrainUse::Probe;
     BrainAdmitRequest request;
     request.lane = job.lane;
     request.probe = probe;
     request.situation = job.situation;
-    request.forceEngine = job.forceEngine;
+    request.forceEngine = textJob ? std::string_view() : std::string_view(job.forceEngine);
+    request.textJob = textJob;
     request.estimateMicros = estimate;
     BrainSubmit const admitted = governor.Admit(request, now);
     if (admitted != BrainSubmit::Queued)
@@ -503,15 +623,15 @@ BrainTicket InProcessBrain::Submit(BrainJob&& job, std::shared_ptr<BrainSink> co
     item.reservedMicros = estimate;
     item.enqueuedMs = now;
     std::vector<BrainQueued> evicted;
-    if (!shared->queue.Push(std::move(item), evicted))
+    if (!queue.Push(std::move(item), evicted))
     {
-        governor.Settle(estimate, probe);
+        governor.Settle(estimate, probe, textJob);
         return refuse(BrainSubmit::Full);
     }
 
     for (BrainQueued& old : evicted)
     {
-        governor.Settle(old.reservedMicros, old.job.use == BrainUse::Probe);
+        governor.Settle(old.reservedMicros, old.job.use == BrainUse::Probe, textJob);
         BrainResult result;
         result.jobId = old.job.id;
         result.tag = old.job.tag;
@@ -534,13 +654,16 @@ BrainTicket InProcessBrain::Submit(BrainJob&& job, std::shared_ptr<BrainSink> co
 void InProcessBrain::Cancel(uint64 jobId)
 {
     BrainQueued removed;
-    if (shared->queue.Remove(jobId, removed))
-        BrainGovernor::Instance().Settle(removed.reservedMicros, removed.job.use == BrainUse::Probe);
+    if (shared->queue.Remove(jobId, removed) || shared->textQueue.Remove(jobId, removed))
+        BrainGovernor::Instance().Settle(removed.reservedMicros, removed.job.use == BrainUse::Probe,
+                                        removed.job.kind == BrainJobKind::Text);
 }
 
 std::shared_ptr<BrainConfig const> InProcessBrain::Config() const { return shared->Set()->config; }
 
 uint32 InProcessBrain::QueueDepth(BrainLane lane) const { return shared->queue.Depth(lane); }
+
+uint32 InProcessBrain::TextQueueDepth(BrainLane lane) const { return shared->textQueue.Depth(lane); }
 
 void InProcessBrain::Work(std::shared_ptr<Shared> shared, uint32 index)
 {
@@ -704,6 +827,158 @@ void InProcessBrain::Work(std::shared_ptr<Shared> shared, uint32 index)
         std::lock_guard<std::mutex> guard(shared->exitLock);
         if (index < shared->done.size())
             shared->done[index] = true;
+        if (shared->alive)
+            --shared->alive;
+    }
+    shared->exited.notify_all();
+}
+
+void InProcessBrain::WorkText(std::shared_ptr<Shared> shared, uint32 index)
+{
+    BrainStats& stats = BrainStats::Instance();
+    BrainGovernor& governor = BrainGovernor::Instance();
+    try
+    {
+        BrainQueued item;
+        while (shared->textQueue.Pop(item))
+        {
+            stats.inFlight.fetch_add(1, std::memory_order_relaxed);
+            BrainJob const& job = item.job;
+            bool const probe = job.use == BrainUse::Probe;
+            uint64 const start = CoaTime::NowMs();
+            BrainResult result;
+            result.jobId = job.id;
+            result.tag = job.tag;
+            result.epoch = job.epoch;
+            result.use = job.use;
+            result.engine = BRAIN_TEXT_ENGINE;
+            result.queuedMs = Clamp32(start > job.submitMs ? start - job.submitMs : 0);
+            bool acquired = false;
+            bool recorded = false;
+            bool generating = false;
+            try
+            {
+                std::shared_ptr<Shared::EngineSet const> const set = shared->Set();
+                if (start >= job.deadlineMs)
+                    result.error = BrainError::TooLate;
+                else if (!set->text)
+                    result.error = BrainError::NoEngine;
+                else if (job.textPlayerWords && !set->config->text.sendPlayerText)
+                {
+                    // A queued prompt must obey the currently published privacy gate after a reload too.
+                    result.error = BrainError::Cancelled;
+                    result.detail = "player text disabled after reload";
+                }
+                else
+                {
+                    uint64 const now = CoaTime::NowMs();
+                    uint32 const timeLeft = Clamp32(job.deadlineMs > now ? job.deadlineMs - now : 0);
+                    BrainError why = BrainError::NoEngine;
+                    acquired = governor.Acquire(BRAIN_TEXT_ENGINE, job.situation, probe, now, timeLeft, why);
+                    if (!acquired)
+                        result.error = why;
+                    else
+                    {
+                        uint32 const budget = std::min(set->config->text.timeoutMs,
+                                                       timeLeft - std::min(timeLeft, DEADLINE_MARGIN_MS));
+                        TextReply reply;
+                        if (budget < MIN_CALL_BUDGET_MS)
+                            reply.error = BrainError::TooLate;
+                        else
+                        {
+                            TextCall call;
+                            call.job = &job;
+                            call.maxTokens = job.textMaxTokens ? job.textMaxTokens : set->config->text.maxTokens;
+                            call.connectTimeoutMs = set->config->connectTimeoutMs;
+                            call.record = job.record;
+                            call.cancel = &shared->stopping;
+                            generating = true;
+                            reply = set->text->Generate(call, *shared->textClients[index], budget);
+                            result.enginesTried = 1;
+                        }
+                        BrainCallOutcome outcome;
+                        outcome.error = reply.error;
+                        outcome.httpStatus = reply.httpStatus;
+                        outcome.usage = reply.usage;
+                        outcome.ms = reply.ms;
+                        outcome.probe = probe;
+                        // A completed response proves the call left, even when shutdown then discards its text.
+                        // Keep its reported billing; a Cancelled reply without an HTTP response still costs no call.
+                        outcome.madeCall = generating && (reply.httpStatus > 0 || MadeCall(reply.error));
+                        outcome.detail = reply.detail;
+                        governor.Record(BRAIN_TEXT_ENGINE, job.situation, outcome, CoaTime::NowMs());
+                        recorded = true;
+                        result.error = reply.error;
+                        result.httpStatus = reply.httpStatus;
+                        result.detail = Excerpt(std::move(reply.detail));
+                        result.providerModel = std::move(reply.providerModel);
+                        result.usage = reply.usage;
+                        result.finishReason = std::move(reply.finishReason);
+                        if (job.record)
+                        {
+                            result.url = std::move(reply.url);
+                            result.rawRequest = std::move(reply.rawRequest);
+                            result.rawResponse = std::move(reply.rawResponse);
+                        }
+                        if (reply.error == BrainError::None)
+                        {
+                            result.text = reply.text;
+                            std::string reason;
+                            if (job.textFinisher && !job.textFinisher->Finish(result.text, reason))
+                            {
+                                result.error = BrainError::Rejected;
+                                result.text = std::move(reply.text);
+                                CoaText::CutUtf8Bytes(result.text, 512);
+                                result.detail = Excerpt(std::move(reason));
+                            }
+                        }
+                    }
+                }
+            }
+            catch (std::exception const& e)
+            {
+                result.error = BrainError::Network;
+                result.text.clear();
+                result.detail = Excerpt(std::string("exception: ") + e.what());
+            }
+            catch (...)
+            {
+                result.error = BrainError::Network;
+                result.text.clear();
+                result.detail = "exception";
+            }
+            if (acquired && !recorded)
+            {
+                BrainCallOutcome outcome;
+                outcome.error = result.error;
+                outcome.probe = probe;
+                outcome.madeCall = generating;
+                outcome.detail = result.detail;
+                governor.Record(BRAIN_TEXT_ENGINE, job.situation, outcome, CoaTime::NowMs());
+            }
+            uint64 const end = CoaTime::NowMs();
+            result.callMs = Clamp32(end > start ? end - start : 0);
+            stats.Count(result.error);
+            LOG_DEBUG("playerbots.brain", "CoA brain: text job {} ({}, tag {}): {} in {} ms after {} ms queued",
+                      result.jobId, BrainUseName(result.use), result.tag, BrainErrorName(result.error),
+                      result.callMs, result.queuedMs);
+            governor.Settle(item.reservedMicros, probe, true);
+            if (!shared->stopping.load(std::memory_order_acquire) && item.sink)
+                item.sink->Post(std::move(result));
+            stats.inFlight.fetch_sub(1, std::memory_order_relaxed);
+            shared->textClients[index]->CloseIdle(IDLE_CONNECTION_MS);
+            item = BrainQueued{};
+        }
+    }
+    catch (...)
+    {
+        // Queue locking failed: this worker leaves; the other workers keep serving their queues.
+    }
+    {
+        std::lock_guard<std::mutex> guard(shared->exitLock);
+        std::size_t const slot = shared->clients.size() + index;
+        if (slot < shared->done.size())
+            shared->done[slot] = true;
         if (shared->alive)
             --shared->alive;
     }

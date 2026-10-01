@@ -1866,6 +1866,73 @@ AiPlayerbot.CoaVoice.Threshold.Channel = 0.65
 
 AiPlayerbot.CoaVoice.WhisperBrainPerSenderPerDay = 50
 
+#    AiPlayerbot.CoaVoice.TextLlm
+#        Description: Generated replies: 0 off; 1 whisper/party/raid/guild; 2 all chat and banter. Needs CoaBrain.Enable
+#                     = 1 and Text.Provider.
+#        Default:     0
+
+AiPlayerbot.CoaVoice.TextLlm = 0
+
+#    AiPlayerbot.CoaVoice.TextTimeoutMs
+#        Description: Wait 1000 to 30000 ms for generated text, then send the prepared template once.
+#        Default:     6000
+
+AiPlayerbot.CoaVoice.TextTimeoutMs = 6000
+
+#    AiPlayerbot.CoaVoice.TextPerSenderPerDay
+#        Description: Generated lines per account per UTC day (0 to 100000); 0 removes this cap.
+#        Default:     40
+
+AiPlayerbot.CoaVoice.TextPerSenderPerDay = 40
+
+#    AiPlayerbot.CoaVoice.Banter.Enable
+#        Description: Ambient bot exchanges where a real player is present. Needs CoaVoice.Enable = 1.
+#        Default:     0
+
+AiPlayerbot.CoaVoice.Banter.Enable = 0
+
+#    AiPlayerbot.CoaVoice.Banter.MaxPerMinutePerZone
+#        Description: Bot banter lines in each zone channel per minute (1 to 20).
+#        Default:     4
+
+AiPlayerbot.CoaVoice.Banter.MaxPerMinutePerZone = 4
+
+#    AiPlayerbot.CoaVoice.Banter.IntervalSeconds
+#        Description: Mean seconds between eligible zone exchanges (15 to 3600).
+#        Default:     90
+
+AiPlayerbot.CoaVoice.Banter.IntervalSeconds = 90
+
+#    AiPlayerbot.CoaVoice.Banter.MinGapSeconds
+#        Description: Minimum seconds between zone exchanges (5 to 600).
+#        Default:     30
+
+AiPlayerbot.CoaVoice.Banter.MinGapSeconds = 30
+
+#    AiPlayerbot.CoaVoice.Banter.MaxZones
+#        Description: Exchanges under way at once (1 to 20).
+#        Default:     3
+
+AiPlayerbot.CoaVoice.Banter.MaxZones = 3
+
+#    AiPlayerbot.CoaVoice.Banter.AnswerPercent
+#        Description: Chance of a second bot answering (0 to 100); needs BotToBot = 1.
+#        Default:     50
+
+AiPlayerbot.CoaVoice.Banter.AnswerPercent = 50
+
+#    AiPlayerbot.CoaVoice.Banter.TextPercent
+#        Description: Chance of generating an opener (0 to 100); needs TextLlm = 2.
+#        Default:     50
+
+AiPlayerbot.CoaVoice.Banter.TextPercent = 50
+
+#    AiPlayerbot.CoaVoice.Banter.QuietAfterHumanSeconds
+#        Description: Wait this many seconds after human chat (0 to 300).
+#        Default:     20
+
+AiPlayerbot.CoaVoice.Banter.QuietAfterHumanSeconds = 20
+
 #    AiPlayerbot.CoaHooks.BusMax
 #        Description: Chat events waiting between the chat hooks and the next world update, at
 #                     most. Past it the newest events are dropped and counted (.playerbots voice
@@ -1916,6 +1983,7 @@ AiPlayerbot.CoaBrain.Enable = 0
 #                     is set up by the AiPlayerbot.CoaBrain.Engine.<name>.* keys below. An engine
 #                     without a key or with a bad URL is skipped (.playerbots brain status says
 #                     why), as is one that is out of credit, failing, or past its own caps.
+#                     May be empty when only the text generator is used.
 #        Default:     openrouter
 
 AiPlayerbot.CoaBrain.Decision.Chain = openrouter
@@ -2072,6 +2140,37 @@ AiPlayerbot.CoaBrain.Duel.DeadlineMs = 3000
 
 AiPlayerbot.CoaBrain.Duel.AcceptThreshold = 0.5
 
+#    AiPlayerbot.CoaBrain.Use.RpgNext
+#        Description: Brain advice reweights random bots' next RPG activity; 0 keeps existing picks.
+#        Default:     0
+
+AiPlayerbot.CoaBrain.Use.RpgNext = 0
+
+#    AiPlayerbot.CoaBrain.Use.Emote
+#        Description: Ask the decision brain for banter opener emotes.
+#        Default:     0
+
+AiPlayerbot.CoaBrain.Use.Emote = 0
+
+#    AiPlayerbot.CoaBrain.Rpg.Influence
+#        Description: Advice influence from 0 to 1; 0 keeps configured activity weights.
+#        Default:     0.5
+
+AiPlayerbot.CoaBrain.Rpg.Influence = 0.5
+
+#    AiPlayerbot.CoaBrain.Rpg.AdviceTtlSeconds
+#        Description: How long advice is fresh (60 to 86400 seconds).
+#        Default:     600
+
+AiPlayerbot.CoaBrain.Rpg.AdviceTtlSeconds = 600
+
+#    AiPlayerbot.CoaBrain.Rpg.MinBots
+#        Description: Random bots needed in a zone/level/role group (1 to 100).
+#        Default:     3
+
+AiPlayerbot.CoaBrain.Rpg.MinBots = 3
+
+
 #    AiPlayerbot.CoaBrain.QuestionFile
 #        Description: A JSON file rewording the questions (in English; the options stay the
 #                     code's), relative to the config directory unless absolute. Its "version"
@@ -2187,10 +2286,8 @@ AiPlayerbot.CoaBrain.TlsVerify = 1
 #                     under the global MaxUsdPerDay.
 #        Default:     1.00, 20000
 
-#    openrouter: Jev through OpenRouter's Decisions API. Its path is documented two ways: when
-#    .playerbots brain probe openrouter reports HTTP 404, try the other one,
-#    https://openrouter.ai/api/v1/api/alpha/decisions. The model ~typesafe/jev-latest follows the
-#    newest Jev; a version such as typesafe/jev-1.13 pins one.
+#    openrouter: Jev through OpenRouter's Decisions API at /api/alpha/decisions.
+#    The model ~typesafe/jev-latest follows the newest Jev; a version such as typesafe/jev-1.13 pins one.
 
 AiPlayerbot.CoaBrain.Engine.openrouter.Dialect = openrouter
 AiPlayerbot.CoaBrain.Engine.openrouter.Url = https://openrouter.ai/api/alpha/decisions
@@ -2267,6 +2364,144 @@ AiPlayerbot.CoaBrain.Engine.mock.FailStatus = 0
 #        Default:     0
 
 AiPlayerbot.CoaBrain.Engine.mock.UsdPerCall = 0
+
+#
+#    CoA text generator (M6): optionally writes a short chat line after the decision brain chooses it.
+#    Failed, late or rejected output uses the prepared template once. Everything is off by default.
+#    Ollama: Provider = openai, Url = http://127.0.0.1:11434/v1/chat/completions, Model = your model.
+#    OpenRouter: Provider = openai, Url = https://openrouter.ai/api/v1/chat/completions, Model = your model.
+#    Anthropic: Provider = anthropic, Url = https://api.anthropic.com/v1/messages.
+#    Prefer AC_AI_PLAYERBOT_COA_BRAIN_TEXT_API_KEY. Hosted player text needs both
+#    Text.SendPlayerText = 1 and Privacy.SendPlayerText = 1; .playerbots optout ai stops it per account.
+#    Check with .playerbots brain text status|test|probe. Text probes never record prompts or responses.
+#
+
+#    AiPlayerbot.CoaBrain.Text.Provider
+#        Description: Text transport: none, openai, anthropic; mock is for offline tests.
+#        Default:     none
+
+AiPlayerbot.CoaBrain.Text.Provider = none
+
+#    AiPlayerbot.CoaBrain.Text.Url
+#        Description: Empty uses the provider default; hosted URLs require HTTPS, loopback HTTP is allowed.
+#        Default:     ""
+
+AiPlayerbot.CoaBrain.Text.Url = ""
+
+#    AiPlayerbot.CoaBrain.Text.Model
+#        Description: Required for openai; empty anthropic uses claude-opus-5.
+#        Default:     ""
+
+AiPlayerbot.CoaBrain.Text.Model = ""
+
+#    AiPlayerbot.CoaBrain.Text.ApiKey
+#        Description: API key; prefer the environment override rather than storing it here.
+#        Default:     ""
+
+AiPlayerbot.CoaBrain.Text.ApiKey = ""
+
+#    AiPlayerbot.CoaBrain.Text.ApiKeyEnv
+#        Description: Optional name of an environment variable containing the API key.
+#        Default:     ""
+
+AiPlayerbot.CoaBrain.Text.ApiKeyEnv = ""
+
+#    AiPlayerbot.CoaBrain.Text.SendPlayerText
+#        Description: Default is 1 for loopback, 0 for hosted; hosted also needs Privacy.SendPlayerText = 1.
+#        Default:     0
+
+# AiPlayerbot.CoaBrain.Text.SendPlayerText = 0
+
+#    AiPlayerbot.CoaBrain.Text.MaxTokens
+#        Description: Output token budget per call (16 to 8192); reasoning also consumes tokens.
+#        Default:     1024
+
+AiPlayerbot.CoaBrain.Text.MaxTokens = 1024
+
+#    AiPlayerbot.CoaBrain.Text.TimeoutMs
+#        Description: Whole call deadline in milliseconds (500 to 60000).
+#        Default:     6000
+
+AiPlayerbot.CoaBrain.Text.TimeoutMs = 6000
+
+#    AiPlayerbot.CoaBrain.Text.Workers
+#        Description: Dedicated text workers (1 to 4); decisions use their own workers.
+#        Default:     1
+
+AiPlayerbot.CoaBrain.Text.Workers = 1
+
+#    AiPlayerbot.CoaBrain.Text.MaxUsdPerDay
+#        Description: Text USD cap per UTC day (0 to 1000), also counted in the global brain cap.
+#        Default:     0.50
+
+AiPlayerbot.CoaBrain.Text.MaxUsdPerDay = 0.50
+
+#    AiPlayerbot.CoaBrain.Text.MaxRequestsPerDay
+#        Description: Text calls per UTC day (0 to 10000000).
+#        Default:     500
+
+AiPlayerbot.CoaBrain.Text.MaxRequestsPerDay = 500
+
+#    AiPlayerbot.CoaBrain.Text.PriceInPerMTok
+#        Description: USD per million input tokens (0 to 1000); default follows the known model table.
+#        Default:     0
+
+# AiPlayerbot.CoaBrain.Text.PriceInPerMTok = 0
+
+#    AiPlayerbot.CoaBrain.Text.PriceOutPerMTok
+#        Description: USD per million output tokens (0 to 1000); default follows the known model table.
+#        Default:     0
+
+# AiPlayerbot.CoaBrain.Text.PriceOutPerMTok = 0
+
+#    AiPlayerbot.CoaBrain.Text.Temperature
+#        Description: Optional sampling temperature (0 to 2); Anthropic only for claude-haiku-4-5.
+#        Default:     ""
+
+AiPlayerbot.CoaBrain.Text.Temperature = ""
+
+#    AiPlayerbot.CoaBrain.Text.ReasoningEffort
+#        Description: Optional OpenAI effort; Anthropic low, medium or high for known models.
+#        Default:     ""
+
+AiPlayerbot.CoaBrain.Text.ReasoningEffort = ""
+
+#    AiPlayerbot.CoaBrain.Text.Anthropic.ServerFallbacks
+#        Description: Enable the documented server fallback policy for claude-opus-5.
+#        Default:     1
+
+AiPlayerbot.CoaBrain.Text.Anthropic.ServerFallbacks = 1
+
+#    AiPlayerbot.CoaBrain.Text.Anthropic.PromptCache
+#        Description: Cache the stable prompt prefix for known Anthropic models.
+#        Default:     1
+
+AiPlayerbot.CoaBrain.Text.Anthropic.PromptCache = 1
+
+#    AiPlayerbot.CoaBrain.Text.Mock.LatencyMs
+#        Description: Test-only latency in milliseconds (0 to 30000).
+#        Default:     150
+
+# AiPlayerbot.CoaBrain.Text.Mock.LatencyMs = 150
+
+#    AiPlayerbot.CoaBrain.Text.Mock.Fault
+#        Description: Test-only injected fault name; mixed exercises multiple failure paths.
+#        Default:     none
+
+# AiPlayerbot.CoaBrain.Text.Mock.Fault = none
+
+#    AiPlayerbot.CoaBrain.Text.Mock.FaultPercent
+#        Description: Test-only faulty call chance (0 to 100).
+#        Default:     0
+
+# AiPlayerbot.CoaBrain.Text.Mock.FaultPercent = 0
+
+#    AiPlayerbot.CoaBrain.Text.Mock.UsdPerCall
+#        Description: Test-only billed dollars per call (0 to 10).
+#        Default:     0
+
+# AiPlayerbot.CoaBrain.Text.Mock.UsdPerCall = 0
+
 
 #
 #    CoA memory: bots remember the players and bots they deal with. For each character, a bot

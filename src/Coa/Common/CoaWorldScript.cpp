@@ -9,6 +9,7 @@
 #include "ActivityDirector.h"
 #include "BrainAdmin.h"
 #include "BrainConfig.h"
+#include "BrainRpgAdvice.h"
 #include "BrainService.h"
 #include "BrainUsageStore.h"
 #include "Chat.h"
@@ -117,6 +118,7 @@ public:
                 BrainUsageStore::Instance().LoadSync();
             }
             BrainService::Apply(brain);
+            BrainRpgAdvice::Instance().OnConfigReload();
         }
     }
 
@@ -153,6 +155,7 @@ public:
             uint64 const now = CoaTime::NowMs();
             BrainUsageStore::Instance().Update(now);
             BrainAdmin::Update(now, brainPrint);
+            BrainRpgAdvice::Instance().Update(now);
         }
 
         UpdateVoiceAndMemory(diff);
@@ -204,7 +207,10 @@ public:
         ActivityDirector::Instance().Shutdown();
         bool const brainRan = BrainService::EverStarted();
         if (brainRan)
+        {
+            BrainRpgAdvice::Instance().Shutdown();
             BrainAdmin::Shutdown();
+        }
         BrainService::Shutdown();
         if (brainRan)
             BrainUsageStore::Instance().Flush();

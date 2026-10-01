@@ -8,7 +8,9 @@
 #include "CoaChatIntent.h"
 #include "CoaText.h"
 #include "NameMatch.h"
+#include <algorithm>
 #include <array>
+#include <exception>
 #include <string_view>
 #include <utility>
 
@@ -59,11 +61,12 @@ void CollapseSpaces(std::string& text)
 // Tabs become spaces. Dropped: other ASCII control bytes and DEL, the C1 controls (U+0080-U+009F), invalid
 // UTF-8 (overlongs, surrogates, stray continuation bytes, cut sequences) and every 4-byte character, which the
 // utf8mb3 texts table cannot hold and the 3.3.5 client cannot draw.
-std::string CleanBytes(std::string_view in)
+std::string CleanBytes(std::string_view in, bool untrusted)
 {
     std::string out;
     out.reserve(in.size());
 
+    uint32 combining = 0;
     std::size_t i = 0;
     while (i < in.size())
     {
@@ -73,7 +76,10 @@ std::string CleanBytes(std::string_view in)
             if (lead == '\t')
                 out += ' ';
             else if (lead >= 0x20 && lead != 0x7F)
+            {
                 out += char(lead);
+                combining = 0;
+            }
             ++i;
             continue;
         }
@@ -127,8 +133,29 @@ std::string CleanBytes(std::string_view in)
         }
 
         bool const c1Control = lead == 0xC2 && static_cast<unsigned char>(in[i + 1]) < 0xA0;
-        if (length < 4 && !c1Control)
-            out.append(in.substr(i, length));
+        uint32 scalar = lead & (length == 2 ? 0x1F : length == 3 ? 0x0F : 0x07);
+        for (std::size_t k = 1; k < length; ++k)
+            scalar = (scalar << 6) | (static_cast<unsigned char>(in[i + k]) & 0x3F);
+        bool const invisible = scalar == 0xAD || scalar == 0x61C || scalar == 0x180E ||
+            (scalar >= 0x200B && scalar <= 0x200F) || (scalar >= 0x202A && scalar <= 0x202E) ||
+            (scalar >= 0x2060 && scalar <= 0x2064) || (scalar >= 0x2066 && scalar <= 0x206F) ||
+            scalar == 0xFEFF || (scalar >= 0xFFF9 && scalar <= 0xFFFB);
+        bool const unicodeSpace = scalar == 0xA0 || scalar == 0x1680 ||
+            (scalar >= 0x2000 && scalar <= 0x200A) || scalar == 0x202F || scalar == 0x205F || scalar == 0x3000;
+        bool const mark = (scalar >= 0x300 && scalar <= 0x36F) || (scalar >= 0x1AB0 && scalar <= 0x1AFF) ||
+            (scalar >= 0x1DC0 && scalar <= 0x1DFF) || (scalar >= 0x20D0 && scalar <= 0x20FF) ||
+            (scalar >= 0xFE20 && scalar <= 0xFE2F);
+        if (untrusted && unicodeSpace)
+        {
+            out += ' ';
+            combining = 0;
+        }
+        else if (length < 4 && !c1Control && !(untrusted && invisible))
+        {
+            if (!untrusted || !mark || (!out.empty() && out.back() != ' ' && combining < 2))
+                out.append(in.substr(i, length));
+            combining = mark ? combining + 1 : 0;
+        }
         i += length;
     }
 
@@ -197,7 +224,7 @@ void StripMarkdown(std::string& text)
         if (c != '*' && c != '_' && c != '`')
             out += c;
 
-    std::size_t const start = out.find_first_not_of("#> ");
+    std::size_t const start = out.find_first_not_of("> ");
     if (start == std::string::npos)
         out.clear();
     else
@@ -213,10 +240,51 @@ bool HasFence(std::string_view text)
            text.find("<|") != std::string_view::npos;
 }
 
-bool HasUrl(std::string const& folded)
+bool AsciiWord(char c)
 {
-    return folded.find("http://") != std::string::npos || folded.find("https://") != std::string::npos ||
-           folded.find("www.") != std::string::npos;
+    return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9');
+}
+
+bool HasUrl(std::string_view text)
+{
+    std::string folded(text);
+    for (char& c : folded)
+        if (c >= 'A' && c <= 'Z')
+            c = char(c + 'a' - 'A');
+    if (folded.find("://") != std::string::npos || folded.find("www.") != std::string::npos)
+        return true;
+    static constexpr std::string_view TLDS[] = {"com", "net", "org", "fr", "io", "gg", "tv", "me", "co",
+        "uk", "de", "eu", "ru", "xyz", "info", "biz", "us", "ca", "be", "ch", "it", "es", "nl", "pl",
+        "to", "ly", "cc", "ws", "app", "dev", "gl"};
+    for (std::size_t i = 0; i < folded.size(); ++i)
+    {
+        if (folded[i] == '.' && i && (AsciiWord(folded[i - 1]) || folded[i - 1] == '-'))
+            for (std::string_view tld : TLDS)
+                if (std::string_view(folded).substr(i + 1).starts_with(tld) &&
+                    (i + 1 + tld.size() == folded.size() || !AsciiWord(folded[i + 1 + tld.size()])))
+                    return true;
+        if (folded[i] < '0' || folded[i] > '9' || (i && AsciiWord(folded[i - 1])))
+            continue;
+        std::size_t pos = i;
+        uint32 groups = 0;
+        for (; groups < 4; ++groups)
+        {
+            std::size_t const start = pos;
+            while (pos < folded.size() && folded[pos] >= '0' && folded[pos] <= '9')
+                ++pos;
+            if (start == pos)
+                break;
+            if (groups < 3)
+            {
+                if (pos == folded.size() || folded[pos] != '.')
+                    break;
+                ++pos;
+            }
+        }
+        if (groups == 4 && (pos == folded.size() || !AsciiWord(folded[pos])))
+            return true;
+    }
+    return false;
 }
 
 // The next word of `text` from `pos`, split like NameMatch::Prepared (on every ASCII byte that is not a letter or
@@ -267,8 +335,12 @@ bool ContainsPhrase(Words const& words, std::string_view folded)
 // Talk about being an AI, or model and provider names, as folded words.
 bool HasAiTalk(Words const& words)
 {
-    static constexpr std::string_view AI_WORDS[] = {"as an ai", "en tant qu ia", "modele de langage", "language model"};
-    static constexpr std::string_view NAMES[] = {"openai", "anthropic", "claude", "typesafe", "jev", "prompt"};
+    static constexpr std::string_view AI_WORDS[] = {"as an ai", "as a language model", "en tant qu ia",
+        "en tant qu intelligence artificielle", "modele de langage", "language model", "intelligence artificielle",
+        "artificial intelligence", "je suis une ia", "i am an ai", "je suis un bot", "i am a bot",
+        "je suis un programme", "i am a program", "reseau de neurones", "neural network"};
+    static constexpr std::string_view NAMES[] = {"openai", "anthropic", "claude", "typesafe", "jev", "prompt",
+        "chatgpt", "gpt", "llm", "deepseek"};
 
     for (std::string_view const phrase : AI_WORDS)
         if (ContainsPhrase(words, phrase))
@@ -317,19 +389,23 @@ bool CoaVoiceSanitizer::Clean(std::string& line, CoaVoiceSanitizeOptions const& 
     if (lineEnd != std::string::npos)
         line.resize(lineEnd);
 
-    line = CleanBytes(line);
+    line = CleanBytes(line, options.untrusted);
     CollapseSpaces(line);
     if (line.empty())
         return Reject(reason, CoaVoiceReject::Empty);
 
     if (options.untrusted)
     {
+        if (std::string_view(".!+-~#@/\\").find(line.front()) != std::string_view::npos)
+            return Reject(reason, CoaVoiceReject::Command);
         // Fences are tested before and after the stripping: a leading ">>>" would otherwise be taken for a quote mark.
         if (HasFence(line))
             return Reject(reason, CoaVoiceReject::Fence);
 
         StripMarkdown(line);
         bool const quoted = StripWrappingQuotes(line);
+        if (!line.empty() && std::string_view(".!+-~#@/\\").find(line.front()) != std::string_view::npos)
+            return Reject(reason, CoaVoiceReject::Command);
         StripLeadingLabel(line);
         if (!quoted)
             StripWrappingQuotes(line);
@@ -347,7 +423,7 @@ bool CoaVoiceSanitizer::Clean(std::string& line, CoaVoiceSanitizeOptions const& 
         NameMatch::Prepared const prepared(line);
         if (options.untrusted && HasAiTalk(prepared.Words()))
             return Reject(reason, CoaVoiceReject::AiTalk);
-        if (options.untrusted && CoaChatIntent::LooksLikeCommand(line))
+        if (options.untrusted && !options.skipCommandCheck && CoaChatIntent::LooksLikeCommand(line))
             return Reject(reason, CoaVoiceReject::Command);
         if (hasBlocked && HasBlockedWord(prepared.Words(), *options.blockedWords))
             return Reject(reason, CoaVoiceReject::Blocked);
@@ -374,4 +450,175 @@ bool CoaVoiceSanitizer::Clean(std::string& line, CoaVoiceSanitizeOptions const& 
     if (reason)
         *reason = CoaVoiceReject::None;
     return true;
+}
+
+bool CoaVoiceSanitizer::Validate(std::string_view line, CoaVoiceValidateOptions const& options,
+                                  CoaVoiceReject* reason)
+{
+    try
+    {
+        if (line.empty() || line.find_first_not_of(' ') == std::string_view::npos)
+            return Reject(reason, CoaVoiceReject::Empty);
+        if (line.size() > options.maxBytes)
+            return Reject(reason, CoaVoiceReject::Invalid);
+        uint32 combining = 0;
+        bool afterSpace = true;
+        for (std::size_t i = 0; i < line.size();)
+        {
+            unsigned char const lead = static_cast<unsigned char>(line[i]);
+            uint32 scalar = lead;
+            std::size_t length = 1;
+            if (lead >= 0x80)
+            {
+                if (lead >= 0xC2 && lead <= 0xDF)
+                    length = 2;
+                else if (lead >= 0xE0 && lead <= 0xEF)
+                    length = 3;
+                else
+                    return Reject(reason, CoaVoiceReject::Invalid);
+                if (i + length > line.size())
+                    return Reject(reason, CoaVoiceReject::Invalid);
+                scalar = lead & (length == 2 ? 0x1F : 0x0F);
+                for (std::size_t k = 1; k < length; ++k)
+                {
+                    unsigned char const byte = static_cast<unsigned char>(line[i + k]);
+                    if ((byte & 0xC0) != 0x80)
+                        return Reject(reason, CoaVoiceReject::Invalid);
+                    scalar = (scalar << 6) | (byte & 0x3F);
+                }
+                if ((length == 2 && scalar < 0x80) || (length == 3 && scalar < 0x800) ||
+                    (scalar >= 0xD800 && scalar <= 0xDFFF))
+                    return Reject(reason, CoaVoiceReject::Invalid);
+            }
+            if (scalar < 0x20 || (scalar >= 0x7F && scalar <= 0x9F) || scalar == 0x2028 || scalar == 0x2029 ||
+                scalar == 0xAD || scalar == 0x61C || scalar == 0x180E ||
+                (scalar >= 0x200B && scalar <= 0x200F) || (scalar >= 0x202A && scalar <= 0x202E) ||
+                (scalar >= 0x2060 && scalar <= 0x2064) || (scalar >= 0x2066 && scalar <= 0x206F) ||
+                scalar == 0xFEFF || (scalar >= 0xFFF9 && scalar <= 0xFFFB) || scalar == 0xA0 ||
+                scalar == 0x1680 || (scalar >= 0x2000 && scalar <= 0x200A) || scalar == 0x202F ||
+                scalar == 0x205F || scalar == 0x3000 || (scalar >= 0xE000 && scalar <= 0xF8FF) ||
+                (scalar >= 0xFDD0 && scalar <= 0xFDEF) || (scalar >= 0xFFF0 && scalar <= 0xFFFB) ||
+                scalar == 0xFFFD || scalar == 0xFFFE || scalar == 0xFFFF)
+                return Reject(reason, CoaVoiceReject::Invalid);
+            bool const mark = (scalar >= 0x300 && scalar <= 0x36F) || (scalar >= 0x1AB0 && scalar <= 0x1AFF) ||
+                (scalar >= 0x1DC0 && scalar <= 0x1DFF) || (scalar >= 0x20D0 && scalar <= 0x20FF) ||
+                (scalar >= 0xFE20 && scalar <= 0xFE2F);
+            if (mark && (afterSpace || ++combining > 2))
+                return Reject(reason, CoaVoiceReject::Invalid);
+            if (!mark)
+                combining = 0;
+            afterSpace = scalar == 0x20;
+            i += length;
+        }
+        std::size_t const first = line.find_first_not_of(' ');
+        if (std::string_view(".!+-~#@/\\").find(line[first]) != std::string_view::npos)
+            return Reject(reason, CoaVoiceReject::Command);
+        for (std::size_t i = 0; i < line.size(); ++i)
+        {
+            if (line[i] == '|')
+                return Reject(reason, CoaVoiceReject::Invalid);
+            if (line[i] == '{' && options.allowNameToken && line.substr(i).starts_with("{name}"))
+            {
+                i += 5;
+                continue;
+            }
+            if (line[i] == '{' || line[i] == '}')
+                return Reject(reason, CoaVoiceReject::Invalid);
+        }
+        if (HasFence(line))
+            return Reject(reason, CoaVoiceReject::Fence);
+        if (HasUrl(line))
+            return Reject(reason, CoaVoiceReject::Url);
+        NameMatch::Prepared const prepared{std::string(line)};
+        if (HasAiTalk(prepared.Words()))
+            return Reject(reason, CoaVoiceReject::AiTalk);
+        if (options.blockedWords && HasBlockedWord(prepared.Words(), *options.blockedWords))
+            return Reject(reason, CoaVoiceReject::Blocked);
+        if (options.checkCommand && CoaChatIntent::LooksLikeCommand(std::string(line)))
+            return Reject(reason, CoaVoiceReject::Command);
+        if (reason)
+            *reason = CoaVoiceReject::None;
+        return true;
+    }
+    catch (std::exception const&)
+    {
+        return Reject(reason, CoaVoiceReject::Invalid);
+    }
+    catch (...)
+    {
+        return Reject(reason, CoaVoiceReject::Invalid);
+    }
+}
+
+bool CoaVoiceSanitizer::Validate(std::string_view line)
+{
+    return Validate(line, {});
+}
+
+bool CoaVoiceSanitizer::CleanGenerated(std::string& line, CoaVoiceSanitizeOptions const& options,
+                                      CoaVoiceReject* reason)
+{
+    try
+    {
+        // A pipe must never disappear only because a later length cut removed its doubled escape.
+        if (line.find('|') != std::string::npos)
+            return Reject(reason, CoaVoiceReject::Invalid);
+        CoaVoiceSanitizeOptions clean = options;
+        clean.untrusted = true;
+        return Clean(line, clean, reason) &&
+            Validate(line, {clean.maxBytes, clean.blockedWords, !clean.skipCommandCheck, clean.allowNameToken}, reason);
+    }
+    catch (std::exception const&)
+    {
+        return Reject(reason, CoaVoiceReject::Invalid);
+    }
+    catch (...)
+    {
+        return Reject(reason, CoaVoiceReject::Invalid);
+    }
+}
+
+bool CoaVoiceTextFinisher::Finish(std::string& line, std::string& reason) const
+{
+    try
+    {
+        CoaVoiceReject reject = CoaVoiceReject::None;
+        uint32 const limit = allowNameToken ? std::max<uint32>(32, maxBytes > 24 ? maxBytes - 24 : 0) : maxBytes;
+        bool accepted = CoaVoiceSanitizer::CleanGenerated(line, {limit, true, &blockedWords, true, allowNameToken}, &reject);
+        uint32 tokens = 0;
+        for (std::size_t pos = 0; (pos = line.find("{name}", pos)) != std::string::npos; pos += 6)
+            ++tokens;
+        if (tokens > 2)
+        {
+            accepted = false;
+            reject = CoaVoiceReject::Invalid;
+        }
+        reason = CoaVoiceRejectName(reject);
+        return accepted;
+    }
+    catch (std::exception const&)
+    {
+        reason = "invalid";
+        return false;
+    }
+    catch (...)
+    {
+        reason = "invalid";
+        return false;
+    }
+}
+
+char const* CoaVoiceRejectName(CoaVoiceReject reason)
+{
+    switch (reason)
+    {
+        case CoaVoiceReject::None: return "none";
+        case CoaVoiceReject::Empty: return "empty";
+        case CoaVoiceReject::Blocked: return "blocked";
+        case CoaVoiceReject::AiTalk: return "ai-talk";
+        case CoaVoiceReject::Url: return "url";
+        case CoaVoiceReject::Command: return "command";
+        case CoaVoiceReject::Fence: return "fence";
+        default: return "invalid";
+    }
 }

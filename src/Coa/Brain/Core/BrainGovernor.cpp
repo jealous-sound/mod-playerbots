@@ -161,7 +161,8 @@ BrainError BrainGovernor::Check(EngineState const& engine, std::string_view situ
         return BrainError::Exhausted;
     if (engine.authFailed)
         return BrainError::AuthFailed;
-    if (engine.today.requests >= engine.capRequests || engine.today.usdMicros >= engine.capUsdMicros)
+    if (uint64(engine.today.requests) + (engine.textRow ? engine.textCallsInFlight : 0) >= engine.capRequests ||
+        engine.today.usdMicros >= engine.capUsdMicros)
         return BrainError::Exhausted;
     if (probe)
         return BrainError::None;
@@ -223,6 +224,7 @@ void BrainGovernor::Configure(BrainConfig const& config)
             state.name = engineConfig.name;
             state.today = FreshRow(day, engineConfig.name);
         }
+        state.textRow = false;
         state.configured = true;
         state.usable = engineConfig.usable;
         state.problem = engineConfig.problem;
@@ -230,6 +232,34 @@ void BrainGovernor::Configure(BrainConfig const& config)
         state.capUsdMicros = engineConfig.maxUsdMicrosPerDay;
         state.capRequests = engineConfig.maxRequestsPerDay;
         // The new config may have fixed the key or the URL.
+        state.authFailed = false;
+        state.misconfigured = false;
+        state.markStatus = 0;
+        state.disabledSituations.clear();
+        ordered.push_back(std::move(state));
+    }
+    if (config.text.provider != BrainTextProvider::None)
+    {
+        auto const it = std::find_if(engines.begin(), engines.end(),
+                                    [](EngineState const& e) { return e.name == BRAIN_TEXT_ENGINE; });
+        EngineState state;
+        if (it != engines.end())
+        {
+            state = std::move(*it);
+            engines.erase(it);
+        }
+        else
+        {
+            state.name = BRAIN_TEXT_ENGINE;
+            state.today = FreshRow(day, state.name);
+        }
+        state.textRow = true;
+        state.configured = true;
+        state.usable = config.text.usable;
+        state.problem = config.text.problem;
+        state.dialect = config.text.providerName;
+        state.capUsdMicros = config.text.maxUsdMicrosPerDay;
+        state.capRequests = config.text.maxRequestsPerDay;
         state.authFailed = false;
         state.misconfigured = false;
         state.markStatus = 0;
@@ -267,20 +297,31 @@ BrainSubmit BrainGovernor::Admit(BrainAdmitRequest const& request, uint64 nowMs)
     uint64 const limit = capMicros * laneStopPercent[lane] / 100;
     if (global.usdMicros + reservedMicros + request.estimateMicros > limit)
         return BrainSubmit::OverBudget;
+    EngineState const* text = request.textJob ? FindEngine(BRAIN_TEXT_ENGINE) : nullptr;
+    if (request.textJob && text)
+    {
+        uint64 const textLimit = text->capUsdMicros * laneStopPercent[lane] / 100;
+        if (text->today.usdMicros + textReservedMicros + request.estimateMicros > textLimit ||
+            uint64(text->today.requests) + text->textCallsInFlight >= text->capRequests)
+            return BrainSubmit::OverBudget;
+    }
     if (request.probe && probes.requests + probesInFlight >= probeCap)
         return BrainSubmit::OverBudget;
 
     bool usable = false;
-    if (!request.forceEngine.empty())
+    if (request.textJob)
+        usable = text && Check(*text, request.situation, request.probe, nowMs) == BrainError::None;
+    else if (!request.forceEngine.empty())
     {
         EngineState const* engine = FindEngine(request.forceEngine);
-        usable = engine && Check(*engine, request.situation, true, nowMs) == BrainError::None;
+        usable = engine && !engine->textRow && Check(*engine, request.situation, true, nowMs) == BrainError::None;
     }
     else
     {
         for (EngineState const& engine : engines)
         {
-            if (engine.configured && Check(engine, request.situation, request.probe, nowMs) == BrainError::None)
+            if (engine.configured && !engine.textRow &&
+                Check(engine, request.situation, request.probe, nowMs) == BrainError::None)
             {
                 usable = true;
                 break;
@@ -296,15 +337,19 @@ BrainSubmit BrainGovernor::Admit(BrainAdmitRequest const& request, uint64 nowMs)
     // Commit: nothing above changed any state.
     tokens -= 1.0;
     reservedMicros += request.estimateMicros;
+    if (request.textJob)
+        textReservedMicros += request.estimateMicros;
     if (request.probe)
         ++probesInFlight;
     return BrainSubmit::Queued;
 }
 
-void BrainGovernor::Settle(uint64 reserved, bool probe)
+void BrainGovernor::Settle(uint64 reserved, bool probe, bool textJob)
 {
     std::lock_guard<std::mutex> guard(lock);
     reservedMicros -= std::min(reservedMicros, reserved);
+    if (textJob)
+        textReservedMicros -= std::min(textReservedMicros, reserved);
     if (probe && probesInFlight)
         --probesInFlight;
 }
@@ -333,6 +378,8 @@ bool BrainGovernor::Acquire(std::string_view engineName, std::string_view situat
         return false;
     }
 
+    if (engine->textRow)
+        ++engine->textCallsInFlight;
     if (!probe)
     {
         if (engine->breaker == BrainBreakerState::Open && engine->openUntilMs <= nowMs)
@@ -356,6 +403,8 @@ void BrainGovernor::Record(std::string_view engineName, std::string_view situati
         EngineState* engine = FindEngine(engineName);
         if (!engine)
             return;
+        if (engine->textRow && engine->textCallsInFlight)
+            --engine->textCallsInFlight;
         if (!outcome.madeCall)
         {
             engine->trialInFlight = false;
@@ -465,14 +514,15 @@ uint32 BrainGovernor::ExpectedMs(std::string_view forceEngine, uint64 nowMs) con
     if (!forceEngine.empty())
     {
         EngineState const* engine = FindEngine(forceEngine);
-        if (engine && Check(*engine, std::string_view(), true, nowMs) == BrainError::None)
+        if (engine && !engine->textRow && Check(*engine, std::string_view(), true, nowMs) == BrainError::None)
             chosen = engine;
     }
     else
     {
         for (EngineState const& engine : engines)
         {
-            if (engine.configured && Check(engine, std::string_view(), false, nowMs) == BrainError::None)
+            if (engine.configured && !engine.textRow &&
+                Check(engine, std::string_view(), false, nowMs) == BrainError::None)
             {
                 chosen = &engine;
                 break;
@@ -484,6 +534,16 @@ uint32 BrainGovernor::ExpectedMs(std::string_view forceEngine, uint64 nowMs) con
     if (chosen->latency.Count() >= BrainLatency::MinSamples)
         return chosen->latency.Percentile(95);
     return connectTimeoutMs / 2;
+}
+
+uint32 BrainGovernor::ExpectedTextMs(uint64 nowMs, uint32 fallbackMs) const
+{
+    std::lock_guard<std::mutex> guard(lock);
+    const_cast<BrainGovernor*>(this)->RolloverIfNeeded();
+    EngineState const* engine = FindEngine(BRAIN_TEXT_ENGINE);
+    if (!engine || Check(*engine, std::string_view(), false, nowMs) != BrainError::None)
+        return 0;
+    return engine->latency.Count() >= BrainLatency::MinSamples ? engine->latency.Percentile(95) : fallbackMs;
 }
 
 std::vector<BrainUsageRow> BrainGovernor::TakeDirtyRows()

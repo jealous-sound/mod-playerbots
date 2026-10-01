@@ -17,6 +17,7 @@
 #include "CoaEpoch.h"
 #include "CoaHooks.h"
 #include "CoaVoiceConfig.h"
+#include "CoaVoiceEvent.h"
 #include "Common.h"
 #include "CreatureData.h"
 #include "DBCStores.h"
@@ -3055,6 +3056,8 @@ std::vector<Player*> PlayerbotAI::GetAllPlayersInGroup()
 // gives that logger an appender.
 void PlayerbotAI::LogChat(std::string_view how, std::string const& msg) const
 {
+    if (CoaVoiceEmit::SuppressesChatLogging())
+        return;
     LOG_INFO("playerbots.chat", "Player {} {}: {}", bot->GetName(), how, msg);
 }
 

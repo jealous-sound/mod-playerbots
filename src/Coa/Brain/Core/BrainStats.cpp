@@ -70,6 +70,51 @@ char const* BrainFallbackName(BrainFallback fallback)
     }
 }
 
+char const* BrainTextFallbackName(BrainTextFallback fallback)
+{
+    switch (fallback)
+    {
+        case BrainTextFallback::Submit:
+            return "submit";
+        case BrainTextFallback::Timeout:
+            return "timeout";
+        case BrainTextFallback::Error:
+            return "error";
+        case BrainTextFallback::Refused:
+            return "refused";
+        case BrainTextFallback::Invalid:
+            return "invalid";
+        case BrainTextFallback::Repeat:
+            return "repeat";
+        case BrainTextFallback::Filtered:
+            return "filtered";
+        case BrainTextFallback::Busy:
+            return "busy";
+        case BrainTextFallback::SenderCap:
+            return "sender-cap";
+        case BrainTextFallback::OptOut:
+            return "opt-out";
+        default:
+            return "unknown";
+    }
+}
+
+BrainTextFallback BrainTextFallbackOf(BrainError error)
+{
+    switch (error)
+    {
+        case BrainError::Refused:
+            return BrainTextFallback::Refused;
+        case BrainError::Rejected:
+            return BrainTextFallback::Invalid;
+        case BrainError::Timeout:
+        case BrainError::TooLate:
+            return BrainTextFallback::Timeout;
+        default:
+            return BrainTextFallback::Error;
+    }
+}
+
 BrainStats& BrainStats::Instance()
 {
     static BrainStats instance;
@@ -188,6 +233,85 @@ void AppendJson(std::string& out)
     AppendNumber(out, stats.stale.load(std::memory_order_relaxed));
     out += ",\"fallbacks\":";
     AppendCounters(out, stats.fallbacks, [](std::size_t i) { return BrainFallbackName(BrainFallback(i)); });
+    out += '}';
+
+    out += ",\"text\":{\"provider\":";
+    BrainJson::AppendString(out, config->text.providerName);
+    if (config->text.provider != BrainTextProvider::None)
+    {
+        BrainEngineStatus text;
+        for (BrainEngineStatus const& engine : engines)
+            if (engine.name == BRAIN_TEXT_ENGINE)
+                text = engine;
+        out += ",\"model\":";
+        BrainJson::AppendString(out, config->text.model);
+        out += ",\"usable\":";
+        AppendBool(out, brain->TextUsable());
+        out += ",\"problem\":";
+        BrainJson::AppendString(out, config->text.problem);
+        out += ",\"workers\":";
+        AppendNumber(out, brain->TextWorkerCount());
+        out += ",\"queue\":{\"player\":";
+        AppendNumber(out, brain->TextQueueDepth(BrainLane::Player));
+        out += ",\"organizer\":";
+        AppendNumber(out, brain->TextQueueDepth(BrainLane::Organizer));
+        out += ",\"ambient\":";
+        AppendNumber(out, brain->TextQueueDepth(BrainLane::Ambient));
+        out += "},\"engine\":{\"breaker\":";
+        BrainJson::AppendString(out, BrainBreakerName(text.breaker));
+        out += ",\"exhausted\":";
+        AppendBool(out, text.exhausted);
+        out += ",\"auth_failed\":";
+        AppendBool(out, text.authFailed);
+        out += ",\"misconfigured\":";
+        AppendBool(out, text.misconfigured);
+        out += ",\"requests\":";
+        AppendNumber(out, text.today.requests);
+        out += ",\"failures\":";
+        AppendNumber(out, text.today.failures);
+        out += ",\"usd_micros\":";
+        AppendNumber(out, text.today.usdMicros);
+        out += ",\"cap_micros\":";
+        AppendNumber(out, text.capUsdMicros);
+        out += ",\"p50_ms\":";
+        AppendNumber(out, text.p50Ms);
+        out += ",\"p95_ms\":";
+        AppendNumber(out, text.p95Ms);
+        out += "},\"voice\":{\"chosen\":";
+        AppendNumber(out, stats.textChosen.load(std::memory_order_relaxed));
+        out += ",\"asked\":";
+        AppendNumber(out, stats.textAsked.load(std::memory_order_relaxed));
+        out += ",\"generated\":";
+        AppendNumber(out, stats.textGenerated.load(std::memory_order_relaxed));
+        out += ",\"sent\":";
+        AppendNumber(out, stats.textSent.load(std::memory_order_relaxed));
+        out += ",\"stale\":";
+        AppendNumber(out, stats.textStale.load(std::memory_order_relaxed));
+        out += ",\"fallbacks\":";
+        AppendCounters(out, stats.textFallbacks,
+                       [](std::size_t i) { return BrainTextFallbackName(BrainTextFallback(i)); });
+        out += "},\"banter\":{\"exchanges\":";
+        AppendNumber(out, stats.banterExchanges.load(std::memory_order_relaxed));
+        out += ",\"openers\":";
+        AppendNumber(out, stats.banterOpeners.load(std::memory_order_relaxed));
+        out += ",\"text\":";
+        AppendNumber(out, stats.banterText.load(std::memory_order_relaxed));
+        out += ",\"answers\":";
+        AppendNumber(out, stats.banterAnswers.load(std::memory_order_relaxed));
+        out += ",\"skipped\":";
+        AppendNumber(out, stats.banterSkipped.load(std::memory_order_relaxed));
+        out += ",\"emotes\":";
+        AppendNumber(out, stats.banterEmotes.load(std::memory_order_relaxed));
+        out += "},\"rpg\":{\"asked\":";
+        AppendNumber(out, stats.rpgAsked.load(std::memory_order_relaxed));
+        out += ",\"answered\":";
+        AppendNumber(out, stats.rpgAnswered.load(std::memory_order_relaxed));
+        out += ",\"applied\":";
+        AppendNumber(out, stats.rpgApplied.load(std::memory_order_relaxed));
+        out += ",\"entries\":";
+        AppendNumber(out, stats.rpgEntries.load(std::memory_order_relaxed));
+        out += '}';
+    }
     out += '}';
 
     BrainCache const& cache = BrainCache::Instance();

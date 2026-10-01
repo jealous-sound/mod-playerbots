@@ -6,6 +6,8 @@
 
 #include "BrainConfig.h"
 #include "BrainHttpClient.h"
+#include "MockTextEngine.h"
+#include "TextModelCaps.h"
 #include "CoaThread.h"
 #include "Config.h"
 #include "Log.h"
@@ -217,7 +219,170 @@ BrainEngineConfig LoadEngine(std::string const& name, bool privacySendPlayerText
     engine.usable = engine.problem.empty();
     return engine;
 }
+BrainTextConfig LoadText(bool privacySendPlayerText)
+{
+    BrainTextConfig config;
+    std::string const prefix = Prefix + "Text.";
+    auto text = [&prefix](char const* key, std::string const& def)
+    { return Trimmed(sConfigMgr->GetOption<std::string>(prefix + key, def, false)); };
+    std::string const provider = AsciiLower(Trimmed(sConfigMgr->GetOption<std::string>(prefix + "Provider", "none")));
+    if (provider.empty() || provider == "none")
+        return config;
+    if (provider == "openai")
+        config.provider = BrainTextProvider::OpenAi;
+    else if (provider == "anthropic")
+        config.provider = BrainTextProvider::Anthropic;
+    else if (provider == "mock")
+        config.provider = BrainTextProvider::Mock;
+    else
+    {
+        config.problem = "unknown provider '" + provider + "' (none, openai, anthropic or mock)";
+        LOG_ERROR("playerbots.brain", "CoA brain text generator: {}", config.problem);
+        return config;
+    }
+    config.providerName = BrainTextProviderName(config.provider);
+    auto problem = [&config](std::string why)
+    {
+        if (config.problem.empty())
+            config.problem = std::move(why);
+    };
+    bool const mock = config.provider == BrainTextProvider::Mock;
+    bool const anthropic = config.provider == BrainTextProvider::Anthropic;
+    config.url = text("Url", mock ? "" : anthropic ? "https://api.anthropic.com/v1/messages"
+                                                 : "http://127.0.0.1:11434/v1/chat/completions");
+    if (config.url.empty() && !mock)
+        config.url = anthropic ? "https://api.anthropic.com/v1/messages"
+                               : "http://127.0.0.1:11434/v1/chat/completions";
+    if (!mock)
+    {
+        BrainUrl url;
+        std::string error;
+        if (!ParseBrainUrl(config.url, url, error))
+            problem("bad URL: " + error);
+        else
+        {
+            config.tls = url.tls;
+            config.host = url.host;
+            config.port = url.port;
+            config.target = url.target;
+            config.hostIsIp = url.hostIsIp;
+            config.loopback = url.loopback;
+            if (!url.loopback && !url.tls)
+                problem("hosted providers need https");
+        }
+    }
+    else
+        config.tls = false;
+    config.model = text("Model", mock ? "mock" : anthropic ? "claude-opus-5" : "");
+    if (config.model.empty() && (anthropic || mock))
+        config.model = anthropic ? "claude-opus-5" : "mock";
+    if (config.model.empty())
+        problem("no model (set AiPlayerbot.CoaBrain.Text.Model)");
+
+    std::string const keyName = prefix + "ApiKey";
+    std::string const keyEnvName = BrainConfig::EnvVarName(keyName);
+    std::string const customEnv = text("ApiKeyEnv", "");
+    if (!customEnv.empty())
+        if (char const* value = std::getenv(customEnv.c_str()); value && *value)
+        {
+            config.apiKey = Trimmed(value);
+            config.apiKeySource = "env " + customEnv;
+        }
+    if (config.apiKey.empty())
+    {
+        config.apiKey = text("ApiKey", "");
+        if (config.apiKey.empty())
+            config.apiKeySource.clear();
+        else if (std::getenv(keyEnvName.c_str()))
+            config.apiKeySource = "env " + keyEnvName;
+        else
+        {
+            config.apiKeySource = "conf";
+            LOG_WARN("playerbots.brain", "CoA brain: the text API key is written in the conf file; prefer {}",
+                     keyEnvName);
+        }
+    }
+    if (!mock && config.apiKey.empty() && (anthropic || !config.loopback))
+        problem("no API key (set " + keyName + " or the environment variable " + keyEnvName + ")");
+    bool const sendFlag = sConfigMgr->GetOption<bool>(prefix + "SendPlayerText", config.loopback, false);
+    config.sendPlayerText = sendFlag && (config.loopback || privacySendPlayerText);
+    if (config.sendPlayerText && !config.loopback && !mock)
+        LOG_WARN("playerbots.brain", "CoA brain: the text generator sends players' words to {}", config.host);
+
+    config.maxTokens = Int(prefix + "MaxTokens", 1024, 16, 8192, false);
+    config.timeoutMs = Int(prefix + "TimeoutMs", 6000, 500, 60000, false);
+    config.workers = Int(prefix + "Workers", 1, 1, 4, false);
+    config.maxUsdMicrosPerDay = Micros(Decimal(prefix + "MaxUsdPerDay", 0.5, 0.0, 1000.0, false));
+    config.maxRequestsPerDay = Int(prefix + "MaxRequestsPerDay", 500, 0, 10000000, false);
+    TextModelCaps const caps = anthropic ? TextModelCaps::For(config.model) : TextModelCaps{};
+    config.priceInPerMTok = Decimal(prefix + "PriceInPerMTok", caps.priceInPerMTok, 0.0, 1000.0, false);
+    config.priceOutPerMTok = Decimal(prefix + "PriceOutPerMTok", caps.priceOutPerMTok, 0.0, 1000.0, false);
+    if (anthropic && !caps.known)
+        LOG_WARN("playerbots.brain", "CoA brain: no price known for model {}: spend is counted from the reported cost "
+                 "and the byte estimate only", config.model);
+    std::string const temperature = text("Temperature", "");
+    if (!temperature.empty())
+    {
+        Optional<double> const value = Acore::StringTo<double>(temperature);
+        if (value && std::isfinite(*value))
+        {
+            config.hasTemperature = true;
+            config.temperature = float(std::clamp(*value, 0.0, 2.0));
+        }
+    }
+    config.reasoningEffort = AsciiLower(text("ReasoningEffort", ""));
+    if (!config.reasoningEffort.empty() &&
+        ((config.reasoningEffort.size() > 32 ||
+          config.reasoningEffort.find_first_not_of("abcdefghijklmnopqrstuvwxyz0123456789_-") != std::string::npos) ||
+         (anthropic && config.reasoningEffort != "low" && config.reasoningEffort != "medium" &&
+          config.reasoningEffort != "high")))
+    {
+        LOG_ERROR("playerbots.brain", "CoA brain: invalid Text.ReasoningEffort '{}' ignored", config.reasoningEffort);
+        config.reasoningEffort.clear();
+    }
+    config.anthropicServerFallbacks = sConfigMgr->GetOption<bool>(prefix + "Anthropic.ServerFallbacks", true, false);
+    config.anthropicPromptCache = sConfigMgr->GetOption<bool>(prefix + "Anthropic.PromptCache", true, false);
+    if (mock)
+    {
+        config.mockLatencyMs = Int(prefix + "Mock.LatencyMs", 150, 0, 30000, false);
+        config.mockFault = AsciiLower(text("Mock.Fault", "none"));
+        MockTextFault const fault = MockTextFaultFromName(config.mockFault);
+        if (config.mockFault != MockTextFaultName(fault))
+        {
+            LOG_ERROR("playerbots.brain", "CoA brain: unknown Text.Mock.Fault '{}' ignored", config.mockFault);
+            config.mockFault = "none";
+        }
+        config.mockFaultPercent = Int(prefix + "Mock.FaultPercent", 0, 0, 100, false);
+        config.mockUsdMicrosPerCall = Micros(Decimal(prefix + "Mock.UsdPerCall", 0.0, 0.0, 10.0, false));
+    }
+    config.usable = config.problem.empty();
+    if (config.usable)
+        LOG_INFO("playerbots.brain", "CoA brain text generator: provider {}, model {}, host {}, budget ${:.2f}/day, "
+                 "workers {}", config.providerName, config.model, config.host, double(config.maxUsdMicrosPerDay) / 1e6,
+                 config.workers);
+    else
+        LOG_INFO("playerbots.brain", "CoA brain text generator: provider {} unusable: {}", config.providerName,
+                 config.problem);
+    return config;
+}
 }  // namespace
+
+char const* BrainTextProviderName(BrainTextProvider provider)
+{
+    switch (provider)
+    {
+        case BrainTextProvider::None:
+            return "none";
+        case BrainTextProvider::OpenAi:
+            return "openai";
+        case BrainTextProvider::Anthropic:
+            return "anthropic";
+        case BrainTextProvider::Mock:
+            return "mock";
+        default:
+            return "none";
+    }
+}
 
 char const* BrainDialectName(BrainDialect dialect)
 {
@@ -318,6 +483,11 @@ std::shared_ptr<BrainConfig const> BrainConfig::Load(bool forceEnable)
         if (item.empty())
             continue;
         std::string const name = AsciiLower(item);
+        if (name == BRAIN_TEXT_ENGINE)
+        {
+            LOG_ERROR("playerbots.brain", "CoA brain: engine name 'text' is reserved for the text generator");
+            continue;
+        }
         if (!ValidEngineName(name))
         {
             LOG_ERROR("playerbots.brain",
@@ -331,6 +501,13 @@ std::shared_ptr<BrainConfig const> BrainConfig::Load(bool forceEnable)
     }
     for (std::string const& name : names)
         config->engines.push_back(LoadEngine(name, config->privacySendPlayerText));
+
+    config->useRpgNext = sConfigMgr->GetOption<bool>(Prefix + "Use.RpgNext", false);
+    config->useEmote = sConfigMgr->GetOption<bool>(Prefix + "Use.Emote", false);
+    config->rpgInfluence = Fraction(Prefix + "Rpg.Influence", 0.5f);
+    config->rpgAdviceTtlSeconds = Int(Prefix + "Rpg.AdviceTtlSeconds", 600, 60, 86400);
+    config->rpgMinBots = Int(Prefix + "Rpg.MinBots", 3, 1, 100);
+    config->text = LoadText(config->privacySendPlayerText);
 
     std::string chain;
     for (BrainEngineConfig const& engine : config->engines)

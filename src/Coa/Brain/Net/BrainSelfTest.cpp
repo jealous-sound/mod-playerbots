@@ -10,6 +10,7 @@
 #include "IDecisionEngine.h"
 #include "SystemOneDialects.h"
 #include "SystemOneWire.h"
+#include "TextWire.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
@@ -868,6 +869,164 @@ void NoteDrift(BrainSelfTest::Report& report, std::string const& fileName, std::
         return;
     }
 }
+
+void RunTextTests(BrainSelfTest::Report& report)
+{
+    BrainTextConfig config;
+    config.priceInPerMTok = 5;
+    config.priceOutPerMTok = 25;
+    auto parse = [&](char const* name, bool anthropic, char const* body, BrainError expected,
+                     char const* expectedText = "", char const* finish = "")
+    {
+        TextReply reply;
+        if (anthropic)
+            TextWire::ParseAnthropicResponse(config, body, reply);
+        else
+            TextWire::ParseOpenAiResponse(config, body, reply);
+        std::string why;
+        if (reply.error != expected)
+            why = std::string("expected ") + BrainErrorName(expected) + ", got " + BrainErrorName(reply.error);
+        else if (reply.text != expectedText)
+            why = "wrong text";
+        else if (*finish && reply.finishReason != finish)
+            why = "wrong finish reason";
+        Record(report, std::string("text-") + name, why);
+        return reply;
+    };
+    TextReply openai = parse("openai-ok", false,
+        R"({"model":"m","choices":[{"message":{"content":"Salut {name} !","refusal":null},"finish_reason":"st)"
+        R"(op"}],"usage":{"prompt_tokens":812,"completion_tokens":14,"cost":0.0000123}})",
+        BrainError::None, "Salut {name} !", "stop");
+    Record(report, "text-openai-price", openai.usage.inputTokens == 812 && openai.usage.outputTokens == 14 &&
+        openai.usage.usdMicros == 13 && openai.usage.costReported ? "" : "wrong usage");
+    parse("openai-parts", false,
+        R"({"choices":[{"message":{"content":[{"type":"text","text":"Bon"},{"type":"text","text":"jour"}]}}]})",
+        BrainError::None, "Bonjour");
+    parse("openai-length-empty", false,
+        R"({"choices":[{"message":{"content":""},"finish_reason":"length"}]})", BrainError::Refused);
+    parse("openai-length-text", false,
+        R"({"choices":[{"message":{"content":"Salut"},"finish_reason":"length"}]})",
+        BrainError::None, "Salut", "length");
+    parse("openai-refusal", false,
+        R"({"choices":[{"message":{"content":"Salut","refusal":"declined"},"finish_reason":"stop"}]})",
+        BrainError::Refused);
+    parse("openai-filter", false,
+        R"({"choices":[{"message":{"content":"Salut"},"finish_reason":"content_filter"}]})", BrainError::Refused);
+    parse("openai-no-choices", false, R"({"choices":[]})", BrainError::BadResponse);
+    parse("anthropic-ok", true,
+        R"({"model":"claude-opus-5","content":[{"type":"text","text":"Salut {name} !"}],"stop_reason":"end_tu)"
+        R"(rn","usage":{"input_tokens":812,"output_tokens":20,"cache_creation_input_tokens":0,"cache_read_inp)"
+        R"(ut_tokens":0}})",
+        BrainError::None, "Salut {name} !", "end_turn");
+    parse("anthropic-refusal", true,
+        R"({"content":[{"type":"text","text":"Salut"}],"stop_reason":"refusal"})", BrainError::Refused);
+    parse("anthropic-maxtokens-empty", true,
+        R"({"content":[],"stop_reason":"max_tokens"})", BrainError::Refused);
+    parse("anthropic-maxtokens-text", true,
+        R"({"content":[{"type":"text","text":"Salut"}],"stop_reason":"max_tokens"})",
+        BrainError::None, "Salut", "max_tokens");
+    parse("anthropic-thinking-skipped", true,
+        R"({"content":[{"type":"thinking","thinking":"secret"},{"type":"text","text":"Salut"}],"stop_reason":)"
+        R"("end_turn"})",
+        BrainError::None, "Salut", "end_turn");
+    parse("anthropic-pause", true,
+        R"({"content":[{"type":"text","text":"Salut"}],"stop_reason":"pause_turn"})", BrainError::BadResponse);
+    TextReply cache = parse("anthropic-cache-body", true,
+        R"({"content":[{"type":"text","text":"Salut"}],"stop_reason":"end_turn","usage":{"input_tokens":100,")"
+        R"(output_tokens":20,"cache_read_input_tokens":1000,"cache_creation_input_tokens":500}})",
+        BrainError::None, "Salut");
+    Record(report, "text-anthropic-cache-price", cache.usage.usdMicros == 4625 &&
+        cache.usage.inputTokens == 1600 && cache.usage.outputTokens == 20 ? "" : "wrong cache usage");
+    TextReply fallback = parse("anthropic-fallback-body", true,
+        R"({"content":[{"type":"text","text":"Salut"}],"stop_reason":"end_turn","usage":{"input_tokens":1,)"
+        R"("output_tokens":1,"iterations":[{"model":"claude-opus-5","input_tokens":100,"output_tokens":20},)"
+        R"({"model":"claude-sonnet-5","input_tokens":200,"output_tokens":30}]}})",
+        BrainError::None, "Salut");
+    Record(report, "text-anthropic-fallback-price", fallback.usage.inputTokens == 300 &&
+        fallback.usage.outputTokens == 50 && fallback.usage.usdMicros == 2750 ? "" : "wrong fallback accounting");
+    struct StatusCase
+    {
+        char const* name;
+        bool anthropic;
+        int32 status;
+        char const* message;
+        BrainError expected;
+    };
+    StatusCase const statuses[]{
+        {"openai-401", false, 401, "bad key", BrainError::AuthFailed},
+        {"openai-402", false, 402, "credits", BrainError::Exhausted},
+        {"openai-429", false, 429, "rate limit", BrainError::Exhausted},
+        {"openai-404", false, 404, "missing", BrainError::Misconfigured},
+        {"openai-400", false, 400, "bad request", BrainError::BadRequest},
+        {"openai-quota", false, 400, "insufficient_quota", BrainError::Exhausted},
+        {"openai-503", false, 503, "busy", BrainError::ServerError},
+        {"anthropic-401", true, 401, "bad key", BrainError::AuthFailed},
+        {"anthropic-402", true, 402, "credits", BrainError::Exhausted},
+        {"anthropic-429", true, 429, "rate limit", BrainError::Exhausted},
+        {"anthropic-404", true, 404, "model", BrainError::Misconfigured},
+        {"anthropic-credit", true, 400, "Your credit balance is too low", BrainError::Exhausted},
+        {"anthropic-400", true, 400, "bad request", BrainError::BadRequest},
+        {"anthropic-529", true, 529, "overloaded", BrainError::ServerError}};
+    for (StatusCase const& test : statuses)
+    {
+        std::string const body = "{\"error\":{\"message\":\"" + std::string(test.message) + "\"}}";
+        std::string detail;
+        BrainError const error = test.anthropic
+            ? TextWire::ClassifyAnthropicStatus(test.status, body, detail)
+            : TextWire::ClassifyOpenAiStatus(test.status, body, detail);
+        Record(report, std::string("text-status-") + test.name,
+               error == test.expected && detail == test.message ? "" : "wrong status class or detail");
+    }
+    TextWire::Prompt const prompt{"Stable rules.\n\nTail facts.", 15, "Hello", 1024};
+    config.model = "m";
+    std::string const openAiBase =
+        R"({"model":"m","messages":[{"role":"system","content":"Stable rules.\n\nTail facts."},{"role":"user")"
+        R"(,"content":"Hello"}],"max_tokens":1024,"stream":false})";
+    Record(report, "text-request-openai", TextWire::BuildOpenAiRequest(config, prompt) == openAiBase
+        ? "" : "wrong JSON");
+    config.hasTemperature = true;
+    config.temperature = 0.8f;
+    config.reasoningEffort = "low";
+    std::string const openAiOptions = openAiBase.substr(0, openAiBase.size() - 1) +
+        R"(,"temperature":0.8,"reasoning_effort":"low"})";
+    Record(report, "text-request-openai-options", TextWire::BuildOpenAiRequest(config, prompt) == openAiOptions
+        ? "" : "wrong JSON");
+    std::string const blocks =
+        R"([{"type":"text","text":"Stable rules.\n\n","cache_control":{"type":"ephemeral"}},{"type":"text","t)"
+        R"(ext":"Tail facts."}])";
+    for (char const* model : {"claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5", "some-model"})
+    {
+        config.model = model;
+        TextModelCaps const caps = TextModelCaps::For(model);
+        std::string expected = "{\"model\":\"" + std::string(model) + "\",\"max_tokens\":1024,\"system\":";
+        expected += caps.known ? blocks : R"("Stable rules.\n\nTail facts.")";
+        expected += R"(,"messages":[{"role":"user","content":"Hello"}])";
+        if (caps.effort)
+            expected += R"(,"output_config":{"effort":"low"})";
+        if (caps.serverFallbacks)
+            expected += R"(,"fallbacks":"default")";
+        if (caps.sampling)
+            expected += R"(,"temperature":0.8)";
+        expected += '}';
+        auto const headers = TextWire::AnthropicHeaders(config, caps);
+        bool const correctHeaders = headers.size() == (caps.serverFallbacks ? 2 : 1) &&
+            headers[0] == std::make_pair(std::string("anthropic-version"), std::string("2023-06-01")) &&
+            (!caps.serverFallbacks || headers[1] == std::make_pair(std::string("anthropic-beta"),
+                std::string("server-side-fallback-2026-07-01")));
+        Record(report, std::string("text-request-") + model,
+            TextWire::BuildAnthropicRequest(config, caps, prompt) == expected && correctHeaders
+                ? "" : "wrong JSON/headers");
+        config.anthropicPromptCache = false;
+        std::string const body = TextWire::BuildAnthropicRequest(config, caps, prompt);
+        Record(report, std::string("text-request-no-cache-") + model,
+            body.find(R"("system":"Stable rules.\n\nTail facts.")") != std::string::npos ? "" : "wrong system");
+        config.anthropicPromptCache = true;
+    }
+    Record(report, "text-caps-snapshots", TextModelCaps::For("claude-opus-5-20260901").serverFallbacks &&
+        TextModelCaps::For("claude-haiku-4-5-20251001").sampling &&
+        !TextModelCaps::For("claude-opus-5-2026090x").known && !TextModelCaps::For("claude-opus-5-5").known
+        ? "" : "wrong capability match");
+}
 }  // namespace
 
 BrainSelfTest::Report BrainSelfTest::Run(std::string const& dir)
@@ -893,6 +1052,7 @@ BrainSelfTest::Report BrainSelfTest::Run(std::string const& dir)
                                    ")");
             for (BuiltInFixture const& fixture : BuiltInFixtures)
                 RunOne(report, Stem(fixture.file), fixture.text);
+            RunTextTests(report);
             return report;
         }
 
@@ -915,6 +1075,7 @@ BrainSelfTest::Report BrainSelfTest::Run(std::string const& dir)
             RunOne(report, Stem(fileName), text);
             NoteDrift(report, fileName, text);
         }
+        RunTextTests(report);
     }
     catch (std::exception const& e)
     {

@@ -25,6 +25,8 @@ struct ServiceState
     std::shared_ptr<IBrain> current;
     std::shared_ptr<InProcessBrain> running;
     std::atomic<bool> chatActive{false};
+    std::atomic<bool> textActive{false};
+    std::atomic<bool> textWithWords{false};
     std::atomic<bool> everStarted{false};
     int32 overrideState = -1;  // -1 follow the conf, 0 off, 1 on (.playerbots brain on|off)
     bool shutDown = false;
@@ -49,6 +51,8 @@ void Install(ServiceState& state, std::shared_ptr<IBrain> brain)
 void StopRunning(ServiceState& state, uint32 deadlineMs)
 {
     state.chatActive.store(false, std::memory_order_relaxed);
+    state.textActive.store(false, std::memory_order_relaxed);
+    state.textWithWords.store(false, std::memory_order_relaxed);
     Install(state, nullptr);
     if (state.running)
     {
@@ -62,10 +66,12 @@ void UpdateChatActive(ServiceState& state)
     bool active = false;
     if (state.running && state.running->Accepting())
     {
-        std::shared_ptr<BrainConfig const> const config = state.running->Config();
-        active = config && config->useChatReply && config->AnyUsable();
+        active = state.running->Active(BrainUse::ChatReply);
     }
     state.chatActive.store(active, std::memory_order_relaxed);
+    bool const text = state.running && state.running->Accepting() && state.running->TextUsable();
+    state.textActive.store(text, std::memory_order_relaxed);
+    state.textWithWords.store(text && state.running->TextWithWords(), std::memory_order_relaxed);
 }
 }  // namespace
 
@@ -79,6 +85,10 @@ std::shared_ptr<IBrain> Current()
 }
 
 bool ChatActive() { return State().chatActive.load(std::memory_order_relaxed); }
+
+bool TextActive() { return State().textActive.load(std::memory_order_relaxed); }
+
+bool TextWithWords() { return State().textWithWords.load(std::memory_order_relaxed); }
 
 bool EverStarted() { return State().everStarted.load(std::memory_order_relaxed); }
 
@@ -101,6 +111,8 @@ void Apply(std::shared_ptr<BrainConfig const> config)
             LOG_INFO("playerbots.brain", "CoA brain off");
         }
         state.chatActive.store(false, std::memory_order_relaxed);
+        state.textActive.store(false, std::memory_order_relaxed);
+        state.textWithWords.store(false, std::memory_order_relaxed);
         return;
     }
 
@@ -119,16 +131,29 @@ void Apply(std::shared_ptr<BrainConfig const> config)
     BrainGovernor::Instance().Configure(*config);
     BrainCache::Instance().Configure(config->cacheSize, config->cacheTtlSeconds);
 
+    if (!config->AnyUsableOrText())
+    {
+        state.lastProblem = "no usable engine: " + config->ChainText();
+        if (!config->text.problem.empty())
+            state.lastProblem += "; text: " + config->text.problem;
+        StopRunning(state, config->workerDeadlineMs);
+        return;
+    }
+    std::string const textDescription = config->text.usable
+                                            ? "text " + config->text.providerName + " " + config->text.model
+                                            : "no text generator";
     if (state.running)
     {
         std::shared_ptr<BrainConfig const> const old = state.running->Config();
         if (old && old->workers == config->workers && old->caBundle == config->caBundle &&
-            old->tlsVerify == config->tlsVerify)
+            old->tlsVerify == config->tlsVerify && old->text.workers == config->text.workers &&
+            old->text.usable == config->text.usable &&
+            state.running->TextUsable() == config->text.usable)
         {
             state.running->Reconfigure(config);
             UpdateChatActive(state);
-            LOG_INFO("playerbots.brain", "CoA brain reconfigured: chain {}, budget ${:.2f}/day", config->ChainText(),
-                     double(config->maxUsdMicrosPerDay) / 1e6);
+            LOG_INFO("playerbots.brain", "CoA brain reconfigured: chain {}, {}, budget ${:.2f}/day",
+                     config->ChainText(), textDescription, double(config->maxUsdMicrosPerDay) / 1e6);
             return;
         }
         // Workers, CaBundle or TlsVerify changed: the clients are built at start, so the brain restarts.
@@ -143,6 +168,8 @@ void Apply(std::shared_ptr<BrainConfig const> config)
         LOG_ERROR("playerbots.brain", "CoA brain could not start: {}", error);
         brain->Shutdown(0);
         state.chatActive.store(false, std::memory_order_relaxed);
+        state.textActive.store(false, std::memory_order_relaxed);
+        state.textWithWords.store(false, std::memory_order_relaxed);
         Install(state, nullptr);
         return;
     }
@@ -151,8 +178,8 @@ void Apply(std::shared_ptr<BrainConfig const> config)
     Install(state, brain);
     state.everStarted.store(true, std::memory_order_relaxed);
     UpdateChatActive(state);
-    LOG_INFO("playerbots.brain", "CoA brain on: chain {}, workers {}, budget ${:.2f}/day", config->ChainText(),
-             brain->WorkerCount(), double(config->maxUsdMicrosPerDay) / 1e6);
+    LOG_INFO("playerbots.brain", "CoA brain on: chain {}, {}, workers {} + {}, budget ${:.2f}/day", config->ChainText(),
+             textDescription, brain->WorkerCount(), brain->TextWorkerCount(), double(config->maxUsdMicrosPerDay) / 1e6);
 }
 
 void SetOverride(int32 value)

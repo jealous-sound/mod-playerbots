@@ -82,6 +82,9 @@ public:
     std::string FormatStats() const;
 
 private:
+    friend class CoaVoiceDirector;
+    CoaVoiceDrop SendGate(CoaVoiceConfig const& config, CoaVoiceLine const& line, uint64 nowMs);
+
     // One zone the banter knows: where, the channel its real players share, the lines said in the last minute.
     struct Zone
     {
@@ -94,6 +97,9 @@ private:
         uint64 lastHumanSpokeMs = 0;   // a real player spoke in the channel (Banter.QuietAfterHumanSeconds)
         uint64 lastSeenMs = 0;         // a scan found a real player here
         std::deque<uint64> linesMs;    // every bot line said in the channel during the last minute
+        std::vector<std::string> humanNames;
+        std::deque<std::string> recent;
+        CoaBanterTopic lastTopic = CoaBanterTopic::Count;
         bool busy = false;             // an exchange is under way
     };
 
@@ -125,6 +131,7 @@ private:
         uint64 skipped = 0;
     };
 
+    std::unordered_map<uint64, uint64> humanSpoke;
     std::unordered_map<uint64, Zone> zones;  // (mapId << 40) | (zoneId << 8) | teamId: the factions have their own
     std::vector<Exchange> exchanges;         // under way, at most Banter.MaxZones
     std::shared_ptr<BrainSink> sink;         // created at the first job, closed by Reset

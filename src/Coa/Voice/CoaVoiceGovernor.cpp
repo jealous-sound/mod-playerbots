@@ -295,3 +295,18 @@ uint64 CoaVoiceGovernor::LastAnswerMs(ObjectGuid bot) const
 }
 
 uint32 CoaVoiceGovernor::RepliesLastMinute(uint64 nowMs) const { return CountWithin(globalMs, nowMs, MINUTE_MS); }
+
+void CoaVoiceGovernor::NoteLine(ObjectGuid bot, uint64 scopeKey, std::string const& line, uint64 nowMs)
+{
+    NormalizedLine normalized = Normalize(line);
+    RecentLine recent{nowMs, std::move(normalized.normalized), std::move(normalized.words)};
+    BotState& botState = bots[bot];
+    botState.lines.push_back(recent);
+    while (botState.lines.size() > BOT_LINES)
+        botState.lines.pop_front();
+    ScopeState& scopeState = scopes[scopeKey];
+    scopeState.lines.push_back(std::move(recent));
+    // Voice configurations cap the scope history at 100. No rate or cooldown changes here.
+    while (scopeState.lines.size() > 100)
+        scopeState.lines.pop_front();
+}

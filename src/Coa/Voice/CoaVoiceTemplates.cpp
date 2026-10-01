@@ -364,3 +364,51 @@ std::vector<std::string> CoaVoiceTemplates::Candidates(ChatReplyType replyType, 
     PlayerbotTextMgr::instance().GetCandidates(replyType, locale, maxCount, out);
     return out;
 }
+
+std::string CoaVoiceTemplates::FillGenerated(std::string text, std::string const& name)
+{
+    auto const wordByte = [](char c)
+    {
+        return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_';
+    };
+    std::string filled;
+    filled.reserve(text.size() + name.size() * 2);
+    for (std::size_t i = 0; i < text.size();)
+    {
+        if (std::string_view(text).substr(i).starts_with("{name}"))
+        {
+            filled += name;
+            i += 6;
+            continue;
+        }
+        std::size_t end = i;
+        while (end < text.size() && wordByte(text[end]))
+            ++end;
+        if (end > i)
+        {
+            std::string word = text.substr(i, end - i);
+            for (char& c : word)
+                if (c >= 'A' && c <= 'Z')
+                    c = char(c + 'a' - 'A');
+            filled += word == "joueur1" ? name : text.substr(i, end - i);
+            i = end;
+        }
+        else
+            filled += text[i++];
+    }
+    if (!name.empty())
+        return filled;
+    std::string out;
+    out.reserve(filled.size());
+    for (char c : filled)
+    {
+        if (c == ' ' && (out.empty() || out.back() == ' '))
+            continue;
+        if (std::string_view(",.!?;:").find(c) != std::string_view::npos && !out.empty() && out.back() == ' ')
+            out.pop_back();
+        out += c;
+    }
+    if (!out.empty() && out.back() == ' ')
+        out.pop_back();
+    return out;
+}

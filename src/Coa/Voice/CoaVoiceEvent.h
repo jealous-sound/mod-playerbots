@@ -141,17 +141,19 @@ char const* CoaBanterTextName(CoaBanterTopic topic);
 namespace CoaVoiceEmit
 {
 uint8 CurrentDepth();
+bool SuppressesChatLogging();
 
 class ScopedDepth
 {
 public:
-    explicit ScopedDepth(uint8 depth);
+    explicit ScopedDepth(uint8 depth, bool generated = false);
     ~ScopedDepth();
     ScopedDepth(ScopedDepth const&) = delete;
     ScopedDepth& operator=(ScopedDepth const&) = delete;
 
 private:
     uint8 previous;
+    bool previousSuppressesLogging;
 };
 }  // namespace CoaVoiceEmit
 

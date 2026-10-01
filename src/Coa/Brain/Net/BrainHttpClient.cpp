@@ -405,6 +405,21 @@ struct BrainHttpClient::Impl
         message.set(http::field::accept, "application/json");
         if (!request.authorization.empty())
             message.set(request.authHeader, request.authorization);
+        for (auto const& [name, value] : request.extraHeaders)
+        {
+            bool const token = !name.empty() && std::all_of(name.begin(), name.end(), [](unsigned char c)
+            {
+                return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
+                       std::string_view("!#$%&'*+-.^_`|~").find(char(c)) != std::string_view::npos;
+            });
+            if (!token || value.find_first_of("\r\n") != std::string::npos || value.find('\0') != std::string::npos)
+            {
+                out.transport = BrainError::BadResponse;
+                out.detail = "bad header";
+                return;
+            }
+            message.set(name, value);
+        }
         message.keep_alive(true);
         message.body() = request.body;
         message.prepare_payload();
@@ -459,10 +474,9 @@ struct BrainHttpClient::Impl
                 return;
             }
 
-            // A kept-alive connection the server has closed in the meantime fails before any response byte: the
-            // request was not handled, so it goes once more on a fresh connection when time is left (and `sent`
-            // then describes that fresh attempt only).
-            bool const retry = reused && !ex.gotSome && !interrupted.load() && Clock::now() + RetryMinLeft <= deadline;
+            // Retry only before writing starts: an unanswered request may already have been billed.
+            bool const retry = reused && !ex.sent && !ex.gotSome && !interrupted.load() &&
+                               Clock::now() + RetryMinLeft <= deadline;
             if (!retry)
             {
                 out.transport = ex.step.error;

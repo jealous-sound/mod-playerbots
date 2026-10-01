@@ -196,6 +196,7 @@ private:
         bool dirty = false;
         BrainLatency latency;
         bool textRow = false;      // M6: the row of the text generator
+        uint32 textCallsInFlight = 0;  // acquired text calls, counted against the daily request cap until Record
     };
 
     // Guarded by lock. A later UTC day moves every row to `finished` and starts clean ones; an earlier one (the

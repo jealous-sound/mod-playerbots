@@ -159,9 +159,8 @@ Record OpenRouter first. Record TypeSafe once a key is granted.
    engine, its masked key and where the key came from.
 4. Run `.playerbots brain probe openrouter record`. It asks the canned probe cases (`fr-greet-1`, `en-noise-1`...;
    no player's words) and prints a report when the answers are in.
-5. Read the report. The OpenRouter Decisions path is documented two ways: `/api/alpha/decisions` (the default,
-   which answered on 2026-09-30) and `/api/v1/api/alpha/decisions`. An HTTP 404 prints the other one to try, as
-   `AiPlayerbot.CoaBrain.Engine.openrouter.Url = ...`. Set it, `.reload config`, and probe again.
+5. Read the report. The OpenRouter Decisions path is `/api/alpha/decisions` (the default,
+   which answered on 2026-09-30). Check the configured URL and model when the probe reports HTTP 404.
 6. Each call is saved as `<RecordDir>/<engine>-<case id>-<yyyymmddThhmmssZ>.json`, with `"source": "recorded"` and
    an empty `expect`. Only bodies are written: no header and no key. Still, read each file before you commit it.
 7. Fill in its `expect` block from what the response says, following the format above. Add `"fixture"` and
@@ -202,3 +201,62 @@ For each job, the mock proceeds as follows:
   fixture with this status, so `FailStatus = 402` replays `openrouter-error-402.json`.
 
 With `FixtureDir` empty, the mock answers entirely at random. The mock never opens a socket, and needs no key.
+
+## Text generator (M6)
+
+The decision brain chooses typed answers. The optional text generator writes one short line. A failed,
+late, filtered or rejected line uses the prepared template once. All M6 switches default to off.
+Enable `AiPlayerbot.CoaBrain.Enable = 1`, select a provider, then set `AiPlayerbot.CoaVoice.TextLlm = 1`
+for whispers and group/guild chat, or `2` for all supported chat. An empty `Decision.Chain` runs the
+text generator without decision engines.
+
+For an already installed Ollama model (no model is downloaded by these settings):
+
+```ini
+AiPlayerbot.CoaBrain.Text.Provider = openai
+AiPlayerbot.CoaBrain.Text.Url = http://127.0.0.1:11434/v1/chat/completions
+AiPlayerbot.CoaBrain.Text.Model = your-installed-model
+```
+
+For an OpenRouter text model:
+
+```ini
+AiPlayerbot.CoaBrain.Text.Provider = openai
+AiPlayerbot.CoaBrain.Text.Url = https://openrouter.ai/api/v1/chat/completions
+AiPlayerbot.CoaBrain.Text.Model = your-text-model
+```
+
+For the Anthropic Messages API:
+
+```ini
+AiPlayerbot.CoaBrain.Text.Provider = anthropic
+AiPlayerbot.CoaBrain.Text.Url = https://api.anthropic.com/v1/messages
+AiPlayerbot.CoaBrain.Text.Model = claude-haiku-4-5
+```
+
+Give hosted credentials through `AC_AI_PLAYERBOT_COA_BRAIN_TEXT_API_KEY`, then `.reload config`.
+`.playerbots brain text status` shows the provider, masked key, budgets, breaker and counters.
+`.playerbots brain text test <online-bot> <situation>` reports a simulated whisper to a GM or console;
+`.playerbots brain text probe` checks six canned situations without recording prompts or responses.
+Do not put credentials in versioned files.
+
+Loopback text receives player words by default. Hosted player words require both
+`AiPlayerbot.CoaBrain.Text.SendPlayerText = 1` and `AiPlayerbot.CoaBrain.Privacy.SendPlayerText = 1`.
+The prompt uses `Joueur1`; character names are filled in locally after generation. Feature-only memory
+may be included; message text and generated lines are not stored. `.playerbots optout ai` stops model
+calls for the account, and `.playerbots optout voice` makes bots ignore the player.
+
+Text calls share the global brain budget and also have `Text.MaxUsdPerDay` and
+`Text.MaxRequestsPerDay`. The `text` usage row survives restarts. Player replies may use the full text
+cap, probes 80%, and ambient banter 50%. `CoaVoice.TextPerSenderPerDay` limits an account's generated
+lines. Provider fallback attempts are billed too; enable them only within an appropriate budget.
+
+`AiPlayerbot.CoaVoice.Banter.Enable = 1` allows capped zone exchanges where an eligible real player is
+present. It needs voice enabled; answers also need `BotToBot = 1`. Generated openers need `TextLlm = 2`.
+`AiPlayerbot.CoaBrain.Use.RpgNext = 1` shares advice by zone, level band and role, blending it with the
+existing activity weights. `Rpg.Influence = 0` preserves those weights.
+
+The handoff workspace's `tools/fuzz/build.sh` and `tools/fuzz/run.sh` build and run offline verification:
+a sanitizer corpus, 10,000 deterministic mutations, local provider-shaped HTTP faults, budget floods
+and exactly-once fallback tests. They use loopback mock servers and no real credentials. The harness
+needs the module's static libraries from the CoA core build. In-game chat and banter still need a client.

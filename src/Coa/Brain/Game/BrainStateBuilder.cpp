@@ -267,6 +267,8 @@ bool FillChatJob(BrainChatFacts const& facts, std::string_view text, BrainChatPl
                        CoaChatIntent::IntentName(facts.features.intent) + "|" +
                        (facts.features.namedBots ? "named" : "-") + "|" +
                        std::to_string(std::min<std::size_t>(facts.bots.size(), 3)) + "|" + cacheText;
+        if (plan.freeText)
+            job.cacheKey += "|t";
         // M3: rated answers and answers given with memory lines are never served for another kind of job.
         if (facts.askRating)
             job.cacheKey += "|r";
@@ -403,7 +405,7 @@ std::vector<BrainQuestion> BrainStateBuilder::ChatQuestions(BrainChatFacts const
         out.push_back(std::move(who));
     }
 
-    if (!plan.lines.empty())
+    if (!plan.lines.empty() || plan.freeText)
     {
         BrainQuestion line;
         line.name = "line";
@@ -415,6 +417,8 @@ std::vector<BrainQuestion> BrainStateBuilder::ChatQuestions(BrainChatFacts const
                                NeutralTokens(candidate.row);
             line.options.push_back({candidate.key, std::move(text), candidate.replyName});
         }
+        if (plan.freeText)
+            line.options.push_back({BRAIN_FREE_TEXT_KEY, questions.lineFreeText, BRAIN_FREE_TEXT_KEY});
         line.options.push_back({"silent", questions.lineSilent, "silent"});
         out.push_back(std::move(line));
     }

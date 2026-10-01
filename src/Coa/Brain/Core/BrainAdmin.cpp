@@ -25,6 +25,7 @@
 #include "SystemOneDialects.h"
 #include <algorithm>
 #include <ctime>
+#include <cstdio>
 #include <filesystem>
 #include <fstream>
 #include <memory>
@@ -64,6 +65,39 @@ struct PendingCase
     BrainResult result;
 };
 
+struct PendingTextTest
+{
+    uint64 tag = 0;
+    uint64 jobId = 0;
+    uint32 requester = 0;
+    uint64 startedMs = 0;
+    std::string botName;
+    std::string scope;
+    std::size_t systemBytes = 0;
+    uint32 stableBytes = 0;
+    std::size_t userBytes = 0;
+};
+
+struct PendingTextCase
+{
+    uint64 tag = 0;
+    uint64 jobId = 0;
+    std::string caseId;
+    std::string canary;
+    bool received = false;
+    BrainResult result;
+};
+
+struct PendingTextProbe
+{
+    bool active = false;
+    uint32 requester = 0;
+    uint64 startedMs = 0;
+    std::string model;
+    std::vector<PendingTextCase> cases;
+    uint32 received = 0;
+};
+
 struct PendingProbe
 {
     bool active = false;
@@ -84,6 +118,8 @@ struct AdminState
     std::shared_ptr<BrainSink> sink;
     std::vector<PendingTest> tests;
     PendingProbe probe;
+    std::vector<PendingTextTest> textTests;
+    PendingTextProbe textProbe;
     uint64 nextTag = 1;
     std::vector<BrainResult> drained;  // reused by Update
 };
@@ -213,6 +249,90 @@ std::string EngineLine(BrainEngineConfig const& engine, BrainEngineStatus const*
     return line;
 }
 
+std::string NonzeroValues(std::initializer_list<std::pair<char const*, uint64>> values)
+{
+    std::string out;
+    for (auto const& [name, value] : values)
+    {
+        if (!value)
+            continue;
+        if (!out.empty())
+            out += ' ';
+        out += Acore::StringFormat("{}={}", name, value);
+    }
+    return out;
+}
+
+void AppendTextStatus(std::vector<std::string>& lines, BrainConfig const& config,
+                      std::shared_ptr<InProcessBrain> const& brain,
+                      std::vector<BrainEngineStatus> const& engines)
+{
+    BrainTextConfig const& text = config.text;
+    if (text.provider == BrainTextProvider::None)
+        lines.push_back("text: off (Text.Provider = none)");
+    else
+    {
+        std::string key = text.apiKey.empty() ? "none" : BrainConfig::Mask(text.apiKey) + " from " + text.apiKeySource;
+        lines.push_back(Acore::StringFormat("text: {} {} at {}://{} (key {}), {}", text.providerName, text.model,
+                                            text.tls ? "https" : "http", text.host, key,
+                                            text.usable ? "usable" : "unusable: " + text.problem));
+        BrainEngineStatus status;
+        for (BrainEngineStatus const& engine : engines)
+            if (engine.name == BRAIN_TEXT_ENGINE)
+                status = engine;
+        std::string breaker = BrainBreakerName(status.breaker);
+        if (status.breaker == BrainBreakerState::Open)
+            breaker += Acore::StringFormat(" ({} s left)", (status.openForMs + 999) / 1000);
+        std::string line = Acore::StringFormat(
+            "text engine: breaker {}; today {} requests, {} failures, {} of ${:.2f}, {} of {}; p50/p95 {}/{} ms ({}); "
+            "queue {}/{}/{}; workers {}; player text {}", breaker, status.today.requests, status.today.failures,
+            Usd(status.today.usdMicros), double(text.maxUsdMicrosPerDay) / 1e6, status.today.requests,
+            text.maxRequestsPerDay, status.p50Ms, status.p95Ms, status.samples,
+            brain ? brain->TextQueueDepth(BrainLane::Player) : 0,
+            brain ? brain->TextQueueDepth(BrainLane::Organizer) : 0,
+            brain ? brain->TextQueueDepth(BrainLane::Ambient) : 0,
+            brain ? brain->TextWorkerCount() : 0, text.sendPlayerText ? "yes" : "no");
+        if (status.exhausted)
+            line += ", exhausted until UTC midnight";
+        if (status.authFailed)
+            line += status.markStatus ? Acore::StringFormat(", auth failed (HTTP {})", status.markStatus)
+                                      : std::string(", auth failed");
+        if (status.misconfigured)
+            line += status.markStatus ? Acore::StringFormat(", misconfigured (HTTP {})", status.markStatus)
+                                      : std::string(", misconfigured");
+        for (std::string const& situation : status.disabledSituations)
+            line += ", disabled for " + situation;
+        lines.push_back(std::move(line));
+    }
+    BrainStats const& stats = BrainStats::Instance();
+    std::string const voice = NonzeroValues({
+        {"asked", stats.textAsked.load(std::memory_order_relaxed)},
+        {"chosen", stats.textChosen.load(std::memory_order_relaxed)},
+        {"generated", stats.textGenerated.load(std::memory_order_relaxed)},
+        {"sent", stats.textSent.load(std::memory_order_relaxed)},
+        {"stale", stats.textStale.load(std::memory_order_relaxed)}});
+    std::string const fallbacks = CounterText(stats.textFallbacks,
+                                             [](std::size_t i) { return BrainTextFallbackName(BrainTextFallback(i)); });
+    if (!voice.empty() || fallbacks != "none")
+        lines.push_back("text lane: " + (voice.empty() ? "none" : voice) + "; fallbacks: " + fallbacks);
+    std::string const banter = NonzeroValues({
+        {"exchanges", stats.banterExchanges.load(std::memory_order_relaxed)},
+        {"openers", stats.banterOpeners.load(std::memory_order_relaxed)},
+        {"text", stats.banterText.load(std::memory_order_relaxed)},
+        {"answers", stats.banterAnswers.load(std::memory_order_relaxed)},
+        {"skipped", stats.banterSkipped.load(std::memory_order_relaxed)},
+        {"emotes", stats.banterEmotes.load(std::memory_order_relaxed)}});
+    if (!banter.empty())
+        lines.push_back("banter: " + banter);
+    std::string const rpg = NonzeroValues({
+        {"asked", stats.rpgAsked.load(std::memory_order_relaxed)},
+        {"answered", stats.rpgAnswered.load(std::memory_order_relaxed)},
+        {"applied", stats.rpgApplied.load(std::memory_order_relaxed)},
+        {"entries", stats.rpgEntries.load(std::memory_order_relaxed)}});
+    if (!rpg.empty())
+        lines.push_back("rpg: " + rpg);
+}
+
 std::string FailureText(BrainResult const& result)
 {
     std::string text = BrainErrorName(result.error);
@@ -322,6 +442,80 @@ void PrintTest(PendingTest const& test, BrainResult const& result, BrainAdminPri
             print(to, "emote: invalid");
         else
             print(to, Acore::StringFormat("emote: {} p={}", emote->choice, P(emote->p)));
+    }
+}
+
+// Console text previews are explicit GM tool output: do not route their model lines through the INFO logger.
+// In-game requesters still use the world script's session callback; M2 reports keep their existing callback path.
+void TextPrint(uint32 requester, std::string const& line, BrainAdminPrint const& print)
+{
+    if (requester)
+        print(requester, line);
+    else
+        std::puts(line.c_str());
+}
+
+void PrintTextTest(PendingTextTest const& test, BrainResult const& result, BrainAdminPrint const& print)
+{
+    TextPrint(test.requester, Acore::StringFormat("text test {} ({}): {} {} {} ms, {}, finish {}", test.botName,
+                                             test.scope, result.engine, result.providerModel, result.callMs,
+                                             Usd(result.usage.usdMicros, 6), result.finishReason), print);
+    if (result.error == BrainError::None)
+        TextPrint(test.requester, "said: \"" + result.text + "\"", print);
+    else if (result.error == BrainError::Rejected)
+        TextPrint(test.requester, "rejected by the sanitizer (" + result.detail + "): \"" + result.text + "\"", print);
+    else
+        TextPrint(test.requester, "failed (" + FailureText(result) + ")", print);
+    TextPrint(test.requester, Acore::StringFormat("prompt: system {} bytes ({} stable), user {} bytes",
+                                                test.systemBytes, test.stableBytes, test.userBytes), print);
+}
+
+void PrintTextProbe(PendingTextProbe const& probe, BrainAdminPrint const& print)
+{
+    uint32 accepted = 0;
+    uint32 rejected = 0;
+    uint64 spent = 0;
+    std::vector<uint32> latencies;
+    for (PendingTextCase const& entry : probe.cases)
+    {
+        if (!entry.received)
+            continue;
+        BrainResult const& result = entry.result;
+        spent += result.usage.usdMicros;
+        latencies.push_back(result.callMs);
+        accepted += result.error == BrainError::None;
+        rejected += result.error == BrainError::Rejected;
+    }
+    std::sort(latencies.begin(), latencies.end());
+    auto percentile = [&latencies](uint32 p) -> uint32
+    {
+        return latencies.empty() ? 0 : latencies[std::min(latencies.size() - 1, latencies.size() * p / 100)];
+    };
+    TextPrint(probe.requester, Acore::StringFormat(
+        "text probe {}: {} cases, {} accepted, {} rejected, {} failed, p50/p95 {}/{} ms, {}", probe.model,
+        probe.cases.size(), accepted, rejected, probe.cases.size() - accepted - rejected,
+        percentile(50), percentile(95), Usd(spent, 6)), print);
+    for (PendingTextCase const& entry : probe.cases)
+    {
+        if (!entry.received)
+        {
+            TextPrint(probe.requester, entry.caseId + ": failed (no answer)", print);
+            continue;
+        }
+        BrainResult const& result = entry.result;
+        std::string line = Acore::StringFormat("{}: {} ms {} ", entry.caseId, result.callMs,
+                                               Usd(result.usage.usdMicros, 6));
+        if (result.error == BrainError::None)
+        {
+            line += "accepted \"" + result.text + "\"";
+            if (!entry.canary.empty() && Lower(result.text).find(Lower(entry.canary)) != std::string::npos)
+                line += " CANARY \"" + entry.canary + "\" in the line";
+        }
+        else if (result.error == BrainError::Rejected)
+            line += "rejected (" + result.detail + ")";
+        else
+            line += "failed (" + FailureText(result) + ")";
+        TextPrint(probe.requester, line, print);
     }
 }
 
@@ -603,6 +797,8 @@ std::vector<std::string> Status()
         lines.push_back(EngineLine(engine, status));
     }
 
+    AppendTextStatus(lines, *config, brain, engines);
+
     lines.push_back("submits: " +
                     CounterText(stats.submits, [](std::size_t i) { return BrainSubmitName(BrainSubmit(i)); }));
     lines.push_back("results: " +
@@ -823,6 +1019,113 @@ std::vector<std::string> StartProbe(uint32 requesterAccount, std::string const& 
     return lines;
 }
 
+std::vector<std::string> TextStatus()
+{
+    COA_ASSERT_WORLD_THREAD();
+    std::vector<std::string> lines;
+    std::shared_ptr<InProcessBrain> const brain = BrainService::Running();
+    std::shared_ptr<BrainConfig const> const config = brain ? brain->Config() : BrainConfig::Current();
+    uint64 const now = CoaTime::NowMs();
+    BrainGovernor const& governor = BrainGovernor::Instance();
+    AppendTextStatus(lines, *config, brain, governor.EngineStatus(now));
+    BrainBudgetStatus const budget = governor.Budget(now);
+    lines.push_back(Acore::StringFormat("budget: {} of the global ${:.2f}", Usd(budget.spentMicros),
+                                        double(config->maxUsdMicrosPerDay) / 1e6));
+    return lines;
+}
+
+std::vector<std::string> StartTextTest(uint32 requesterAccount, BrainTextTestJob&& test)
+{
+    COA_ASSERT_WORLD_THREAD();
+    std::shared_ptr<IBrain> const brain = BrainService::Current();
+    if (!brain->Active(BrainUse::Text))
+        return {"CoA text generator is off (AiPlayerbot.CoaBrain.Text.Provider)"};
+    AdminState& state = State();
+    uint64 const now = CoaTime::NowMs();
+    BrainJob job = std::move(test.job);
+    job.kind = BrainJobKind::Text;
+    job.use = BrainUse::Test;
+    job.lane = BrainLane::Player;
+    job.situation = "text_test";
+    job.tag = state.nextTag++;
+    job.epoch = 0;
+    job.deadlineMs = now + 15000;
+    job.record = false;
+    job.cacheKey.clear();
+    job.forceEngine.clear();
+    PendingTextTest pending;
+    pending.tag = job.tag;
+    pending.requester = requesterAccount;
+    pending.startedMs = now;
+    pending.botName = test.botName;
+    pending.scope = std::move(test.scope);
+    pending.systemBytes = job.textSystem.size();
+    pending.stableBytes = job.textStableBytes;
+    pending.userBytes = job.textUser.size();
+    BrainTicket const ticket = brain->Submit(std::move(job), Sink(), nullptr);
+    if (ticket.status != BrainSubmit::Queued)
+        return {Acore::StringFormat("text test {}: refused ({})", test.botName, BrainSubmitName(ticket.status))};
+    pending.jobId = ticket.jobId;
+    state.textTests.push_back(std::move(pending));
+    return {Acore::StringFormat("text test {}: asked, the answer follows", test.botName)};
+}
+
+std::vector<std::string> StartTextProbe(uint32 requesterAccount, std::vector<BrainTextProbeJob>&& jobs)
+{
+    COA_ASSERT_WORLD_THREAD();
+    AdminState& state = State();
+    if (state.textProbe.active)
+        return {"a text probe is already running; wait for its report"};
+    std::shared_ptr<IBrain> const brain = BrainService::Current();
+    if (!brain->Active(BrainUse::Text))
+        return {"CoA text generator is off (AiPlayerbot.CoaBrain.Text.Provider)"};
+    if (jobs.empty())
+        return {"no text probe case to ask"};
+    PendingTextProbe probe;
+    probe.requester = requesterAccount;
+    probe.startedMs = CoaTime::NowMs();
+    probe.model = BrainConfig::Current()->text.model;
+    BrainSubmit refusal = BrainSubmit::Queued;
+    for (BrainTextProbeJob& test : jobs)
+    {
+        BrainJob job = std::move(test.job);
+        job.kind = BrainJobKind::Text;
+        job.use = BrainUse::Probe;
+        job.lane = BrainLane::Organizer;
+        job.situation = "text_probe";
+        job.tag = state.nextTag++;
+        job.epoch = 0;
+        job.deadlineMs = probe.startedMs + 20000;
+        job.record = false;
+        job.cacheKey.clear();
+        job.forceEngine.clear();
+        uint64 const tag = job.tag;
+        BrainTicket const ticket = brain->Submit(std::move(job), Sink(), nullptr);
+        if (ticket.status != BrainSubmit::Queued)
+        {
+            refusal = ticket.status;
+            break;
+        }
+        PendingTextCase pending;
+        pending.tag = tag;
+        pending.jobId = ticket.jobId;
+        pending.caseId = std::move(test.caseId);
+        pending.canary = std::move(test.canary);
+        probe.cases.push_back(std::move(pending));
+    }
+    std::size_t const asked = probe.cases.size();
+    std::vector<std::string> lines{Acore::StringFormat("text probe: {} cases asked", asked)};
+    if (asked)
+    {
+        probe.active = true;
+        state.textProbe = std::move(probe);
+    }
+    if (refusal != BrainSubmit::Queued)
+        lines.push_back(Acore::StringFormat("text probe: refused after {} of {} cases ({})", asked, jobs.size(),
+                                            BrainSubmitName(refusal)));
+    return lines;
+}
+
 std::vector<std::string> SelfTest()
 {
     COA_ASSERT_WORLD_THREAD();
@@ -860,7 +1163,7 @@ void Update(uint64 nowMs, BrainAdminPrint const& print)
     COA_ASSERT_WORLD_THREAD();
     AdminState& state = State();
     // No sink yet (no test or probe since the start, or a turn-on that failed): nothing to drain or to time out.
-    if (!state.sink && state.tests.empty() && !state.probe.active)
+    if (!state.sink && state.tests.empty() && !state.probe.active && state.textTests.empty() && !state.textProbe.active)
         return;
 
     state.drained.clear();
@@ -868,6 +1171,29 @@ void Update(uint64 nowMs, BrainAdminPrint const& print)
         state.sink->Drain(state.drained);
     for (BrainResult& result : state.drained)
     {
+        auto const textTest = std::find_if(state.textTests.begin(), state.textTests.end(),
+                                           [&result](PendingTextTest const& t)
+                                           { return t.tag == result.tag && t.jobId == result.jobId; });
+        if (textTest != state.textTests.end())
+        {
+            PrintTextTest(*textTest, result, print);
+            state.textTests.erase(textTest);
+            continue;
+        }
+        bool textMatched = false;
+        if (state.textProbe.active)
+            for (PendingTextCase& entry : state.textProbe.cases)
+            {
+                if (entry.tag != result.tag || entry.jobId != result.jobId || entry.received)
+                    continue;
+                entry.received = true;
+                entry.result = std::move(result);
+                ++state.textProbe.received;
+                textMatched = true;
+                break;
+            }
+        if (textMatched)
+            continue;
         auto const test = std::find_if(state.tests.begin(), state.tests.end(), [&result](PendingTest const& t)
                                        { return t.tag == result.tag && t.jobId == result.jobId; });
         if (test != state.tests.end())
@@ -901,6 +1227,25 @@ void Update(uint64 nowMs, BrainAdminPrint const& print)
         it = state.tests.erase(it);
     }
 
+    for (auto it = state.textTests.begin(); it != state.textTests.end();)
+    {
+        if (nowMs - it->startedMs < REPORT_AFTER_MS)
+        {
+            ++it;
+            continue;
+        }
+        print(it->requester, Acore::StringFormat("text test {}: no answer within 60 s", it->botName));
+        it = state.textTests.erase(it);
+    }
+    if (state.textProbe.active &&
+        (state.textProbe.received >= state.textProbe.cases.size() ||
+         nowMs - state.textProbe.startedMs >= REPORT_AFTER_MS))
+    {
+        PendingTextProbe finished = std::move(state.textProbe);
+        state.textProbe = PendingTextProbe{};
+        PrintTextProbe(finished, print);
+    }
+
     if (state.probe.active &&
         (state.probe.received >= state.probe.cases.size() || nowMs - state.probe.startedMs >= REPORT_AFTER_MS))
     {
@@ -919,5 +1264,7 @@ void Shutdown()
     state.sink.reset();
     state.tests.clear();
     state.probe = PendingProbe{};
+    state.textTests.clear();
+    state.textProbe = PendingTextProbe{};
 }
 }  // namespace BrainAdmin

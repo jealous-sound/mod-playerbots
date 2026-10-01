@@ -163,6 +163,7 @@ void ApplyOverrides(BrainQuestionSet& set, BrainJsonValue const& root)
         {
             Replace(set.lineInstructions, line, "instructions");
             Replace(set.lineSilent, line, "silent");
+            Replace(set.lineFreeText, line, "free_text");
             ReplacePairs(set.lineTags, line->Find("tags"));
         }
         if (BrainJsonValue const* tone = questions->Find("tone"))
@@ -240,6 +241,9 @@ BrainQuestionSet BuiltIn()
                            "details; they are filled in afterwards. The lines are in the players' language, mostly "
                            "French. Pick silent when no line fits the message.";
     set.lineSilent = "[SILENT] say nothing";
+    set.lineFreeText = "[FREE TEXT] none of the lines above fits: a writer composes a fresh answer to this message. "
+                       "Pick it for a real question, a particular topic, or anything the listed lines would answer "
+                       "badly.";
     set.lineTags = {
         {"greet", "GREETING"},
         {"bye", "FAREWELL"},

@@ -294,6 +294,8 @@ private:
     std::shared_ptr<BrainSink> textSink;                  // created at the first text job, closed at Shutdown
     std::vector<BrainResult> textScratch;                 // reused by DrainTexts
     std::unordered_map<uint32, uint32> textToday;         // speaker account -> generated lines asked today
+    uint64 textLaneEventId = 0;
+    bool textLaneAllowed = false;
     uint32 textDay = 0;                                   // UTC yyyymmdd of that map
 
     // M6: the banter (CoaVoice.Banter.*), updated every tick with voice on.

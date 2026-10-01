@@ -8,6 +8,7 @@
 #include "BrainDecisionRing.h"
 #include "BrainService.h"
 #include "BrainStats.h"
+#include "BrainTextPrompt.h"
 #include "CharacterCache.h"
 #include "Channel.h"
 #include "ChannelMgr.h"
@@ -57,9 +58,12 @@ constexpr uint64 PRUNE_PERIOD_MS = MINUTE_MS;
 constexpr uint64 DENY_MEMORY_MS = 10 * MINUTE_MS;
 constexpr uint32 DENY_DELAY_MIN_MS = 1000;
 constexpr uint32 DENY_DELAY_MAX_MS = 2500;
+constexpr std::size_t MAX_TEXTS = 64;
+constexpr uint64 TEXT_POLL_MS = 200;
 constexpr std::size_t MAX_DECISIONS = 256;  // human messages waiting for the brain at once
 
 thread_local uint8 EmitDepth = 0;
+thread_local bool SuppressChatLogging = false;
 
 CoaVoiceScopeKind KindOf(CoaEvent const& event)
 {
@@ -466,6 +470,8 @@ char const* CoaVoiceDropName(CoaVoiceDrop drop)
             return "filtered";
         case CoaVoiceDrop::SendFailed:
             return "send-failed";
+        case CoaVoiceDrop::Invalid:
+            return "invalid";
         case CoaVoiceDrop::BrainSilent:
             return "brain-silent";
         default:
@@ -477,9 +483,20 @@ namespace CoaVoiceEmit
 {
 uint8 CurrentDepth() { return EmitDepth; }
 
-ScopedDepth::ScopedDepth(uint8 depth) : previous(EmitDepth) { EmitDepth = depth; }
+bool SuppressesChatLogging() { return SuppressChatLogging; }
 
-ScopedDepth::~ScopedDepth() { EmitDepth = previous; }
+ScopedDepth::ScopedDepth(uint8 depth, bool generated)
+    : previous(EmitDepth), previousSuppressesLogging(SuppressChatLogging)
+{
+    EmitDepth = depth;
+    SuppressChatLogging = generated || previousSuppressesLogging;
+}
+
+ScopedDepth::~ScopedDepth()
+{
+    EmitDepth = previous;
+    SuppressChatLogging = previousSuppressesLogging;
+}
 }  // namespace CoaVoiceEmit
 
 void CoaVoiceDirector::CostRing::Add(uint32 us)
@@ -500,6 +517,43 @@ CoaVoiceDirector& CoaVoiceDirector::Instance()
     static CoaVoiceDirector instance;
     return instance;
 }
+
+class CoaVoiceDirector::BanterHost final : public ICoaVoiceBanterHost
+{
+public:
+    BanterHost(CoaVoiceDirector& director, CoaVoiceConfig const& config, uint64 /*nowMs*/)
+        : director(director), config(config)
+    {
+    }
+    CoaVoiceCandidateIndex const& Index() const override { return director.index; }
+    CoaVoiceGovernor& Governor() override { return director.governor; }
+    uint32 Locale() const override { return director.locale; }
+    uint64 NextEventId() override { return director.nextEventId++; }
+    bool Schedule(CoaVoiceLine&& line) override
+    {
+        if (director.pending.size() >= config.maxPending)
+            return false;
+        director.Schedule(config, std::move(line));
+        return true;
+    }
+    CoaVoiceScope ChannelScope(uint8 teamId, std::string const& channelName, uint32 mapId,
+                               uint32 zoneId) const override
+    {
+        CoaVoiceScope scope;
+        scope.kind = CoaVoiceScopeKind::Channel;
+        scope.chatType = CHAT_MSG_CHANNEL;
+        scope.teamId = teamId;
+        scope.channelName = channelName;
+        scope.mapId = mapId;
+        scope.zoneId = zoneId;
+        scope.key = CoaHash::Bytes(NameMatch::Fold(channelName),
+            CoaHash::U64(teamId, CoaHash::U64(uint64(scope.kind))));
+        return scope;
+    }
+private:
+    CoaVoiceDirector& director;
+    CoaVoiceConfig const& config;
+};
 
 void CoaVoiceDirector::Update(uint32 /*diff*/, std::vector<CoaEvent>& events)
 {
@@ -552,6 +606,8 @@ void CoaVoiceDirector::Update(uint32 /*diff*/, std::vector<CoaEvent>& events)
     // Brain off: no sink and no decision, so no call.
     if (!decisions.empty() || (brainSink && !brainSink->Empty()))
         DrainDecisions(cfg, now);
+    if (!texts.empty() || (textSink && !textSink->Empty()))
+        DrainTexts(cfg, now);
 
     if (!botEchoes.empty())
     {
@@ -570,6 +626,14 @@ void CoaVoiceDirector::Update(uint32 /*diff*/, std::vector<CoaEvent>& events)
         if (CoaVoiceScopeKind const kind = KindOf(event); kind != CoaVoiceScopeKind::Count)
             costs[size_t(kind)].Add(uint32(std::min<int64>(us.count(), std::numeric_limits<uint32>::max())));
     }
+
+    if (cfg.banterEnable)
+    {
+        BanterHost host(*this, cfg, now);
+        banter.Update(cfg, host, now);
+    }
+    else
+        banter.Reset();
 
     SendDue(cfg, now);
 
@@ -594,11 +658,17 @@ void CoaVoiceDirector::Shutdown()
     Reset();
     if (brainSink)
         brainSink->Close();
+    if (textSink)
+        textSink->Close();
     closed = true;
 }
 
 void CoaVoiceDirector::Reset()
 {
+    CancelTexts();
+    banter.Reset();
+    textToday.clear();
+    textLaneEventId = 0;
     pending = {};
     botEchoes.clear();
     governor.Reset();
@@ -699,7 +769,11 @@ bool CoaVoiceDirector::HandleEvent(CoaVoiceConfig const& config, CoaEvent& event
     auto const fail = [&](CoaVoiceDrop why) { FailEvent(config, event, scope, why, nowMs); };
 
     if (!event.fromBot)
+    {
         governor.NoteHumanSpoke(scope.key, nowMs);
+        if (config.banterEnable && scope.kind == CoaVoiceScopeKind::Channel)
+            banter.OnHumanSpoke(scope.key, nowMs);
+    }
     else if (event.chainDepth + 1u > config.botChainMax)
     {
         drop(CoaVoiceDrop::Chain);
@@ -742,7 +816,10 @@ bool CoaVoiceDirector::HandleEvent(CoaVoiceConfig const& config, CoaEvent& event
     bool const anyNamed =
         std::any_of(nominees.begin(), nominees.end(), [](CoaVoiceCandidate const& c) { return c.named; });
     double const roll = rand_chance();
-    bool const anyHit = roll < ReplyChance(config, kind, false, event.chainDepth);
+    double const chance = event.fromBot && event.answerPercent
+        ? event.answerPercent * std::pow(double(config.chainDecay), std::max<int32>(0, int32(event.chainDepth) - 1))
+        : ReplyChance(config, kind, false, event.chainDepth);
+    bool const anyHit = roll < chance;
     bool const namedOnly = !anyHit && anyNamed && roll < ReplyChance(config, kind, true, event.chainDepth);
     // M2. One relaxed load when the brain is off; bots and text emotes never go to the brain. A calibrated chain
     // may still make a bot answer what the draw left silent, so such an event goes on to ask it.
@@ -803,7 +880,8 @@ bool CoaVoiceDirector::HandleEvent(CoaVoiceConfig const& config, CoaEvent& event
     }
 
     CoaVoiceDrop why = CoaVoiceDrop::NoCandidate;
-    if (!RunBallot(config, event, scope, sender, nominees, intent, namedOnly, nowMs, nowMs, nullptr, nullptr, why))
+    if (!RunBallot(config, event, scope, sender, nominees, intent, namedOnly, nowMs, nowMs, nullptr, nullptr,
+                   config.textLlm && TextLaneApplies(config, event, scope, sender), why))
         fail(why);
     return true;
 }
@@ -811,7 +889,7 @@ bool CoaVoiceDirector::HandleEvent(CoaVoiceConfig const& config, CoaEvent& event
 uint32 CoaVoiceDirector::RunBallot(CoaVoiceConfig const& config, CoaEvent const& event, CoaVoiceScope const& scope,
                                    Player* sender, std::vector<CoaVoiceCandidate>& candidates, CoaIntent intent,
                                    bool namedOnly, uint64 eventMs, uint64 nowMs, BrainPick const* pick,
-                                   BrainChatPlan const* plan, CoaVoiceDrop& why)
+                                   BrainChatPlan const* plan, bool wantText, CoaVoiceDrop& why)
 {
     CoaVoiceScopeKind const kind = scope.kind;
     lastResponder = ObjectGuid::Empty;
@@ -891,7 +969,13 @@ uint32 CoaVoiceDirector::RunBallot(CoaVoiceConfig const& config, CoaEvent const&
         line.depth = uint8(std::min<uint32>(event.chainDepth + 1u, 255u));
         line.intent = intent;
 
-        governor.Reserve(config, candidate.guid, scope, event.sender, line.text, nowMs);
+        if (event.fromBot && event.answerPercent)
+            line.banter = true;
+        bool const textLine = wantText && !quiet &&
+            TrySubmitText(config, event, scope, bot, sender, intent, pick, nowMs, line);
+        if (textLine)
+            line.dueMs = std::min(line.dueMs, line.textDeadlineMs);
+        governor.Reserve(config, candidate.guid, scope, event.sender, textLine ? std::string() : line.text, nowMs);
         LOG_DEBUG("playerbots.voice", "event {} {}: {} answers ({}) in {} ms", currentEventId, CoaVoiceScopeName(kind),
                   bot->GetName(), CoaChatIntent::IntentName(intent), line.dueMs - nowMs);
         if (lastResponder.IsEmpty())
@@ -1021,6 +1105,8 @@ bool CoaVoiceDirector::TrySubmitDecision(CoaVoiceConfig const& config, CoaEvent 
         uint32(std::count_if(kept.begin(), kept.end(), [](CoaVoiceCandidate const& c) { return c.named; }));
 
     BrainChatPlan plan;
+    if (config.textLlm)
+        plan.freeText = TextLaneApplies(config, event, scope, sender);
     plan.lines = BrainStateBuilder::ChatLines(intent, kept.front().named, locale);
     // "who" picks among the bots M1 puts first: the mentioned ones (sorted first) when there are any, so an unnamed
     // bot never takes a named, whispered or emoted bot's turn; an answer past them is ignored.
@@ -1171,6 +1257,8 @@ void CoaVoiceDirector::ResumeDecision(CoaVoiceConfig const& config, PendingDecis
 
     // ReadDecision is pure: its answers are shown by .playerbots brain explain whatever happens next.
     BrainPick const pick = result ? ReadDecision(config, decision, *result) : BrainPick{};
+    if (pick.freeText)
+        BrainStats::Instance().textChosen.fetch_add(1, std::memory_order_relaxed);
 
     BrainDecisionEntry entry;
     entry.atUnix = uint64(std::time(nullptr));
@@ -1283,7 +1371,8 @@ void CoaVoiceDirector::ResumeDecision(CoaVoiceConfig const& config, PendingDecis
 
     CoaVoiceDrop why = CoaVoiceDrop::NoCandidate;
     if (!RunBallot(config, decision.event, decision.scope, sender, decision.nominees, decision.intent, namedOnly,
-                   decision.eventMs, nowMs, pick.fromBrain ? &pick : nullptr, &decision.plan, why))
+                   decision.eventMs, nowMs, pick.fromBrain ? &pick : nullptr, &decision.plan,
+                   decision.plan.freeText && (pick.freeText || pick.lineKey.empty()), why))
     {
         FailEvent(config, decision.event, decision.scope, why, nowMs);
         finish(std::string("drop:") + CoaVoiceDropName(why));
@@ -1344,6 +1433,15 @@ CoaVoiceDirector::BrainPick CoaVoiceDirector::ReadDecision(CoaVoiceConfig const&
         for (std::size_t k = 0; k < keys.size(); ++k)
         {
             std::string_view const key = keys[k];
+            if (key == BRAIN_FREE_TEXT_KEY)
+            {
+                if (k == 0 && decision.plan.freeText)
+                {
+                    pick.freeText = true;
+                    pick.freeTextP = line->p;
+                }
+                continue;
+            }
             if (key == "silent")
             {
                 if (k == 0 && pick.calibrated && !pick.replyKnown)
@@ -1910,8 +2008,14 @@ void CoaVoiceDirector::SendDue(CoaVoiceConfig const& config, uint64 nowMs)
     uint32 emitted = 0;
     while (!pending.empty() && pending.top().dueMs <= nowMs && emitted < config.maxEmitsPerTick)
     {
-        CoaVoiceLine const line = pending.top();
+        CoaVoiceLine line = pending.top();
         pending.pop();
+        if (line.textJobId && ResolveLineText(config, line, nowMs) == TextStage::Wait)
+        {
+            line.dueMs = std::min(line.textDeadlineMs, nowMs + TEXT_POLL_MS);
+            pending.push(std::move(line));
+            continue;
+        }
         ++emitted;
         Send(config, line);
     }
@@ -1983,8 +2087,20 @@ bool CoaVoiceDirector::Send(CoaVoiceConfig const& config, CoaVoiceLine const& li
     if (scope.IsPublic() && bot->IsInCombat())
         return fail(CoaVoiceDrop::Combat);
 
+    if (line.banter)
+    {
+        if (!config.banterEnable)
+            return fail(CoaVoiceDrop::Disabled);
+        if (CoaVoiceDrop const gate = banter.SendGate(config, line, tickNowMs); gate != CoaVoiceDrop::Count)
+            return fail(gate);
+    }
+
     if (sObjectMgr->IsChatFiltered(line.text))
         return fail(CoaVoiceDrop::Filtered);
+
+    if ((line.generated || line.banter) && !CoaVoiceSanitizer::Validate(
+        line.text, {config.maxBytes, &config.blockedWords, true, false}))
+        return fail(CoaVoiceDrop::Invalid);
 
     if (line.emote)
         PlayEmote(bot, target, line.emote);
@@ -1992,7 +2108,7 @@ bool CoaVoiceDirector::Send(CoaVoiceConfig const& config, CoaVoiceLine const& li
     bool said = true;
     {
         // The say/yell hook reads this depth into the BOT event of the line (CoaVoice.BotToBot).
-        CoaVoiceEmit::ScopedDepth const depth(line.depth);
+        CoaVoiceEmit::ScopedDepth const depth(line.depth, line.generated);
         switch (scope.kind)
         {
             case CoaVoiceScopeKind::Whisper:
@@ -2024,12 +2140,19 @@ bool CoaVoiceDirector::Send(CoaVoiceConfig const& config, CoaVoiceLine const& li
     if (!said)
         return fail(CoaVoiceDrop::SendFailed);
 
+    if (line.generated)
+        BrainStats::Instance().textSent.fetch_add(1, std::memory_order_relaxed);
+    if (line.textJobId)
+        governor.NoteLine(line.bot, scope.key, line.text, tickNowMs);
+    if (config.banterEnable && scope.kind == CoaVoiceScopeKind::Channel)
+        banter.OnChannelLine(line, tickNowMs);
+
     if (line.isDeny)
         ++stats.denies;
     else
         ++stats.sent[size_t(scope.kind)];
 
-    if (config.botToBot && !line.isDeny &&
+    if (config.botToBot && !line.isDeny && (!line.banter || line.depth < 2) &&
         (scope.kind == CoaVoiceScopeKind::Party || scope.kind == CoaVoiceScopeKind::Raid ||
          scope.kind == CoaVoiceScopeKind::Guild || scope.kind == CoaVoiceScopeKind::Channel))
         QueueBotEcho(line, bot);
@@ -2046,6 +2169,7 @@ void CoaVoiceDirector::QueueBotEcho(CoaVoiceLine const& line, Player* bot)
     echo.chatType = EchoChatType(line.scope.kind);
     echo.teamId = line.scope.teamId;
     echo.chainDepth = line.depth;
+    echo.answerPercent = line.answerPercent;
     echo.fromBot = true;
     echo.guildId = line.scope.guildId;
     echo.sender = bot->GetGUID();
@@ -2190,8 +2314,233 @@ std::string CoaVoiceDirector::FormatStats() const
                                    stats.toneLines[size_t(MemoryTone::Cold)],
                                    stats.toneLines[size_t(MemoryTone::Grudge)]);
 
+    out += Acore::StringFormat(
+        "text: lane={} active={} waiting={} asked={} chosen={} generated={} sent={} stale={}; fallbacks:",
+        config ? config->textLlm : 0, BrainService::TextActive() ? 1 : 0, texts.size(), load(brain.textAsked),
+        load(brain.textChosen), load(brain.textGenerated), load(brain.textSent), load(brain.textStale));
+    for (std::size_t fallback = 0; fallback < brain.textFallbacks.size(); ++fallback)
+        if (uint64 const count = load(brain.textFallbacks[fallback]))
+            out += Acore::StringFormat(" {}={}", BrainTextFallbackName(BrainTextFallback(fallback)), count);
+    out += std::string("\nbanter: ") + (config && config->banterEnable ? "on " : "off ") + banter.FormatStats() + "\n";
+
     out +=
         Acore::StringFormat("cost us p50/p95: channel={} say={} whisper={} all={}/{}", cost(CoaVoiceScopeKind::Channel),
                             cost(CoaVoiceScopeKind::Say), cost(CoaVoiceScopeKind::Whisper), allP50, allP95);
     return out;
+}
+
+bool CoaVoiceDirector::TextLaneApplies(CoaVoiceConfig const& config, CoaEvent const& event,
+                                      CoaVoiceScope const& scope, Player* sender)
+{
+    if (textLaneEventId == currentEventId)
+        return textLaneAllowed;
+    textLaneEventId = currentEventId;
+    textLaneAllowed = false;
+    if (!config.TextLaneFor(scope.kind) || event.fromBot || event.kind != CoaEventKind::Chat ||
+        !BrainService::TextWithWords() || !sender || !sender->GetSession())
+        return false;
+    BrainStats& stats = BrainStats::Instance();
+    uint32 const account = sender->GetSession()->GetAccountId();
+    if (CoaPlayerPrefs::Instance().Get(account).AiOptedOut())
+    {
+        stats.Count(BrainTextFallback::OptOut);
+        return false;
+    }
+    if (texts.size() >= MAX_TEXTS)
+    {
+        stats.Count(BrainTextFallback::Busy);
+        return false;
+    }
+    uint32 const day = BrainClock::UtcDayNow();
+    if (textDay != day)
+    {
+        textToday.clear();
+        textDay = day;
+    }
+    auto const count = textToday.find(account);
+    if (config.textPerSenderPerDay && count != textToday.end() && count->second >= config.textPerSenderPerDay)
+    {
+        stats.Count(BrainTextFallback::SenderCap);
+        return false;
+    }
+    textLaneAllowed = true;
+    return true;
+}
+
+bool CoaVoiceDirector::TrySubmitText(CoaVoiceConfig const& config, CoaEvent const& event,
+    CoaVoiceScope const& scope, Player* bot, Player* sender, CoaIntent intent, BrainPick const* pick,
+    uint64 nowMs, CoaVoiceLine& line)
+{
+    if (!config.TextLaneFor(scope.kind) || event.chainDepth || !sender || !sender->GetSession() ||
+        (pick && pick->tone >= 0 && pick->tone <= 1))
+        return false;
+    MemoryTone const memoryTone = ToneToward(bot, sender);
+    if (memoryTone == MemoryTone::Cold || memoryTone == MemoryTone::Grudge)
+        return false;
+    uint32 const account = sender->GetSession()->GetAccountId();
+    if (CoaPlayerPrefs::Instance().Get(account).AiOptedOut())
+    {
+        if (textLaneEventId != currentEventId || textLaneAllowed)
+            BrainStats::Instance().Count(BrainTextFallback::OptOut);
+        textLaneEventId = currentEventId;
+        textLaneAllowed = false;
+        return false;
+    }
+    if (!BrainService::TextWithWords())
+        return false;
+    if (uint32 const today = BrainClock::UtcDayNow(); today != textDay)
+    {
+        textToday.clear();
+        textDay = today;
+    }
+    // A ballot may have several responders: the admission caps bound jobs, not merely events.
+    if (texts.size() >= MAX_TEXTS || (config.textPerSenderPerDay &&
+        textToday.contains(account) && textToday.at(account) >= config.textPerSenderPerDay))
+        return false;
+    BrainTextPrompt::ChatTextFacts facts;
+    facts.kind = scope.kind;
+    facts.bot = BrainTextPrompt::SheetOf(bot);
+    facts.speakerLevel = sender->GetLevel();
+    BrainBotFacts const relationship = BrainStateBuilder::BotFacts(bot, sender, scope.kind, false, false, false);
+    facts.sameGroup = relationship.sameGroup;
+    facts.sameGuild = relationship.sameGuild;
+    facts.words = event.text;
+    facts.language = BrainFeatures::Extract(event.text).language;
+    facts.intent = intent;
+    facts.tone = pick ? pick->tone : -1;
+    facts.locale = locale;
+    if (CoaMemoryConfig::Enabled() && CoaMemoryMgr::Running())
+    {
+        auto const memory = CoaMemoryConfig::Current();
+        if (memory->stateTokenBudget)
+            facts.memory = CoaMemoryMgr::Instance().BrainLines({bot->GetGUID()}, event.sender, sender->GetZoneId(),
+                uint32(std::min<uint64>(uint64(memory->stateTokenBudget) * 4, BrainTextPrompt::MEMORY_BYTES)));
+    }
+    BrainJob job;
+    if (!BrainTextPrompt::BuildChatTextJob(facts, job))
+        return false;
+    job.tag = currentEventId;
+    job.epoch = brainEpoch;
+    job.botGuid = bot->GetGUID().GetRawValue();
+    job.deadlineMs = nowMs + config.textTimeoutMs;
+    job.textFinisher = BrainTextPrompt::MakeFinisher(config.maxBytes, config.blockedWords, true);
+    if (!textSink)
+        textSink = std::make_shared<BrainSink>(1024);
+    BrainTicket const ticket = BrainService::Current()->Submit(std::move(job), textSink, nullptr);
+    if (ticket.status != BrainSubmit::Queued)
+    {
+        BrainStats::Instance().Count(BrainTextFallback::Submit);
+        LOG_DEBUG("playerbots.voice", "event {} text refused ({})", currentEventId, BrainSubmitName(ticket.status));
+        return false;
+    }
+    texts.emplace(ticket.jobId, PendingText{currentEventId, brainEpoch, nowMs,
+        nowMs + config.textTimeoutMs, account});
+    ++textToday[account];
+    BrainStats::Instance().textAsked.fetch_add(1, std::memory_order_relaxed);
+    line.textJobId = ticket.jobId;
+    line.textDeadlineMs = nowMs + config.textTimeoutMs;
+    line.textEpoch = brainEpoch;
+    return true;
+}
+
+void CoaVoiceDirector::DrainTexts(CoaVoiceConfig const& /*config*/, uint64 nowMs)
+{
+    COA_ASSERT_WORLD_THREAD();
+    if (textSink)
+        textSink->Drain(textScratch);
+    for (BrainResult& result : textScratch)
+    {
+        auto const waiting = texts.find(result.jobId);
+        if (waiting == texts.end() || waiting->second.eventId != result.tag ||
+            waiting->second.epoch != result.epoch || result.epoch != brainEpoch || textResults.contains(result.jobId))
+        {
+            BrainStats::Instance().textStale.fetch_add(1, std::memory_order_relaxed);
+            continue;
+        }
+        TextOutcome outcome;
+        outcome.error = result.error;
+        outcome.text = std::move(result.text);
+        outcome.detail = std::move(result.detail);
+        outcome.engine = std::move(result.engine);
+        outcome.ms = result.callMs;
+        outcome.usdMicros = result.usage.usdMicros;
+        outcome.arrivedMs = nowMs;
+        textResults.emplace(result.jobId, std::move(outcome));
+    }
+    textScratch.clear();
+    std::erase_if(textResults, [nowMs](auto const& entry) { return nowMs > entry.second.arrivedMs + 60000; });
+    auto const brain = BrainService::Current();
+    for (auto it = texts.begin(); it != texts.end();)
+    {
+        if (nowMs > it->second.deadlineMs + 30000)
+        {
+            brain->Cancel(it->first);
+            textResults.erase(it->first);
+            it = texts.erase(it);
+        }
+        else
+            ++it;
+    }
+}
+
+CoaVoiceDirector::TextStage CoaVoiceDirector::ResolveLineText(CoaVoiceConfig const& config,
+                                                             CoaVoiceLine& line, uint64 nowMs)
+{
+    auto const found = textResults.find(line.textJobId);
+    auto const waiting = texts.find(line.textJobId);
+    if (found != textResults.end())
+    {
+        TextOutcome outcome = std::move(found->second);
+        textResults.erase(found);
+        uint32 const account = waiting == texts.end() ? 0 : waiting->second.account;
+        texts.erase(line.textJobId);
+        auto const fallback = [](BrainTextFallback why)
+        {
+            BrainStats::Instance().Count(why);
+            return TextStage::Fallback;
+        };
+        if (outcome.error != BrainError::None)
+            return fallback(BrainTextFallbackOf(outcome.error));
+        Player* const speaker = line.scope.kind == CoaVoiceScopeKind::Whisper
+            ? ObjectAccessor::FindConnectedPlayer(line.target) : ObjectAccessor::FindPlayer(line.target);
+        if ((account && CoaPlayerPrefs::Instance().Get(account).AiOptedOut()) ||
+            (speaker && speaker->GetSession() &&
+             CoaPlayerPrefs::Instance().Get(speaker->GetSession()->GetAccountId()).AiOptedOut()))
+            return fallback(BrainTextFallback::OptOut);
+        std::string filled = CoaVoiceTemplates::FillGenerated(std::move(outcome.text),
+            speaker ? std::string(FirstName(speaker->GetName())) : std::string());
+        CoaVoiceReject reason = CoaVoiceReject::None;
+        if (!CoaVoiceSanitizer::Validate(filled, {config.maxBytes, &config.blockedWords, true, false}, &reason))
+            return fallback(reason == CoaVoiceReject::Blocked ? BrainTextFallback::Filtered : BrainTextFallback::Invalid);
+        if (sObjectMgr->IsChatFiltered(filled))
+            return fallback(BrainTextFallback::Filtered);
+        if (governor.IsRepeat(config, line.bot, line.scope.key, filled, nowMs))
+            return fallback(BrainTextFallback::Repeat);
+        line.text = std::move(filled);
+        line.generated = true;
+        BrainStats::Instance().textGenerated.fetch_add(1, std::memory_order_relaxed);
+        return TextStage::Ready;
+    }
+    if (waiting != texts.end() && line.textEpoch == brainEpoch && nowMs < line.textDeadlineMs)
+        return TextStage::Wait;
+    if (waiting != texts.end())
+    {
+        BrainService::Current()->Cancel(line.textJobId);
+        texts.erase(waiting);
+        BrainStats::Instance().Count(BrainTextFallback::Timeout);
+    }
+    return TextStage::Fallback;
+}
+
+void CoaVoiceDirector::CancelTexts()
+{
+    if (!texts.empty())
+    {
+        auto const brain = BrainService::Current();
+        for (auto const& [jobId, text] : texts)
+            brain->Cancel(jobId);
+    }
+    texts.clear();
+    textResults.clear();
+    textScratch.clear();
 }

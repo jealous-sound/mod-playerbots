@@ -225,6 +225,25 @@ std::shared_ptr<CoaVoiceConfig const> CoaVoiceConfig::Load()
                  "some answers will come later than the configured delay",
                  config->decisionTimeoutMs, config->replyDelayMinMs);
 
+    config->textLlm = Int("TextLlm", 0, 0, 2);
+    config->textTimeoutMs = Int("TextTimeoutMs", 6000, 1000, 30000);
+    config->textPerSenderPerDay = Int("TextPerSenderPerDay", 40, 0, 100000);
+    config->banterEnable = sConfigMgr->GetOption<bool>(Prefix + "Banter.Enable", false);
+    config->banterMaxPerMinutePerZone = Int("Banter.MaxPerMinutePerZone", 4, 1, 20);
+    config->banterIntervalMs = Int("Banter.IntervalSeconds", 90, 15, 3600) * 1000;
+    config->banterMinGapMs = Int("Banter.MinGapSeconds", 30, 5, 600) * 1000;
+    config->banterMaxZones = Int("Banter.MaxZones", 3, 1, 20);
+    config->banterAnswerPercent = Percent("Banter.AnswerPercent", 50);
+    config->banterTextPercent = Percent("Banter.TextPercent", 50);
+    config->banterQuietAfterHumanMs = Int("Banter.QuietAfterHumanSeconds", 20, 0, 300) * 1000;
+    static bool warnedTextNeedsBrain = false;
+    if (config->textLlm && !warnedTextNeedsBrain &&
+        !sConfigMgr->GetOption<bool>("AiPlayerbot.CoaBrain.Enable", false, false))
+    {
+        warnedTextNeedsBrain = true;
+        LOG_WARN("playerbots.voice", "CoA voice: TextLlm needs the brain (CoaBrain.Enable)");
+    }
+
     std::string channels;
     for (std::string const& channel : config->channels)
         channels += (channels.empty() ? "" : ",") + channel;

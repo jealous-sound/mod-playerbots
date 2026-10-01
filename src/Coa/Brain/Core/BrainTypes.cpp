@@ -44,6 +44,12 @@ char const* BrainUseName(BrainUse use)
             return "duel";
         case BrainUse::Organizer:
             return "organizer";
+        case BrainUse::Text:
+            return "text";
+        case BrainUse::Rpg:
+            return "rpg";
+        case BrainUse::Emote:
+            return "emote";
         default:
             return "unknown";
     }
@@ -108,6 +114,23 @@ char const* BrainErrorName(BrainError error)
             return "bad-response";
         case BrainError::NotBuilt:
             return "not-built";
+        case BrainError::Refused:
+            return "refused";
+        case BrainError::Rejected:
+            return "rejected";
+        default:
+            return "unknown";
+    }
+}
+
+char const* BrainJobKindName(BrainJobKind kind)
+{
+    switch (kind)
+    {
+        case BrainJobKind::Decision:
+            return "decision";
+        case BrainJobKind::Text:
+            return "text";
         default:
             return "unknown";
     }

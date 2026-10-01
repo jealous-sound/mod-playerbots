@@ -7,6 +7,7 @@
 #include "CoaQuestMenu.h"
 #include "NewRpgBaseAction.h"
 #include "BroadcastHelper.h"
+#include "BrainRpgAdvice.h"
 #include "ChatHelper.h"
 #include "Creature.h"
 #include "GameObject.h"
@@ -1088,6 +1089,7 @@ bool NewRpgBaseAction::SelectRandomFlightTaxiNode(uint32& flightMasterEntry, Wor
 bool NewRpgBaseAction::RandomChangeStatus(std::vector<NewRpgStatus> candidateStatus)
 {
     std::vector<NewRpgStatus> availableStatus;
+    std::vector<uint32> weights;
     uint32 probSum = 0;
     for (NewRpgStatus status : candidateStatus)
     {
@@ -1097,7 +1099,19 @@ bool NewRpgBaseAction::RandomChangeStatus(std::vector<NewRpgStatus> candidateSta
         if (CheckRpgStatusAvailable(status))
         {
             availableStatus.push_back(status);
-            probSum += sPlayerbotAIConfig.RpgStatusProbWeight[status];
+            weights.push_back(sPlayerbotAIConfig.RpgStatusProbWeight[status]);
+            probSum += weights.back();
+        }
+    }
+    // M6: the immutable group advice reweights the pick; off keeps the configured weights and the RNG draw.
+    if (!availableStatus.empty() && BrainRpgAdvice::Active())
+    {
+        std::vector<int32> ids(availableStatus.begin(), availableStatus.end());
+        if (BrainRpgAdvice::Blend(bot, ids.data(), weights.data(), weights.size()))
+        {
+            probSum = 0;
+            for (uint32 const weight : weights)
+                probSum += weight;
         }
     }
     // Safety check. Default to "rest" if all RPG weights = 0
@@ -1110,12 +1124,12 @@ bool NewRpgBaseAction::RandomChangeStatus(std::vector<NewRpgStatus> candidateSta
     uint32 rand = urand(1, probSum);
     uint32 accumulate = 0;
     NewRpgStatus chosenStatus = RPG_STATUS_END;
-    for (NewRpgStatus status : availableStatus)
+    for (std::size_t i = 0; i < availableStatus.size(); ++i)
     {
-        accumulate += sPlayerbotAIConfig.RpgStatusProbWeight[status];
+        accumulate += weights[i];
         if (accumulate >= rand)
         {
-            chosenStatus = status;
+            chosenStatus = availableStatus[i];
             break;
         }
     }
