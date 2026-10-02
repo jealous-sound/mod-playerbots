@@ -80,7 +80,7 @@ bool DrinkAction::isUseful()
 
 bool DrinkAction::isPossible()
 {
-    if (bot->IsInCombat() || bot->IsMounted() || IsDisallowedShapeshiftForm(bot))
+    if (bot->IsInCombat() || bot->IsMounted() || bot->IsInWater() || IsDisallowedShapeshiftForm(bot))
         return false;
 
     if (bot->HasAura(BG_WS_SPELL_WARSONG_FLAG) || bot->HasAura(BG_WS_SPELL_SILVERWING_FLAG) ||
@@ -135,7 +135,7 @@ bool EatAction::isUseful() { return UseItemAction::isUseful() && AI_VALUE2(uint8
 
 bool EatAction::isPossible()
 {
-    if (bot->IsInCombat() || bot->IsMounted() || IsDisallowedShapeshiftForm(bot))
+    if (bot->IsInCombat() || bot->IsMounted() || bot->IsInWater() || IsDisallowedShapeshiftForm(bot))
         return false;
 
     if (bot->HasAura(BG_WS_SPELL_WARSONG_FLAG) || bot->HasAura(BG_WS_SPELL_SILVERWING_FLAG) ||

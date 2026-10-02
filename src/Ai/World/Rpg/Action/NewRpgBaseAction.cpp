@@ -27,11 +27,13 @@
 #include "PlayerbotAI.h"
 #include "PlayerbotAIConfig.h"
 #include "PlayerbotTextMgr.h"
+#include "Group.h"
 #include "Playerbots.h"
 #include "Position.h"
 #include "QuestDef.h"
 #include "QuestPackets.h"
 #include "Random.h"
+#include <cmath>
 #include "RandomPlayerbotMgr.h"
 #include "SharedDefines.h"
 #include "StatsWeightCalculator.h"
@@ -593,6 +595,17 @@ bool NewRpgBaseAction::IsQuestCapableDoing(Quest const* quest)
 
 bool NewRpgBaseAction::OrganizeQuestLog()
 {
+    // Grouped with a real player, the log follows that player: the quests they share, grey or elite dungeon
+    // quests included, are theirs to drop (jealous-sound/azerothcore-wotlk-coa#5776).
+    if (Group* group = bot->GetGroup())
+        for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+            if (Player* member = ref->GetSource())
+                if (member != bot && !GET_PLAYERBOT_AI(member))
+                    return false;
+    // An altbot's log is its player's too, grouped or not.
+    if (Player* master = botAI->GetMaster(); master && !GET_PLAYERBOT_AI(master))
+        return false;
+
     int32 freeSlotNum = 0;
 
     for (uint16 i = 0; i < MAX_QUEST_LOG_SIZE; ++i)
@@ -1025,6 +1038,73 @@ WorldPosition NewRpgBaseAction::SelectRandomGrindPos(Player* bot)
     return dest;
 }
 
+namespace
+{
+struct CityPoint
+{
+    TeamId team;
+    uint32 mapId;
+    float x, y, z;
+};
+
+// Banks, auction houses and inns of the eight capitals (averaged from the NPC spawns).
+CityPoint const CityPoints[] =
+{
+    {TEAM_ALLIANCE, 0, -8935.3f, 613.2f, 99.6f},     {TEAM_ALLIANCE, 0, -8820.1f, 662.0f, 97.2f},
+    {TEAM_ALLIANCE, 0, -8867.8f, 673.7f, 98.0f},     {TEAM_ALLIANCE, 0, -4886.5f, -997.4f, 504.0f},
+    {TEAM_ALLIANCE, 0, -4959.7f, -907.9f, 505.2f},   {TEAM_ALLIANCE, 0, -4840.7f, -857.1f, 502.0f},
+    {TEAM_ALLIANCE, 1, 9942.0f, 2519.7f, 1317.7f},   {TEAM_ALLIANCE, 1, 9864.5f, 2341.7f, 1326.8f},
+    {TEAM_ALLIANCE, 1, 10127.9f, 2224.8f, 1328.8f},  {TEAM_ALLIANCE, 530, -3919.0f, -11544.7f, -150.1f},
+    {TEAM_ALLIANCE, 530, -4025.5f, -11736.0f, -151.8f}, {TEAM_ALLIANCE, 530, -3746.4f, -11696.1f, -105.8f},
+    {TEAM_HORDE, 1, 1627.5f, -4375.7f, 12.1f},       {TEAM_HORDE, 1, 1683.6f, -4461.3f, 20.4f},
+    {TEAM_HORDE, 1, 1634.0f, -4439.4f, 15.8f},       {TEAM_HORDE, 1, -1257.7f, 22.8f, 128.3f},
+    {TEAM_HORDE, 1, -1204.7f, 102.8f, 134.7f},       {TEAM_HORDE, 1, -1300.3f, 38.5f, 129.3f},
+    {TEAM_HORDE, 0, 1595.8f, 240.3f, -52.1f},        {TEAM_HORDE, 0, 1595.2f, 240.1f, -56.8f},
+    {TEAM_HORDE, 0, 1635.4f, 223.3f, -43.0f},        {TEAM_HORDE, 530, 9666.8f, -7354.9f, 14.9f},
+    {TEAM_HORDE, 530, 9663.3f, -7303.7f, 17.5f},     {TEAM_HORDE, 530, 9624.9f, -7293.2f, 14.2f},
+};
+
+constexpr float CityWalkDistance = 1500.0f;
+}
+
+WorldPosition NewRpgBaseAction::SelectRandomCityPos(Player* bot)
+{
+    std::vector<CityPoint const*> nearby, all;
+    for (CityPoint const& point : CityPoints)
+    {
+        if (point.team != bot->GetTeamId())
+            continue;
+        all.push_back(&point);
+        if (point.mapId == bot->GetMapId() && bot->GetExactDist2d(point.x, point.y) < CityWalkDistance)
+            nearby.push_back(&point);
+    }
+
+    // Mostly the capital the bot can walk to, sometimes a trip to another one.
+    std::vector<CityPoint const*> const& pool = !nearby.empty() && urand(0, 99) < 70 ? nearby : all;
+    if (pool.empty())
+        return WorldPosition();
+
+    CityPoint const* point = pool[urand(0, pool.size() - 1)];
+    // Spread the bots around the building instead of stacking them on one spot.
+    float const angle = frand(0.0f, 2 * float(M_PI));
+    float const radius = frand(2.0f, 8.0f);
+    return WorldPosition(point->mapId, point->x + radius * std::cos(angle), point->y + radius * std::sin(angle),
+                         point->z);
+}
+
+void NewRpgBaseAction::LeaveCity()
+{
+    NewRpgInfo& info = botAI->rpgInfo;
+    info.cityStayMs = 0;
+    WorldPosition const back = info.cityReturnPos;
+    info.cityReturnPos = WorldPosition();
+    if (back == WorldPosition() || bot->IsInCombat() || !bot->IsAlive() || bot->GetGroup())
+        return;
+
+    bot->TeleportTo(back.GetMapId(), back.GetPositionX(), back.GetPositionY(), back.GetPositionZ(),
+                    bot->GetOrientation());
+}
+
 WorldPosition NewRpgBaseAction::SelectRandomCampPos(Player* bot)
 {
     const std::vector<WorldLocation> locs = sTravelMgr.GetTravelHubs(bot);
@@ -1175,6 +1255,13 @@ bool NewRpgBaseAction::RandomChangeStatus(std::vector<NewRpgStatus> candidateSta
                 if (botAI->lowPriorityQuest.find(questId) != botAI->lowPriorityQuest.end())
                     continue;
 
+                // An elite, group or too high quest in the log (copied from the master, shared, "accept all") is
+                // only handed in, never worked on alone: bots died on it again and again
+                // (jealous-sound/azerothcore-wotlk-coa#5521).
+                if (Quest const* logged = sObjectMgr->GetQuestTemplate(questId))
+                    if (bot->GetQuestStatus(questId) != QUEST_STATUS_COMPLETE && !IsQuestCapableDoing(logged))
+                        continue;
+
                 std::vector<POIInfo> poiInfo;
                 if (GetQuestPOIPosAndObjectiveIdx(questId, poiInfo, true))
                 {
@@ -1219,6 +1306,27 @@ bool NewRpgBaseAction::RandomChangeStatus(std::vector<NewRpgStatus> candidateSta
         case RPG_OUTDOOR_PVP:
         {
             botAI->rpgInfo.ChangeToOutdoorPvp();
+            return true;
+        }
+        case RPG_GO_CITY:
+        {
+            WorldPosition pos = SelectRandomCityPos(bot);
+            if (pos == WorldPosition())
+                return false;
+
+            // Too far to walk: take the hearth, and come back here once the visit is over.
+            if (pos.GetMapId() != bot->GetMapId() ||
+                bot->GetExactDist2d(pos.GetPositionX(), pos.GetPositionY()) > CityWalkDistance)
+            {
+                botAI->rpgInfo.cityReturnPos = WorldPosition(bot);
+                if (!bot->TeleportTo(pos.GetMapId(), pos.GetPositionX(), pos.GetPositionY(), pos.GetPositionZ(),
+                                     bot->GetOrientation()))
+                {
+                    botAI->rpgInfo.cityReturnPos = WorldPosition();
+                    return false;
+                }
+            }
+            botAI->rpgInfo.ChangeToGoCity(pos);
             return true;
         }
         default:
@@ -1267,6 +1375,13 @@ bool NewRpgBaseAction::CheckRpgStatusAvailable(NewRpgStatus status)
                 if (botAI->lowPriorityQuest.find(questId) != botAI->lowPriorityQuest.end())
                     continue;
 
+                // An elite, group or too high quest in the log (copied from the master, shared, "accept all") is
+                // only handed in, never worked on alone: bots died on it again and again
+                // (jealous-sound/azerothcore-wotlk-coa#5521).
+                if (Quest const* logged = sObjectMgr->GetQuestTemplate(questId))
+                    if (bot->GetQuestStatus(questId) != QUEST_STATUS_COMPLETE && !IsQuestCapableDoing(logged))
+                        continue;
+
                 std::vector<POIInfo> poiInfo;
                 if (GetQuestPOIPosAndObjectiveIdx(questId, poiInfo, true))
                 {
@@ -1282,6 +1397,9 @@ bool NewRpgBaseAction::CheckRpgStatusAvailable(NewRpgStatus status)
             std::vector<uint32> path;
             return SelectRandomFlightTaxiNode(flightMasterEntry, flightMasterPos, path);
         }
+        case RPG_GO_CITY:
+            return !bot->GetGroup() && bot->IsAlive() && !bot->IsInCombat() && WorldPosition(bot).isOverworld() &&
+                   SelectRandomCityPos(bot) != WorldPosition();
         case RPG_OUTDOOR_PVP:
         {
             if (!bot->IsPvP())

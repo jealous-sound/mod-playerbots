@@ -315,6 +315,25 @@ bool LootObject::IsLootPossible(Player* bot)
     if (go && go->HasFlag(GAMEOBJECT_FLAGS, GO_FLAG_INTERACT_COND) && !go->ActivateToQuest(bot))
         return false;
 
+    // Loot already rolled that holds nothing this bot may take: a worldforged pickup it has spent is
+    // still there for everyone else, and the bot opened it again and again for ever
+    // (jealous-sound/azerothcore-wotlk-coa#5519).
+    if (go && !go->loot.empty() && !go->loot.gold)
+    {
+        bool takeable = false;
+        for (LootItem const& item : go->loot.items)
+            if (!item.is_looted && item.AllowedForPlayer(bot, go->GetGUID()))
+            {
+                takeable = true;
+                break;
+            }
+        for (LootItem const& item : go->loot.quest_items)
+            if (!takeable && !item.is_looted && item.AllowedForPlayer(bot, go->GetGUID()))
+                takeable = true;
+        if (!takeable)
+            return false;
+    }
+
     if (skillId == SKILL_NONE)
         return true;
 

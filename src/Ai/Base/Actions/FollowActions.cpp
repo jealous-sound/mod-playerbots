@@ -20,6 +20,24 @@
 
 namespace
 {
+// Out of a fight in a dungeon, a tank walks a few yards ahead of the real player it follows instead of
+// behind them, so that it leads the group and the next pack is within its pull reach
+// (jealous-sound/azerothcore-wotlk-coa#5753). False, and the usual follow, when that point is not
+// reachable in a straight line (a wall, a ledge, a stair).
+constexpr float TankLeadDistance = 6.0f;
+
+bool TankLeadPoint(PlayerbotAI* botAI, Player* bot, Unit* leader, float& x, float& y, float& z)
+{
+    if (!leader || !leader->IsPlayer() || leader == bot || !bot->GetMap()->IsDungeon() || bot->IsInCombat() ||
+        leader->IsInCombat() || !botAI->IsTank(bot) || GET_PLAYERBOT_AI(leader->ToPlayer()) ||
+        botAI->IsTank(leader->ToPlayer(), true) || leader->GetMapId() != bot->GetMapId())
+        return false;
+
+    leader->GetNearPoint(bot, x, y, z, 0.0f, TankLeadDistance, leader->GetOrientation());
+    return std::fabs(z - leader->GetPositionZ()) < 4.0f &&
+           leader->GetExactDist2d(x, y) > TankLeadDistance - 2.0f && leader->IsWithinLOS(x, y, z);
+}
+
     Transport* GetTransportForPosTolerant(Map* map, WorldObject* ref, uint32 phaseMask, float x, float y, float z)
     {
         if (!map || !ref)
@@ -205,6 +223,14 @@ bool FollowAction::Execute(Event /*event*/)
     }
     // end unified transport handling
 
+    Unit* leader = !target.empty()     ? AI_VALUE(Unit*, target)
+                   : botAI->GetMaster() ? static_cast<Unit*>(botAI->GetMaster())
+                                        : AI_VALUE(Unit*, "group leader");
+    float leadX, leadY, leadZ;
+    if (TankLeadPoint(botAI, bot, leader, leadX, leadY, leadZ))
+        return MoveTo(bot->GetMapId(), leadX, leadY, leadZ, false, false, false, true,
+                      MovementPriority::MOVEMENT_NORMAL, true);
+
     bool moved = false;
     if (!target.empty())
     {
@@ -286,6 +312,10 @@ bool FollowAction::isUseful()
     }
     if (botAI->HasStrategy("master fishing", BOT_STATE_NON_COMBAT))
         return ServerFacade::instance().IsDistanceGreaterThan(distance, sPlayerbotAIConfig.fishingDistanceFromMaster);
+
+    float leadX, leadY, leadZ;
+    if (TankLeadPoint(botAI, bot, fTarget, leadX, leadY, leadZ))
+        return bot->GetExactDist2d(leadX, leadY) > 2.5f;
 
     return ServerFacade::instance().IsDistanceGreaterThan(distance, formation->GetMaxDistance());
 }

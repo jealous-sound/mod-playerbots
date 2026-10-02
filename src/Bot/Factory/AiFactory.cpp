@@ -459,6 +459,9 @@ void AiFactory::AddDefaultCombatStrategies(Player* player, PlayerbotAI* const fa
             if (std::string_view(coa->position) == "close")
                 engine->addStrategy("coa basic attack", false);
         }
+
+        if (sPlayerbotAIConfig.coaBossKnowledge)
+            engine->addStrategy("coa boss dodge", false);
     }
 
     if (PlayerbotAI::IsTank(player, true))

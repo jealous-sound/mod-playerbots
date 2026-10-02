@@ -27,7 +27,7 @@ class Player;
 //
 // With RpgNext = 0 (or no advice for a bot's group) the pick is exactly today's: same weights, same draw.
 
-// The eight statuses the brain chooses among, in option order. Idle has no option: its weight is never changed.
+// The statuses the brain chooses among, in append-only option order. Idle has no option.
 enum class BrainRpgOption : uint8
 {
     WanderRandom = 0,
@@ -38,12 +38,13 @@ enum class BrainRpgOption : uint8
     TravelFlight,
     Rest,
     OutdoorPvp,
+    GoCity,
     Count
 };
 
 constexpr std::size_t BRAIN_RPG_OPTIONS = std::size_t(BrainRpgOption::Count);
 
-// "wander_random", "wander_npc", "go_grind", "go_camp", "do_quest", "travel_flight", "rest", "outdoor_pvp": the
+// "wander_random", "wander_npc", "go_grind", "go_camp", "do_quest", "travel_flight", "rest", "outdoor_pvp", "go_city": the
 // option keys of the brain question, in option order.
 char const* BrainRpgOptionKey(BrainRpgOption option);
 
@@ -60,7 +61,12 @@ struct BrainRpgKey
 // One group's advice. p[i] is the brain's probability of option i (they sum to about 1), or -1 when missing.
 struct BrainRpgEntry
 {
-    std::array<float, BRAIN_RPG_OPTIONS> p{-1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f};
+    std::array<float, BRAIN_RPG_OPTIONS> p = []
+    {
+        std::array<float, BRAIN_RPG_OPTIONS> probabilities;
+        probabilities.fill(-1.0f);
+        return probabilities;
+    }();
     uint64 untilMs = 0;  // CoaTime::NowMs() clock: the advice expires here
     uint32 bots = 0;     // random bots of the group when it was asked
 };
@@ -92,7 +98,7 @@ public:
     static std::shared_ptr<BrainRpgSnapshot const> Current();
 
     // Pure. The option of a NewRpgStatus value (PlayerbotAIConfig.h): WANDER_RANDOM 3 -> WanderRandom, WANDER_NPC 4,
-    // GO_GRIND 1, GO_CAMP 2, DO_QUEST 5, TRAVEL_FLIGHT 6, REST 7, OUTDOOR_PVP 8; -1 for RPG_IDLE, RPG_STATUS_END and
+    // GO_GRIND 1, GO_CAMP 2, DO_QUEST 5, TRAVEL_FLIGHT 6, REST 7, OUTDOOR_PVP 8, GO_CITY 9; -1 for RPG_IDLE, RPG_STATUS_END and
     // anything else (Blend leaves such a status' weight as it is).
     static int32 OptionOfStatus(int32 newRpgStatus);
 
@@ -108,6 +114,9 @@ public:
     // (the seam draws urand(1, sum) on the scaled weights). Never turns an eligible weight into 0.
     static bool BlendWeights(BrainRpgEntry const& entry, float influence, int32 const* options, uint32* weights,
                              std::size_t count);
+
+    // Pure construction, answer-normalization and blend regressions; no world objects or jobs submitted.
+    static bool SelfTest();
 
     // Map thread, the seam in NewRpgBaseAction::RandomChangeStatus. Looks the bot's group up in the snapshot (an
     // entry past its untilMs is ignored) and runs BlendWeights with CoaBrain.Rpg.Influence; counts

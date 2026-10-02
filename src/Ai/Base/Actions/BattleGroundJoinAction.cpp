@@ -6,6 +6,7 @@
 
 #include "BattleGroundJoinAction.h"
 #include "ArenaTeam.h"
+#include "CoaSpecialization.h"
 #include "ArenaTeamMgr.h"
 #include "BattlegroundMgr.h"
 #include "Event.h"
@@ -22,7 +23,14 @@ bool BGJoinAction::Execute(Event /*event*/)
         if (bgList.empty())
             return false;
 
-        BattlegroundQueueTypeId queueTypeId = (BattlegroundQueueTypeId)bgList[urand(0, bgList.size() - 1)];
+        // A queue a real player waits in, short of the bot's faction, comes before the rest: drawn at
+        // random among all, bots filled battlegrounds of their own and the player's never started.
+        std::vector<uint32> wanted;
+        for (uint32 listed : bgList)
+            if (FactionMissing(BattlegroundQueueTypeId(listed)))
+                wanted.push_back(listed);
+        std::vector<uint32> const& pool = wanted.empty() ? bgList : wanted;
+        BattlegroundQueueTypeId queueTypeId = (BattlegroundQueueTypeId)pool[urand(0, pool.size() - 1)];
         BattlegroundTypeId bgTypeId = BattlegroundMgr::BGTemplateId(queueTypeId);
         bool isRated = false;
 
@@ -54,6 +62,17 @@ bool BGJoinAction::Execute(Event /*event*/)
     }
 
     return JoinQueue(queueType);
+}
+
+uint32* BGJoinAction::FactionMissing(BattlegroundQueueTypeId queueTypeId)
+{
+    Battleground* bg = sBattlegroundMgr->GetBattlegroundTemplate(BattlegroundMgr::BGTemplateId(queueTypeId));
+    PvPDifficultyEntry const* pvpDiff = bg ? GetBattlegroundBracketByLevel(bg->GetMapId(), bot->GetLevel()) : nullptr;
+    if (!pvpDiff)
+        return nullptr;
+    BattlegroundInfo& info = sRandomPlayerbotMgr.BattlegroundData[queueTypeId][pvpDiff->GetBracketId()];
+    uint32* missing = bot->GetTeamId() == TEAM_ALLIANCE ? &info.bgAllianceMissing : &info.bgHordeMissing;
+    return *missing ? missing : nullptr;
 }
 
 bool BGJoinAction::gatherArenaTeam(ArenaType type)
@@ -286,6 +305,10 @@ bool BGJoinAction::shouldJoinBg(BattlegroundQueueTypeId queueTypeId, Battlegroun
         return false;
     }
 
+    // A real player waits and the bot's faction lacks players for the battleground to start.
+    if (FactionMissing(queueTypeId))
+        return true;
+
     // Check if bots should join Battleground
     uint32 bgAllianceBotCount = sRandomPlayerbotMgr.BattlegroundData[queueTypeId][bracketId].bgAllianceBotCount;
     uint32 bgAlliancePlayerCount = sRandomPlayerbotMgr.BattlegroundData[queueTypeId][bracketId].bgAlliancePlayerCount;
@@ -312,6 +335,10 @@ bool BGJoinAction::isUseful()
 {
     // do not try if BG bots disabled
     if (!sPlayerbotAIConfig.randomBotJoinBG)
+        return false;
+
+    // Offered to a player by "lfg bot": it waits for the invitation.
+    if (CoaLfgOfferedToOther(bot, nullptr))
         return false;
 
     // can't queue while in BG/Arena
@@ -507,6 +534,10 @@ bool BGJoinAction::JoinQueue(uint32 type)
              isRated   ? "Rated Arena"
              : isArena ? "Arena"
                        : "");
+
+    if (!isArena)
+        if (uint32* missing = FactionMissing(queueTypeId))
+            *missing -= std::min(*missing, joinAsGroup ? bot->GetGroup()->GetMembersCount() : 1u);
 
     if (isArena)
     {

@@ -10,6 +10,7 @@
 #include "BrainDecisionRing.h"
 #include "BrainGovernor.h"
 #include "BrainJson.h"
+#include "BrainRpgAdvice.h"
 #include "BrainSelfTest.h"
 #include "BrainService.h"
 #include "BrainSink.h"
@@ -1140,6 +1141,11 @@ std::vector<std::string> SelfTest()
     try
     {
         report = BrainSelfTest::Run(path);
+        bool const rpg = BrainRpgAdvice::SelfTest();
+        report.passed += rpg ? 1 : 0;
+        report.failed += rpg ? 0 : 1;
+        report.lines.emplace_back(rpg ? "PASS RPG advice: nine append-only options, city answers and probability blend"
+                                      : "FAIL RPG advice option/normalization/blend regression");
     }
     catch (std::exception const& e)
     {

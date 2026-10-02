@@ -60,6 +60,12 @@ void NewRpgInfo::ChangeToOutdoorPvp(ObjectGuid::LowType capturePointSpawnId)
     data = pvp;
 }
 
+void NewRpgInfo::ChangeToGoCity(WorldPosition pos)
+{
+    startT = getMSTime();
+    data = GoCity{pos};
+}
+
 void NewRpgInfo::ChangeToRest()
 {
     startT = getMSTime();
@@ -102,6 +108,7 @@ NewRpgStatus NewRpgInfo::StatusFromString(std::string const& name)
     if (name == "do quest")       return RPG_DO_QUEST;
     if (name == "travel flight")  return RPG_TRAVEL_FLIGHT;
     if (name == "outdoor pvp")    return RPG_OUTDOOR_PVP;
+    if (name == "go city")        return RPG_GO_CITY;
     return RPG_STATUS_END;
 }
 
@@ -118,6 +125,7 @@ NewRpgStatus NewRpgInfo::GetStatus()
         if constexpr (std::is_same_v<T, DoQuest>) return RPG_DO_QUEST;
         if constexpr (std::is_same_v<T, TravelFlight>) return RPG_TRAVEL_FLIGHT;
         if constexpr (std::is_same_v<T, OutdoorPvP>) return RPG_OUTDOOR_PVP;
+        if constexpr (std::is_same_v<T, GoCity>) return RPG_GO_CITY;
         return RPG_IDLE;
     }, data);
 }
@@ -180,6 +188,12 @@ std::string NewRpgInfo::ToString()
             out << "\nfromNode: " << arg.path[0];
             out << "\ntoNode: " << arg.path[arg.path.size() - 1];
             out << "\ninFlight: " << arg.inFlight;
+        }
+        else if constexpr (std::is_same_v<T, GoCity>)
+        {
+            out << "GO_CITY";
+            out << "\nCityPos: " << arg.pos.GetMapId() << " " << arg.pos.GetPositionX() << " "
+                << arg.pos.GetPositionY() << " " << arg.pos.GetPositionZ();
         }
         else if constexpr (std::is_same_v<T, OutdoorPvP>)
         {

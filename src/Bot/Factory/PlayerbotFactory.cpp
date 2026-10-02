@@ -13,6 +13,7 @@
 #include "CoaSpecLookup.h"
 #include "CoaSpecStatWeights.h"
 #include "CoaSpecialization.h"
+#include "Config.h"
 #include "DBCStores.h"
 #include "DBCStructure.h"
 #include "GuildMgr.h"
@@ -566,7 +567,26 @@ PlayerbotFactory::PlayerbotFactory(Player* bot, uint32 level, uint32 itemQuality
                                                                sPlayerbotAIConfig.randomGearQualityLimit);
         this->itemQuality = sPlayerbotAIConfig.randomGearQualityLimit;
         this->gearScoreLimit = gs;
+        // Epic gear is for the bots at the top level only: below it they keep to rare.
+        static uint32 const epicMinLevel = sConfigMgr->GetOption<uint32>("AiPlayerbot.CoaEpicGearMinLevel", 60);
+        if (this->itemQuality > ITEM_QUALITY_RARE && level < epicMinLevel)
+            this->itemQuality = ITEM_QUALITY_RARE;
     }
+}
+
+// Worldforged items (Conquest of Azeroth): found in the open world, their entries above those of the
+// next expansions; the expansion limit lets them through, the item level limit still applies.
+bool PlayerbotFactory::IsCoaWorldforged(uint32 itemId)
+{
+    static std::unordered_set<uint32> const worldforged = []
+    {
+        std::unordered_set<uint32> ids;
+        for (auto const& [id, proto] : *sObjectMgr->GetItemTemplateStore())
+            if (proto.Description.find("Worldforged") != std::string::npos)
+                ids.insert(id);
+        return ids;
+    }();
+    return worldforged.contains(itemId);
 }
 
 void PlayerbotFactory::Init()
@@ -1764,13 +1784,24 @@ std::unordered_map<uint32, uint32> const& CoaQuestGrantLevels(Player* bot)
             !bot->SatisfyQuestRace(quest, false))
             continue;
         uint32 const level = uint32(std::max<int32>(quest->GetMinLevel(), 1));
-        auto note = [&out, level](uint32 spellId)
+        // A quest teaching another class's spells is that class's quest: all it grants is "granted"
+        // above any level, so DropCoaRanksAbove takes back what was learnt, unless a legitimate source
+        // grants it lower.
+        bool foreign = false;
+        if (int32 const cast = quest->GetRewSpellCast())
+            if (SpellInfo const* info = sSpellMgr->GetSpellInfo(cast))
+                for (SpellEffectInfo const& effect : info->Effects)
+                    if (effect.Effect == SPELL_EFFECT_LEARN_SPELL &&
+                        PlayerbotFactory::IsCoaForeignClassSpell(bot, effect.TriggerSpell))
+                        foreign = true;
+        uint32 const at = foreign ? PlayerbotFactory::NoCoaGrantLevel - 1 : level;
+        auto note = [&out, at](uint32 spellId)
         {
             if (!spellId)
                 return;
             auto found = out.find(spellId);
-            if (found == out.end() || found->second > level)
-                out[spellId] = level;
+            if (found == out.end() || found->second > at)
+                out[spellId] = at;
         };
         note(quest->GetRewSpell());
         if (int32 const cast = quest->GetRewSpellCast())
@@ -1782,6 +1813,19 @@ std::unordered_map<uint32, uint32> const& CoaQuestGrantLevels(Player* bot)
     return out;
 }
 }  // namespace
+
+bool PlayerbotFactory::IsCoaForeignClassSpell(Player* bot, uint32 spellId)
+{
+    if (!IsAscensionCustomClassId(bot->getClass()))
+        return false;
+    SkillLineAbilityMapBounds const bounds = sSpellMgr->GetSkillLineAbilityMapBounds(spellId);
+    if (bounds.first == bounds.second)
+        return false;
+    for (auto i = bounds.first; i != bounds.second; ++i)
+        if (!i->second->ClassMask || (i->second->ClassMask & bot->getClassMask()))
+            return false;
+    return true;
+}
 
 uint32 PlayerbotFactory::CoaGrantLevel(Player* bot, uint32 spellId)
 {
@@ -2721,10 +2765,13 @@ void PlayerbotFactory::InitEquipment(bool incremental, bool second_chance)
 
                         ItemTemplate const* proto = sObjectMgr->GetItemTemplate(itemId);
                         // disable next expansion gear
-                        if (sPlayerbotAIConfig.limitGearExpansion && bot->GetLevel() <= 60 && itemId >= 23728)
+                        bool const worldforged = IsCoaWorldforged(itemId);
+                        if (sPlayerbotAIConfig.limitGearExpansion && bot->GetLevel() <= 60 && itemId >= 23728 &&
+                            !worldforged)
                             continue;
 
                         if (sPlayerbotAIConfig.limitGearExpansion && bot->GetLevel() <= 70 && itemId >= 35570 &&
+                            !worldforged &&
                             itemId != 36737 && itemId != 37739 &&
                             itemId != 37740)  // transition point from TBC -> WOTLK isn't as clear, and there are other
                                               // wearable TBC items above 35570 but nothing of significance
@@ -4965,16 +5012,18 @@ void PlayerbotFactory::InitGlyphs(bool increment)
     }
 
     std::list<uint32> glyphs;
-    ItemTemplateContainer const* itemTemplates = sObjectMgr->GetItemTemplateStore();
-    for (ItemTemplateContainer::const_iterator i = itemTemplates->begin(); i != itemTemplates->end(); ++i)
+    // Only the glyph items matter; walking the whole item store (560k entries on CoA) for them on
+    // every bot refresh was a visible share of the server time.
+    static std::vector<ItemTemplate const*> const glyphItems = []
     {
-        //uint32 itemId = i->first; //not used, line marked for removal.
-        ItemTemplate const* proto = &i->second;
-        if (!proto)
-            continue;
-
-        if (proto->Class != ITEM_CLASS_GLYPH)
-            continue;
+        std::vector<ItemTemplate const*> out;
+        for (auto const& [itemId, proto] : *sObjectMgr->GetItemTemplateStore())
+            if (proto.Class == ITEM_CLASS_GLYPH)
+                out.push_back(&proto);
+        return out;
+    }();
+    for (ItemTemplate const* proto : glyphItems)
+    {
 
         if ((proto->AllowableClass & bot->getClassMask()) == 0 || (proto->AllowableRace & bot->getRaceMask()) == 0)
             continue;

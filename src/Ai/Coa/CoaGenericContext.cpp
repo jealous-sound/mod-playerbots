@@ -246,6 +246,12 @@ bool CoaCanCastTrigger::IsActive()
     if (!info)
         return true;
 
+    // A resurrection in a rotation line is aimed at the current target, an enemy (Spiritual Ascension,
+    // Prayer Beads: jealous-sound/azerothcore-wotlk-coa#5732, #5633). The dead are raised by "coa resurrect".
+    for (SpellEffectInfo const& effect : info->Effects)
+        if (effect.Effect == SPELL_EFFECT_RESURRECT || effect.Effect == SPELL_EFFECT_RESURRECT_NEW)
+            return false;
+
     // A rotation line asks for a heal whenever it is off cooldown, whoever needs it. When it is
     // worth three times what the group is missing, it would land on full health: not now.
     if (float const worth = CoaHealWorth(bot, info, bot))

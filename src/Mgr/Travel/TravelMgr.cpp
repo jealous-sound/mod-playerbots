@@ -4444,6 +4444,15 @@ std::vector<std::vector<uint32>> TravelMgr::GetOptimalFlightDestinations(Player*
         {
             if (botLevel < bracket.low || botLevel > bracket.high)
                 continue;
+            // Random teleports already skip the other faction's zones; flights went there through neutral flight
+            // masters (Alliance bots in Ghostlands, jealous-sound/azerothcore-wotlk-coa#5324).
+            if (AreaTableEntry const* zoneEntry = sAreaTableStore.LookupEntry(zoneId))
+            {
+                if (zoneEntry->team == 4 && bot->GetTeamId() == TEAM_ALLIANCE)
+                    continue;
+                if (zoneEntry->team == 2 && bot->GetTeamId() == TEAM_HORDE)
+                    continue;
+            }
             if (GetFlightNodesInZone(zoneId, bot->GetTeamId(), fromNode).empty())
                 continue;
             candidateZones.push_back(zoneId);
@@ -4633,6 +4642,17 @@ void TravelMgr::PrepareZone2LevelBracket()
     // Override with values from config
     for (auto const& [zoneId, bracketPair] : sPlayerbotAIConfig.zoneBrackets)
         zone2LevelBracket[zoneId] = {bracketPair.first, bracketPair.second};
+
+    // A realm whose bots stop at 60 (Conquest of Azeroth) has no Burning Crusade or Wrath content to send them
+    // to, whatever an older playerbots.conf says: level 58-60 bots were teleported to Hellfire Peninsula and
+    // Zangarmarsh (Zyth45/mod-playerbots#14). The Blood Elf and Draenei zones stay.
+    if (sPlayerbotAIConfig.randomBotMaxLevel <= 60)
+        for (uint32 zoneId : std::initializer_list<uint32>{AREA_HELLFIRE_PENINSULA, AREA_NAGRAND, AREA_TEROKKAR_FOREST, AREA_SHADOWMOON_VALLEY,
+                              AREA_ZANGARMARSH, AREA_BLADES_EDGE_MOUNTAINS, AREA_NETHERSTORM, AREA_ISLE_OF_QUEL_DANAS,
+                              AREA_DRAGONBLIGHT, AREA_ZUL_DRAK, AREA_THE_STORM_PEAKS, 210u, AREA_GRIZZLY_HILLS,
+                              AREA_HOWLING_FJORD, AREA_CRYSTALSONG_FOREST, AREA_BOREAN_TUNDRA, AREA_SHOLAZAR_BASIN,
+                              AREA_WINTERGRASP})
+            zone2LevelBracket.erase(zoneId);
 }
 
 void TravelMgr::PrepareDestinationCache()

@@ -28,6 +28,9 @@ public:
     virtual bool shouldJoinBg(BattlegroundQueueTypeId queueTypeId, BattlegroundBracketId bracketId);
     bool Execute(Event event) override;
     virtual bool gatherArenaTeam(ArenaType type);
+    // Where a real player waits for this queue at the bot's level: what the bot's faction still lacks
+    // for the battleground to start, or nullptr when nothing.
+    uint32* FactionMissing(BattlegroundQueueTypeId queueTypeId);
 
 protected:
     bool JoinQueue(uint32 type);

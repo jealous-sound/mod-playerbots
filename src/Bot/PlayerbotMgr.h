@@ -16,6 +16,15 @@ class PlayerbotAI;
 class PlayerbotLoginQueryHolder;
 class WorldPacket;
 
+// A bot login runs asynchronously, so its guid is parked here until the query holder comes back. The
+// start time lets a login that never completes be told apart from one that is merely still running.
+struct BotLoginProgress
+{
+    uint32 masterAccountId;
+    time_t since;
+    bool reported;
+};
+
 typedef std::map<ObjectGuid, Player*> PlayerBotMap;
 typedef std::map<std::string, std::set<std::string> > PlayerBotErrorMap;
 
@@ -28,6 +37,7 @@ public:
     void AddPlayerBot(ObjectGuid guid, uint32 masterAccountId);
     bool IsAccountLinked(uint32 accountId, uint32 masterAccountId);
     void HandlePlayerBotLoginCallback(PlayerbotLoginQueryHolder const& holder);
+    static bool HasPendingLogins();
 
     void LogoutPlayerBot(ObjectGuid guid);
     void DisablePlayerBot(ObjectGuid guid);
@@ -59,7 +69,7 @@ protected:
     virtual void OnBotLoginInternal(Player* const bot) = 0;
 
     PlayerBotMap playerBots;
-    static std::unordered_map<ObjectGuid, uint32> botLoading;
+    static std::unordered_map<ObjectGuid, BotLoginProgress> botLoading;
 };
 
 class PlayerbotMgr : public PlayerbotHolder

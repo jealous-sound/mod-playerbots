@@ -66,7 +66,41 @@ private:
 };
 
 std::unordered_set<ObjectGuid> BotInitGuard::botsBeingInitialized;
-std::unordered_map<ObjectGuid, uint32> PlayerbotHolder::botLoading;
+std::unordered_map<ObjectGuid, BotLoginProgress> PlayerbotHolder::botLoading;
+
+namespace
+{
+// A login that has not come back by now is treated as lost rather than pending, so that the one bot
+// it belongs to is the only one it costs.
+constexpr time_t BotLoginStallSeconds = 60;
+}
+
+bool PlayerbotHolder::HasPendingLogins()
+{
+    time_t const now = time(nullptr);
+    bool pending = false;
+
+    for (auto& [guid, progress] : botLoading)
+    {
+        if (now - progress.since < BotLoginStallSeconds)
+        {
+            pending = true;
+            continue;
+        }
+
+        if (progress.reported)
+            continue;
+
+        progress.reported = true;
+        std::string name;
+        sCharacterCache->GetCharacterNameByGuid(guid, name);
+        LOG_ERROR("playerbots", "Bot {} (guid {}) has not finished logging in after {} seconds; the other bots "
+                  "are no longer held back by it",
+                  name.empty() ? "<unknown>" : name, guid.GetCounter(), BotLoginStallSeconds);
+    }
+
+    return pending;
+}
 
 PlayerbotHolder::PlayerbotHolder() : PlayerbotAIBase(false) {}
 class PlayerbotLoginQueryHolder : public LoginQueryHolder
@@ -124,9 +158,9 @@ void PlayerbotHolder::AddPlayerBot(ObjectGuid playerGuid, uint32 masterAccountId
             return;
         }
         uint32 loadingForMaster = 0;
-        for (auto const& [guid, acctId] : botLoading)
+        for (auto const& [guid, progress] : botLoading)
         {
-            if (acctId == masterAccountId)
+            if (progress.masterAccountId == masterAccountId)
                 ++loadingForMaster;
         }
         uint32 count = mgr->GetPlayerbotsCount() + loadingForMaster;
@@ -152,7 +186,7 @@ void PlayerbotHolder::AddPlayerBot(ObjectGuid playerGuid, uint32 masterAccountId
         return;
     }
 
-    botLoading.emplace(playerGuid, masterAccountId);
+    botLoading.emplace(playerGuid, BotLoginProgress{ masterAccountId, time(nullptr), false });
 
     // Always login in with world session to avoid race condition
     sWorld->AddQueryHolderCallback(CharacterDatabase.DelayQueryHolder(holder))
@@ -958,6 +992,17 @@ std::vector<std::string> PlayerbotHolder::HandlePlayerbotCommand(char const* arg
         return messages;
     }
 
+    // Conquest of Azeroth names may hold a space ("Aria Dawn"): keep everything after the command as the name.
+    std::string namesArg = args;
+    namesArg = namesArg.substr(std::min(namesArg.size(), namesArg.find(' ')));
+    namesArg.erase(0, namesArg.find_first_not_of(' '));
+    namesArg.erase(namesArg.find_last_not_of(' ') + 1);
+    // A two-word name is often quoted ("Test Alt" or 'Test Alt'): quotes are never part of a name.
+    namesArg.erase(std::remove_if(namesArg.begin(), namesArg.end(), [](char c) { return c == '"' || c == '\''; }),
+                   namesArg.end());
+    namesArg.erase(0, namesArg.find_first_not_of(' '));
+    namesArg.erase(namesArg.find_last_not_of(' ') + 1);
+
     char* cmd = strtok((char*)args, " ");
     char* charname = strtok(nullptr, " ");
     char* genderArg = strtok(nullptr, " ");    // Added for gender choice [male|female|0|1] optionnel
@@ -1252,7 +1297,7 @@ std::vector<std::string> PlayerbotHolder::HandlePlayerbotCommand(char const* arg
     }
     else
     {
-        charnameStr = charname;
+        charnameStr = namesArg.empty() ? std::string(charname) : namesArg;
     }
 
     std::string const cmdStr = cmd;
@@ -1294,6 +1339,9 @@ std::vector<std::string> PlayerbotHolder::HandlePlayerbotCommand(char const* arg
     std::vector<std::string> chars = split(charnameStr, ',');
     for (std::vector<std::string>::iterator i = chars.begin(); i != chars.end(); i++)
     {
+        // "Test Alt, Other One": the space after the comma is not part of the next name.
+        i->erase(0, i->find_first_not_of(' '));
+        i->erase(i->find_last_not_of(' ') + 1);
         std::string s = *i;
 
         if (!strcmp(cmd, "addaccount"))

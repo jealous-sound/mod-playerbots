@@ -87,6 +87,11 @@ public:
     // the class trainers; NoCoaGrantLevel when none of them knows it.
     static constexpr uint32 NoCoaGrantLevel = 0xFFFF;
     static uint32 CoaGrantLevel(Player* bot, uint32 spellId);
+    // A spell of another class's skill lines, for a CoA class bot: the core hands CoA classes the class
+    // quests of the class they fall back on (a Knight of Xoroth takes warrior quests), and with them
+    // that class's spells (Berserker Stance from "The Affray", jealous-sound #5714).
+    static bool IsCoaForeignClassSpell(Player* bot, uint32 spellId);
+    static bool IsCoaWorldforged(uint32 itemId);
     void InitPet();
     void InitAmmo();
     static uint32 CalcMixedGearScore(uint32 gs, uint32 quality);

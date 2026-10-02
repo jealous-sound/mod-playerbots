@@ -29,6 +29,7 @@
 #include <limits>
 #include <mutex>
 #include <string>
+#include <unordered_set>
 #include <unordered_map>
 #include <vector>
 
@@ -117,13 +118,34 @@ static bool BotInArenaTeam(Player* bot)
 
 // Checks if a bot is currently in a safe state to perform a level reset (alive, not in combat, not
 // in a battleground/arena/dungeon queue or flight, and grouped only with other bots).
+namespace
+{
+std::mutex HeldLock;
+std::unordered_set<ObjectGuid> HeldBots;
+}
+
+void RandomBotLevelMgr::SetHeld(ObjectGuid guid, bool held)
+{
+    std::lock_guard<std::mutex> guard(HeldLock);
+    if (held)
+        HeldBots.insert(guid);
+    else
+        HeldBots.erase(guid);
+}
+
+bool RandomBotLevelMgr::IsHeld(ObjectGuid guid)
+{
+    std::lock_guard<std::mutex> guard(HeldLock);
+    return HeldBots.count(guid) != 0;
+}
+
 static bool IsBotSafeForLevelReset(Player* bot)
 {
     if (!bot || !bot->GetSession() || bot->GetSession()->isLogingOut() || bot->IsDuringRemoveFromWorld())
         return false;
 
-    // Held by a CoA activity: never re-leveled or sent to a starting zone mid-activity.
-    if (ActivityRegistry::IsHeld(bot->GetGUID().GetCounter()))
+    // Either hold protects the bot from a level reset or a starting-zone move.
+    if (ActivityRegistry::IsHeld(bot->GetGUID().GetCounter()) || RandomBotLevelMgr::IsHeld(bot->GetGUID()))
         return false;
 
     if (!bot->IsInWorld())
@@ -736,6 +758,8 @@ void RandomBotLevelMgr::RunLevelBracketsDistribution()
         if (!sRandomPlayerbotMgr.IsRandomBot(player))
             continue;
         if (IsNameInExcludeList(player, sPlayerbotAIConfig.levelBracketsExcludeNames))
+            continue;
+        if (IsHeld(player->GetGUID()))
             continue;
 
         PlayerbotAI* botAI = GET_PLAYERBOT_AI(player);

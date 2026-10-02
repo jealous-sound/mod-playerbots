@@ -8,6 +8,7 @@
 #include "AiFactory.h"
 #include "ItemVisitors.h"
 #include "LFGMgr.h"
+#include "ObjectMgr.h"
 #include "Opcodes.h"
 #include "Playerbots.h"
 #include "RandomPlayerbotMgr.h"
@@ -132,14 +133,50 @@ bool LfgJoinAction::JoinLFG()
             (botLevel > dungeon->MinLevel + 10 && dungeon->TypeID == LFG_TYPE_DUNGEON))
             continue;
 
+        // The finder range comes from the DBC, the entrance checks dungeon_access_template: a bot below
+        // that level was offered, could never zone in, and kept being revived and sent back.
+        if (dungeon->TypeID != LFG_TYPE_RANDOM)
+            if (DungeonProgressionRequirements const* access =
+                    sObjectMgr->GetAccessRequirement(dungeon->MapID, Difficulty(dungeon->Difficulty)))
+                if ((access->levelMin && botLevel < access->levelMin) || (access->levelMax && botLevel > access->levelMax))
+                    continue;
+
         selected.push_back(dungeon->ID);
-        list.insert(dungeon->ID);
     }
 
     if (!selected.size())
         return false;
 
+    // The core refuses a join that holds more than one random dungeon or mixes raids with dungeons:
+    // queue for one random dungeon alone, else the specific dungeons, else the raids.
+    std::vector<uint32> randoms, instances, raids;
+    for (uint32 id : selected)
+    {
+        LFGDungeonEntry const* entry = sLFGDungeonStore.LookupEntry(id);
+        if (entry->TypeID == LFG_TYPE_RANDOM)
+            randoms.push_back(id);
+        else if (entry->TypeID == LFG_TYPE_RAID)
+            raids.push_back(id);
+        else
+            instances.push_back(id);
+    }
+
+    if (!randoms.empty() && (instances.empty() || urand(0, 1)))
+        list.insert(randoms[urand(0, randoms.size() - 1)]);
+    else if (!instances.empty())
+        list.insert(instances.begin(), instances.end());
+    else
+        list.insert(raids.begin(), raids.end());
+
     if (list.empty())
+        return false;
+
+    uint32 roleMask = GetRoles();
+
+    // While a queued player still lacks a tank or a healer, damage dealers mostly stay out so the
+    // tanks and healers get the seats; a few still come to fill the damage slots.
+    if (roleMask == PLAYER_ROLE_DAMAGE && RandomPlayerbotMgr::instance().IsRandomBot(bot) &&
+        RandomPlayerbotMgr::instance().LfgNeedTankOrHeal[bot->GetTeamId()] && urand(0, 99) >= 20)
         return false;
 
     bool many = list.size() > 1;
@@ -147,7 +184,6 @@ bool LfgJoinAction::JoinLFG()
 
     // check role for console msg
     std::string _roles = "multiple roles";
-    uint32 roleMask = GetRoles();
     if (roleMask & PLAYER_ROLE_TANK)
         _roles = "TANK";
 
@@ -293,8 +329,15 @@ bool LfgLeaveAction::Execute(Event /*event*/)
     // RandomBotJoinLfg off still lets whoever is mid-queue fall through and leave.
     // Config bool is tested first so the O(currentBots) IsRandomBot() scan is skipped
     // whenever the feature is disabled.
+    // Stay while a real player of our team still waits for one of our dungeons; once nobody does,
+    // leave so the bot is free for the next queue.
     if (sPlayerbotAIConfig.randomBotJoinLfg && RandomPlayerbotMgr::instance().IsRandomBot(bot))
-        return false;
+    {
+        std::vector<uint32> const& wanted = RandomPlayerbotMgr::instance().LfgDungeons[bot->GetTeamId()];
+        for (uint32 id : sLFGMgr->GetSelectedDungeons(bot->GetGUID()))
+            if (std::find(wanted.begin(), wanted.end(), id) != wanted.end())
+                return false;
+    }
 
     WorldPacket* packet = new WorldPacket(CMSG_LFG_LEAVE);
     bot->GetSession()->QueuePacket(packet);

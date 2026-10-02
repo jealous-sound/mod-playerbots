@@ -164,6 +164,15 @@ bool TellRpgStatusAction::Execute(Event event)
         WhisperStatusChange(owner, "OUTDOOR_PVP");
         return true;
     }
+    else if (status == RPG_GO_CITY)
+    {
+        WorldPosition pos = SelectRandomCityPos(bot);
+        if (pos == WorldPosition())
+            return false;
+        info.ChangeToGoCity(pos);
+        WhisperStatusChange(owner, "GO_CITY");
+        return true;
+    }
     else if (status == RPG_DO_QUEST)
     {
         if (!questId)
@@ -206,7 +215,7 @@ bool TellRpgStatusAction::Execute(Event event)
     std::string msg = PlayerbotTextMgr::instance().GetBotTextOrDefault(
         "rpg_unknown_status_error",
         "Unknown rpg status. Options: idle, rest, wander random, wander npc, "
-        "go grind, go camp, do quest [<id>], travel flight, outdoor pvp.", {});
+        "go grind, go camp, do quest [<id>], travel flight, outdoor pvp, go city.", {});
     bot->Whisper(msg, LANG_UNIVERSAL, owner);
     return false;
 }
@@ -238,8 +247,14 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
     switch (status)
     {
         case RPG_IDLE:
+            // Back from a city visit first: home again, then pick the next activity.
+            if (info.cityStayMs || info.cityReturnPos != WorldPosition())
+            {
+                LeaveCity();
+                return true;
+            }
             return RandomChangeStatus({RPG_GO_CAMP, RPG_GO_GRIND, RPG_WANDER_RANDOM, RPG_WANDER_NPC, RPG_DO_QUEST,
-                                       RPG_TRAVEL_FLIGHT, RPG_REST, RPG_OUTDOOR_PVP});
+                                       RPG_TRAVEL_FLIGHT, RPG_REST, RPG_OUTDOOR_PVP, RPG_GO_CITY});
 
         case RPG_GO_GRIND:
         {
@@ -277,9 +292,26 @@ bool NewRpgStatusUpdateAction::Execute(Event /*event*/)
             }
             break;
         }
+        case RPG_GO_CITY:
+        {
+            auto& data = std::get<NewRpgInfo::GoCity>(info.data);
+            // GO_CITY -> WANDER_NPC for 10 to 30 minutes among the city NPCs
+            if (bot->GetExactDist(data.pos) < 15.0f)
+            {
+                info.ChangeToWanderNpc();
+                info.cityStayMs = urand(10, 30) * MINUTE * IN_MILLISECONDS;
+                return true;
+            }
+            if (info.HasStatusPersisted(statusGoCityDuration))
+            {
+                info.ChangeToIdle();
+                return true;
+            }
+            break;
+        }
         case RPG_WANDER_NPC:
         {
-            if (info.HasStatusPersisted(statusWanderNpcDuration))
+            if (info.HasStatusPersisted(info.cityStayMs ? info.cityStayMs : statusWanderNpcDuration))
             {
                 info.ChangeToIdle();
                 return true;
@@ -355,6 +387,18 @@ bool NewRpgGoCampAction::Execute(Event /*event*/)
         return true;
 
     if (auto* data = std::get_if<NewRpgInfo::GoCamp>(&botAI->rpgInfo.data))
+    {
+        if (MoveFarTo(data->pos))
+            return true;
+        return MoveRandomNear(10.0f);
+    }
+
+    return false;
+}
+
+bool NewRpgGoCityAction::Execute(Event /*event*/)
+{
+    if (auto* data = std::get_if<NewRpgInfo::GoCity>(&botAI->rpgInfo.data))
     {
         if (MoveFarTo(data->pos))
             return true;

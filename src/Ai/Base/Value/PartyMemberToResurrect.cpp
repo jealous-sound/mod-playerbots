@@ -27,22 +27,25 @@ public:
 class FindDeadPlayer : public FindPlayerPredicate
 {
 public:
-    FindDeadPlayer(PartyMemberValue* value) : value(value) {}
+    FindDeadPlayer(PartyMemberValue* value, Player* bot) : value(value), bot(bot) {}
 
     bool Check(Unit* unit) override
     {
         Player* player = unit->ToPlayer();
+        // A corpse behind a door or a wall can never be reached by the cast: the healer used to
+        // spam the resurrection at it.
         return player && !player->isResurrectRequested() && player->getDeathState() == DeathState::Corpse &&
-               !value->IsTargetOfSpellCast(player, predicate);
+               bot->IsWithinLOSInMap(player) && !value->IsTargetOfSpellCast(player, predicate);
     }
 
 private:
     PartyMemberValue* value;
+    Player* bot;
     IsTargetOfResurrectSpell predicate;
 };
 
 Unit* PartyMemberToResurrect::Calculate()
 {
-    FindDeadPlayer finder(this);
+    FindDeadPlayer finder(this, bot);
     return FindPartyMember(finder);
 }

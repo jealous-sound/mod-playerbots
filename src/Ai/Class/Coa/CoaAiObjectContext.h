@@ -60,6 +60,10 @@ public:
     // When this tank last pulled on its own (strategy "coa auto pull").
     time_t lastAutoPull = 0;
 
+    // getMSTime() of this bot's last kick in a group: the duty to interrupt goes to the bot that
+    // kicked longest ago (AiPlayerbot.CoaInterruptCoordination).
+    uint32 lastInterrupt = 0;
+
     // Since when this bot has been far from the real player it follows, out of a fight.
     time_t farFromPlayerSince = 0;
 };

@@ -192,6 +192,7 @@ std::unordered_map<std::string, char const*> const ActionTasks = {
     { "new rpg travel flight", "\"Going to a flight master\"" },
     { "new rpg go grind", "\"Going to grind\"" },
     { "new rpg go camp", "\"Going back to camp\"" },
+    { "new rpg go city", "\"Going to town\"" },
     { "xp gain", "\"Won a fight\"" },
     { "dps assist", "\"Looking for a fight\"" },
     { "tank assist", "\"Looking for a fight\"" },

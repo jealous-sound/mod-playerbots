@@ -85,10 +85,10 @@ AiPlayerbot.Enabled = 1
 # Enable randombot system
 AiPlayerbot.RandomBotAutologin = 1
 
-# Randombot count. 200 here: what the released package installs, and what 16 GB of memory holds
-# comfortably. 1000 needs about 32 GB.
-AiPlayerbot.MinRandomBots = 200
-AiPlayerbot.MaxRandomBots = 200
+# Randombot count. 500 here: what the released package installs, and what 16 GB of memory holds
+# comfortably. 5000 run in about 9 GB of server memory on 32 GB.
+AiPlayerbot.MinRandomBots = 500
+AiPlayerbot.MaxRandomBots = 500
 
 # Randombot accounts
 # Set to 0 to automatically calculate needed accounts based on MaxRandomBots, EnablePeriodicOnlineOffline
@@ -925,12 +925,14 @@ AiPlayerbot.LevelBrackets.FreshStartSpread = 1
 #            the additional bracket lines below (e.g. Range10, Range11, etc.) to both your
 #            playerbots.conf and this playerbots.conf.dist. Ensure that the sum of the Pct values
 #            for each faction remains 100.
-AiPlayerbot.LevelBrackets.NumRanges = 9
+# Conquest of Azeroth: eight brackets on the battleground ones (1-9 ... 50-59, 60), most bots at the
+# top levels, so that battlegrounds start and raids fill on both sides.
+AiPlayerbot.LevelBrackets.NumRanges = 8
 
 # Enables dynamic recalculation of bot distribution percentages based on the number of non-bot
 # players present in each level bracket. This overrides any custom brackets in the conf.
 # Default: 0 (disabled)
-AiPlayerbot.LevelBrackets.Dynamic.UseDynamicDistribution = 1
+AiPlayerbot.LevelBrackets.Dynamic.UseDynamicDistribution = 0
 
 # Controls how much extra weight is given to brackets (level ranges) that contain real (non-bot)
 # players, when dynamic distribution is enabled. The higher this value, the more bots move to the
@@ -993,40 +995,36 @@ AiPlayerbot.LevelBrackets.Dynamic.SyncFactions = 0
 # NOTE: The sum of all Pct values for the Alliance brackets must equal 100.
 #
 AiPlayerbot.LevelBrackets.Alliance.Range1.Lower = 1
-AiPlayerbot.LevelBrackets.Alliance.Range1.Upper = 3
-AiPlayerbot.LevelBrackets.Alliance.Range1.Pct   = 11
+AiPlayerbot.LevelBrackets.Alliance.Range1.Upper = 9
+AiPlayerbot.LevelBrackets.Alliance.Range1.Pct   = 6
 
-AiPlayerbot.LevelBrackets.Alliance.Range2.Lower = 4
-AiPlayerbot.LevelBrackets.Alliance.Range2.Upper = 7
-AiPlayerbot.LevelBrackets.Alliance.Range2.Pct   = 11
+AiPlayerbot.LevelBrackets.Alliance.Range2.Lower = 10
+AiPlayerbot.LevelBrackets.Alliance.Range2.Upper = 19
+AiPlayerbot.LevelBrackets.Alliance.Range2.Pct   = 7
 
-AiPlayerbot.LevelBrackets.Alliance.Range3.Lower = 8
-AiPlayerbot.LevelBrackets.Alliance.Range3.Upper = 12
-AiPlayerbot.LevelBrackets.Alliance.Range3.Pct   = 11
+AiPlayerbot.LevelBrackets.Alliance.Range3.Lower = 20
+AiPlayerbot.LevelBrackets.Alliance.Range3.Upper = 29
+AiPlayerbot.LevelBrackets.Alliance.Range3.Pct   = 8
 
-AiPlayerbot.LevelBrackets.Alliance.Range4.Lower = 13
-AiPlayerbot.LevelBrackets.Alliance.Range4.Upper = 17
-AiPlayerbot.LevelBrackets.Alliance.Range4.Pct   = 11
+AiPlayerbot.LevelBrackets.Alliance.Range4.Lower = 30
+AiPlayerbot.LevelBrackets.Alliance.Range4.Upper = 39
+AiPlayerbot.LevelBrackets.Alliance.Range4.Pct   = 9
 
-AiPlayerbot.LevelBrackets.Alliance.Range5.Lower = 18
-AiPlayerbot.LevelBrackets.Alliance.Range5.Upper = 23
+AiPlayerbot.LevelBrackets.Alliance.Range5.Lower = 40
+AiPlayerbot.LevelBrackets.Alliance.Range5.Upper = 49
 AiPlayerbot.LevelBrackets.Alliance.Range5.Pct   = 11
 
-AiPlayerbot.LevelBrackets.Alliance.Range6.Lower = 24
-AiPlayerbot.LevelBrackets.Alliance.Range6.Upper = 30
-AiPlayerbot.LevelBrackets.Alliance.Range6.Pct   = 11
+AiPlayerbot.LevelBrackets.Alliance.Range6.Lower = 50
+AiPlayerbot.LevelBrackets.Alliance.Range6.Upper = 54
+AiPlayerbot.LevelBrackets.Alliance.Range6.Pct   = 10
 
-AiPlayerbot.LevelBrackets.Alliance.Range7.Lower = 31
-AiPlayerbot.LevelBrackets.Alliance.Range7.Upper = 40
-AiPlayerbot.LevelBrackets.Alliance.Range7.Pct   = 12
+AiPlayerbot.LevelBrackets.Alliance.Range7.Lower = 55
+AiPlayerbot.LevelBrackets.Alliance.Range7.Upper = 59
+AiPlayerbot.LevelBrackets.Alliance.Range7.Pct   = 14
 
-AiPlayerbot.LevelBrackets.Alliance.Range8.Lower = 41
-AiPlayerbot.LevelBrackets.Alliance.Range8.Upper = 50
-AiPlayerbot.LevelBrackets.Alliance.Range8.Pct   = 11
-
-AiPlayerbot.LevelBrackets.Alliance.Range9.Lower = 51
-AiPlayerbot.LevelBrackets.Alliance.Range9.Upper = 60
-AiPlayerbot.LevelBrackets.Alliance.Range9.Pct   = 11
+AiPlayerbot.LevelBrackets.Alliance.Range8.Lower = 60
+AiPlayerbot.LevelBrackets.Alliance.Range8.Upper = 60
+AiPlayerbot.LevelBrackets.Alliance.Range8.Pct   = 35
 
 ##############################################
 # Horde Level Brackets Configuration
@@ -1053,40 +1051,36 @@ AiPlayerbot.LevelBrackets.Alliance.Range9.Pct   = 11
 # NOTE: The sum of all Pct values for the Horde brackets must equal 100.
 #
 AiPlayerbot.LevelBrackets.Horde.Range1.Lower = 1
-AiPlayerbot.LevelBrackets.Horde.Range1.Upper = 3
-AiPlayerbot.LevelBrackets.Horde.Range1.Pct   = 11
+AiPlayerbot.LevelBrackets.Horde.Range1.Upper = 9
+AiPlayerbot.LevelBrackets.Horde.Range1.Pct   = 6
 
-AiPlayerbot.LevelBrackets.Horde.Range2.Lower = 4
-AiPlayerbot.LevelBrackets.Horde.Range2.Upper = 7
-AiPlayerbot.LevelBrackets.Horde.Range2.Pct   = 11
+AiPlayerbot.LevelBrackets.Horde.Range2.Lower = 10
+AiPlayerbot.LevelBrackets.Horde.Range2.Upper = 19
+AiPlayerbot.LevelBrackets.Horde.Range2.Pct   = 7
 
-AiPlayerbot.LevelBrackets.Horde.Range3.Lower = 8
-AiPlayerbot.LevelBrackets.Horde.Range3.Upper = 12
-AiPlayerbot.LevelBrackets.Horde.Range3.Pct   = 11
+AiPlayerbot.LevelBrackets.Horde.Range3.Lower = 20
+AiPlayerbot.LevelBrackets.Horde.Range3.Upper = 29
+AiPlayerbot.LevelBrackets.Horde.Range3.Pct   = 8
 
-AiPlayerbot.LevelBrackets.Horde.Range4.Lower = 13
-AiPlayerbot.LevelBrackets.Horde.Range4.Upper = 17
-AiPlayerbot.LevelBrackets.Horde.Range4.Pct   = 11
+AiPlayerbot.LevelBrackets.Horde.Range4.Lower = 30
+AiPlayerbot.LevelBrackets.Horde.Range4.Upper = 39
+AiPlayerbot.LevelBrackets.Horde.Range4.Pct   = 9
 
-AiPlayerbot.LevelBrackets.Horde.Range5.Lower = 18
-AiPlayerbot.LevelBrackets.Horde.Range5.Upper = 23
+AiPlayerbot.LevelBrackets.Horde.Range5.Lower = 40
+AiPlayerbot.LevelBrackets.Horde.Range5.Upper = 49
 AiPlayerbot.LevelBrackets.Horde.Range5.Pct   = 11
 
-AiPlayerbot.LevelBrackets.Horde.Range6.Lower = 24
-AiPlayerbot.LevelBrackets.Horde.Range6.Upper = 30
-AiPlayerbot.LevelBrackets.Horde.Range6.Pct   = 11
+AiPlayerbot.LevelBrackets.Horde.Range6.Lower = 50
+AiPlayerbot.LevelBrackets.Horde.Range6.Upper = 54
+AiPlayerbot.LevelBrackets.Horde.Range6.Pct   = 10
 
-AiPlayerbot.LevelBrackets.Horde.Range7.Lower = 31
-AiPlayerbot.LevelBrackets.Horde.Range7.Upper = 40
-AiPlayerbot.LevelBrackets.Horde.Range7.Pct   = 12
+AiPlayerbot.LevelBrackets.Horde.Range7.Lower = 55
+AiPlayerbot.LevelBrackets.Horde.Range7.Upper = 59
+AiPlayerbot.LevelBrackets.Horde.Range7.Pct   = 14
 
-AiPlayerbot.LevelBrackets.Horde.Range8.Lower = 41
-AiPlayerbot.LevelBrackets.Horde.Range8.Upper = 50
-AiPlayerbot.LevelBrackets.Horde.Range8.Pct   = 11
-
-AiPlayerbot.LevelBrackets.Horde.Range9.Lower = 51
-AiPlayerbot.LevelBrackets.Horde.Range9.Upper = 60
-AiPlayerbot.LevelBrackets.Horde.Range9.Pct   = 11
+AiPlayerbot.LevelBrackets.Horde.Range8.Lower = 60
+AiPlayerbot.LevelBrackets.Horde.Range8.Upper = 60
+AiPlayerbot.LevelBrackets.Horde.Range8.Pct   = 35
 
 ##############################################
 # Level Reset
@@ -1199,6 +1193,12 @@ AiPlayerbot.RandomGearQualityLimit = 3
 # Max iLVL Phase 1(Naxx) = 224 | Phase 2(Ulduar) = 245 | Phase 3(ToC) = 258 | Phase 4(ICC) = 290
 # Default: 0 (no limit)
 AiPlayerbot.RandomGearScoreLimit = 0
+
+# With RandomGearQualityLimit = 4 (epic), the level from which bots may wear epic gear; below it they
+# keep to rare. Conquest of Azeroth Worldforged items count as gear of their level, whatever
+# LimitGearExpansion says. ".playerbots coa regear [level]" gears the bots online again (game masters).
+# Default: 60
+AiPlayerbot.CoaEpicGearMinLevel = 60
 
 # Prefer armor of the class's ideal type: apply 3x score multiplier to class-appropriate armor.
 # When enabled, Warriors strongly prefer plate, Shamans prefer mail, etc.
@@ -1432,6 +1432,13 @@ AiPlayerbot.CoaCasterManaReserve = 15
 # Default: 0 (disabled)
 AiPlayerbot.CoaGroupTelemetry = 0
 
+# ".playerbots coa raid [size] [tanks] [healers]" fills the raid of the one who types it with bots.
+# Game masters have no limit. A player may build one raid every CoaRaidPlayerCooldown minutes, and
+# only while the realm has fewer than CoaRaidPlayerMax raids of bots built by players.
+# Default: 5 raids at a time, 30 minutes
+AiPlayerbot.CoaRaidPlayerMax = 5
+AiPlayerbot.CoaRaidPlayerCooldown = 30
+
 # A snapshot of every random bot online, written as JSON for the SquidBots dashboard (bot-status.json,
 # its "botStatusFile" setting): position, health, power, what the bot is doing, its group and its
 # quests, shown on the map and on each bot's card. The file is written whole under a .tmp name and
@@ -1462,6 +1469,15 @@ AiPlayerbot.CoaSmartHeal = 1
 # Default: 1 (enabled)
 AiPlayerbot.CoaSmartTank = 1
 
+# Bots of Conquest of Azeroth read the casts of dungeon and raid enemies: melee damage
+# dealers step out of a point blank cast (Whirlwind, Fire Nova, War Stomp) or from in front of
+# a cone (breaths, Arcing Smash) while its cast bar runs, anyone leaves the spot of an area
+# cast (Flamestrike), and ranged members keep out of the reach of instant point blank spells
+# that the smart_scripts rows of the creature hold. Radius limit: AiPlayerbot.MaxAoeAvoidRadius.
+# Takes effect when a bot's strategies are reset (login, ".playerbots bot init", spec change).
+# Default: 1 (enabled)
+AiPlayerbot.CoaBossKnowledge = 1
+
 #    AiPlayerbot.CoaTankOpenerSeconds
 #        Description: With CoaSmartTank, a CoA damage dealer lets the tank open: on a target no tank
 #                     has touched yet it waits at most this many seconds, then goes all out. Read
@@ -1478,6 +1494,47 @@ AiPlayerbot.CoaTankOpenerSeconds = 2
 #        Default:     0 - off
 
 AiPlayerbot.CoaThreatHold = 0
+
+#    AiPlayerbot.CoaAttackLoop
+#        Description: 1 - a CoA bot attacks through the same cast path as its heals: a spell refused for
+#                     a passing reason (moving, sitting, casting) is set aside 8 seconds instead of a
+#                     minute after three refusals, cleaves wait for melee reach, summons are not recast
+#                     while up, and area attacks, defensives and interrupts log why they fail.
+#                     0 - the attack loop of 1.6.
+#        Default:     1
+
+AiPlayerbot.CoaAttackLoop = 1
+
+#    AiPlayerbot.CoaSpellReplacement
+#        Description: 1 - checks, cooldowns and the set-aside list follow the spell a proc swaps in
+#                     (Malefic Wrath -> Malefic Arrow), the cast keeps the listed id. 0 - as in 1.6.
+#        Default:     1
+
+AiPlayerbot.CoaSpellReplacement = 1
+
+#    AiPlayerbot.CoaAttackCheckBench
+#        Description: with AiPlayerbot.CoaAttackLoop = 1, what becomes of an attack the strict check turns
+#                     down (target or caster aura missing, bad target, short of rage, energy or mana).
+#                     0 - skipped for this tick only, as in 1.6: the next tick tries it again.
+#                     1 - set aside 20 seconds (5 when short of power), as heals are.
+#                     A stunned bot sets its attacks aside either way.
+#        Default:     0
+
+AiPlayerbot.CoaAttackCheckBench = 0
+
+#    AiPlayerbot.CoaInterruptCoordination
+#        Description: 1 - in a group, one bot kicks each enemy cast: the first to see it picks a bot
+#                     with a kick ready and in reach, a damage dealer before a healer before the tank,
+#                     the one that kicked longest ago first; the others hold theirs until the kick has
+#                     landed. In a dungeon a routine cast is let through when only one kick is left in
+#                     reach, kept for a heal, crowd control or long cast. Kicks are only tried on casters
+#                     they reach. Bots without a group are not affected; real players are never counted on.
+#                     0 - every bot kicks the first cast it sees, as in 1.6. Either way CoaBots.log counts
+#                     the enemy casts seen and kicked and the kicks wasted on a cast already kicked.
+#                     Read again by ".reload config".
+#        Default:     1
+
+AiPlayerbot.CoaInterruptCoordination = 1
 
 # Conquest of Azeroth specializations bots never play, by id, comma separated. A bot holding one
 # switches to another of its role, and ".playerbots coa" never recruits one.
@@ -1595,9 +1652,9 @@ AiPlayerbot.CoaLfgLevelRange = 2
 #    AiPlayerbot.CoaLfgOfferMinutes
 #        Description: How long an offer holds: meanwhile the bot is offered to nobody else and
 #                     accepts that player's invitation. Afterwards it goes back to its own life.
-#        Default:     5
+#        Default:     2
 
-AiPlayerbot.CoaLfgOfferMinutes = 5
+AiPlayerbot.CoaLfgOfferMinutes = 2
 
 #    AiPlayerbot.CoaLfgCooldown
 #        Description: Seconds before the same player is answered again for the same role.
@@ -3742,6 +3799,8 @@ AiPlayerbot.EnableNewRpgStrategy = 1
 # TravelFlight  (Default: 15  Go to the nearest flightmaster and fly to a level-appropriate area)
 # Rest          (Default: 5   Take a break for a while and do nothing)
 # OutdoorPvp    (Default: 10  Participate in outdoor PvP capture points if already in an outdoor PvP zone)
+# GoCity        (Default: 10  Visit a capital of the bot's faction for 10-30 minutes: bank, auction house,
+#                             trainers and vendors; bots too far away teleport there and back)
 AiPlayerbot.RpgStatusProbWeight.WanderRandom = 15
 AiPlayerbot.RpgStatusProbWeight.WanderNpc = 20
 AiPlayerbot.RpgStatusProbWeight.GoGrind = 15
@@ -3750,6 +3809,7 @@ AiPlayerbot.RpgStatusProbWeight.DoQuest = 60
 AiPlayerbot.RpgStatusProbWeight.TravelFlight = 15
 AiPlayerbot.RpgStatusProbWeight.Rest = 5
 AiPlayerbot.RpgStatusProbWeight.OutdoorPvp = 10
+AiPlayerbot.RpgStatusProbWeight.GoCity = 10
 
 # Bots' minimum and maximum level when teleporting in and out of a zone, according to the new RPG strategy
 # Format: AiPlayerbot.ZoneBracket.zoneID = minLevel,maxLevel

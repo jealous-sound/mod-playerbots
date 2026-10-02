@@ -8,6 +8,7 @@
 #include "ActivityDirector.h"
 #include "ActivityKind.h"
 #include "ActivityPvePolicy.h"
+#include "ActivityRegistry.h"
 #include "ActivityCombat.h"
 #include "Escort.h"
 #include "LeaderScaler.h"
@@ -32,10 +33,12 @@
 #include "CoaVoiceDirector.h"
 #include "CoaVoiceConfig.h"
 #include "Config.h"
+#include "GroupMgr.h"
 #include "GuildTaskMgr.h"
 #include "ObjectAccessor.h"
 #include "ObjectMgr.h"
 #include "PerfMonitor.h"
+#include "PlayerbotFactory.h"
 #include "PlayerbotMgr.h"
 #include "PlayerbotTextMgr.h"
 #include "Playerbots.h"
@@ -135,7 +138,7 @@ public:
             {"gtask", HandleGuildTaskCommand, SEC_GAMEMASTER, Console::Yes},
             {"pmon", HandlePerfMonCommand, SEC_GAMEMASTER, Console::Yes},
             {"rndbot", HandleRandomPlayerbotCommand, SEC_GAMEMASTER, Console::Yes},
-            {"coa", HandleCoaRecruitCommand, SEC_GAMEMASTER, Console::No},
+            {"coa", HandleCoaRecruitCommand, SEC_PLAYER, Console::No},
             {"optout", HandleOptOutCommand, SEC_PLAYER, Console::No},
             {"optin", HandleOptInCommand, SEC_PLAYER, Console::No},
             {"debug", playerbotsDebugCommandTable},
@@ -160,6 +163,11 @@ public:
 
     // .playerbots coa tank|heal|dps [class] : recruit a Conquest of Azeroth bot for that role, of
     // that class when one is named (".playerbots coa heal sun cleric").
+    // .playerbots coa raid [size] [tanks] [healers] : fills a raid with bots (25: 3 tanks, 6 healers).
+    // Players may build a raid too, within AiPlayerbot.CoaRaidPlayerMax raids at a time on the realm and one
+    // every AiPlayerbot.CoaRaidPlayerCooldown minutes each; game masters have no limit and alone recruit one role.
+    // .playerbots coa regear [level] : game masters only, gears again the random bots online of that level or
+    // above (60 by default) to the quality the config gives them now.
     static bool HandleCoaRecruitCommand(ChatHandler* handler, char const* args)
     {
         Player* master = handler->GetSession() ? handler->GetSession()->GetPlayer() : nullptr;
@@ -167,6 +175,96 @@ public:
         std::size_t const space = line.find(' ');
         std::string const wanted = line.substr(0, space);
         std::string const className = space == std::string::npos ? "" : line.substr(space + 1);
+
+        bool const gameMaster = handler->GetSession() && handler->GetSession()->GetSecurity() >= SEC_GAMEMASTER;
+
+        if (wanted == "raid")
+        {
+            if (!master)
+                return false;
+            uint32 numbers[3] = {};
+            std::istringstream in(className);
+            for (uint32& number : numbers)
+                if (!(in >> number))
+                    break;
+
+            // Raids built by players, by leader: the group and when it was built.
+            static std::unordered_map<ObjectGuid, std::pair<ObjectGuid, time_t>> playerRaids;
+            time_t const now = time(nullptr);
+            if (!gameMaster)
+            {
+                uint32 const cooldown = sConfigMgr->GetOption<uint32>("AiPlayerbot.CoaRaidPlayerCooldown", 30) * MINUTE;
+                uint32 const maxRaids = sConfigMgr->GetOption<uint32>("AiPlayerbot.CoaRaidPlayerMax", 5);
+
+                uint32 active = 0;
+                for (auto it = playerRaids.begin(); it != playerRaids.end();)
+                {
+                    Group* group = sGroupMgr->GetGroupByGUID(it->second.first.GetCounter());
+                    bool withBots = false;
+                    if (group)
+                        for (GroupReference* ref = group->GetFirstMember(); ref && !withBots; ref = ref->next())
+                            withBots = ref->GetSource() && GET_PLAYERBOT_AI(ref->GetSource());
+                    if (!withBots && now - it->second.second >= time_t(cooldown))
+                    {
+                        it = playerRaids.erase(it);
+                        continue;
+                    }
+                    if (withBots)
+                        ++active;
+                    ++it;
+                }
+
+                auto const mine = playerRaids.find(master->GetGUID());
+                if (mine != playerRaids.end() && now - mine->second.second < time_t(cooldown))
+                {
+                    uint32 const minutes = uint32((cooldown - (now - mine->second.second) + MINUTE - 1) / MINUTE);
+                    handler->SendSysMessage("You can build another raid in " + std::to_string(minutes) + " minutes.");
+                    return true;
+                }
+                if (active >= maxRaids)
+                {
+                    handler->SendSysMessage("The realm already has " + std::to_string(active) +
+                                            " raids of bots; try again when one of them is over.");
+                    return true;
+                }
+            }
+
+            std::string message;
+            bool const built = RecruitCoaRaid(master, numbers[0], numbers[1], numbers[2], message);
+            if (built && !gameMaster && master->GetGroup())
+                playerRaids[master->GetGUID()] = { master->GetGroup()->GetGUID(), now };
+            handler->SendSysMessage(message);
+            return true;
+        }
+
+        if (wanted == "regear" && gameMaster)
+        {
+            uint32 const minLevel = className.empty() ? 60 : std::max(1, std::atoi(className.c_str()));
+            uint32 done = 0, skipped = 0;
+            for (auto const& [guid, bot] : sRandomPlayerbotMgr.GetAllBots())
+            {
+                if (!bot || !bot->IsInWorld() || bot->GetLevel() < minLevel)
+                    continue;
+                if (ActivityRegistry::IsHeld(bot->GetGUID().GetCounter()) || bot->IsInCombat() ||
+                    bot->InBattleground() || bot->InArena() || bot->IsBeingTeleported())
+                {
+                    ++skipped;
+                    continue;
+                }
+                PlayerbotFactory(bot, bot->GetLevel()).InitEquipment(false);
+                ++done;
+            }
+            handler->SendSysMessage(std::to_string(done) + " bots of level " + std::to_string(minLevel) +
+                                    "+ geared again, " + std::to_string(skipped) + " left for later (in combat or in a battleground).");
+            return true;
+        }
+
+        if (!gameMaster)
+        {
+            handler->SendSysMessage("Usage: .playerbots coa raid [size] [tanks] [healers], e.g. .playerbots coa raid 25. "
+                                    "To find a single tank or healer, say \"lfg bot tank\" or \"lfg bot heal\" in a chat channel.");
+            return true;
+        }
 
         CoaRole role;
         if (wanted == "tank")
@@ -177,7 +275,8 @@ public:
             role = CoaRole::Dps;
         else
         {
-            handler->SendSysMessage("Usage: .playerbots coa tank|heal|dps [class], e.g. .playerbots coa heal sun cleric");
+            handler->SendSysMessage("Usage: .playerbots coa tank|heal|dps [class], e.g. .playerbots coa heal sun cleric; "
+                                    ".playerbots coa raid [size] [tanks] [healers], e.g. .playerbots coa raid 25");
             return true;
         }
 

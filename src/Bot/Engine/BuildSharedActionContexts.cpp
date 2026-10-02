@@ -24,6 +24,7 @@
 #include "SSCActionContext.h"
 #include "TKActionContext.h"
 #include "TbcDungeonActionContext.h"
+#include "VanillaDungeonActionContext.h"
 #include "UldActionContext.h"
 #include "VoAActionContext.h"
 #include "WorldPacketActionContext.h"
@@ -63,6 +64,8 @@ void AiObjectContext::BuildSharedActionContexts(SharedNamedObjectContextList<Act
     actionContexts.Add(new TbcDungeonMechanarActionContext());
     actionContexts.Add(new TbcDungeonUnderbogActionContext());
     actionContexts.Add(new TbcDungeonMagistersTerraceActionContext());
+    actionContexts.Add(new VanillaDungeonRFCActionContext());
+    actionContexts.Add(new VanillaDungeonSFKActionContext());
     actionContexts.Add(new WotlkDungeonUKActionContext());
     actionContexts.Add(new WotlkDungeonNexActionContext());
     actionContexts.Add(new WotlkDungeonANActionContext());

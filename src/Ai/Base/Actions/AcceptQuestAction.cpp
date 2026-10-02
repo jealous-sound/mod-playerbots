@@ -215,6 +215,10 @@ bool ConfirmQuestAction::Execute(Event event)
         return false;
 
     quest = qInfo->GetQuestId();
+    // The core made the accepting player this bot's "divider" when it offered the quest and only clears it on
+    // an answer: left set, every later share found the bot busy (jealous-sound/azerothcore-wotlk-coa#5606).
+    bot->SetDivider(ObjectGuid::Empty);
+
     if (!bot->CanTakeQuest(qInfo, false))
     {
         // can't take quest

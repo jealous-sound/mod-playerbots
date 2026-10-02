@@ -240,7 +240,9 @@ bool CheckMountStateAction::Mount()
     if (spellsIt != mountData.allSpells.end())
     {
         auto& spells = spellsIt->second;
-        if (TryRandomMountFiltered(spells, masterSpeed))
+        // CoA teaches riding 300 to bots too: under the fast mount level a bot owns only its 60% mount, which the
+        // speed filter dropped behind a master on a 100% mount, and it walked (jealous-sound/azerothcore-wotlk-coa#5596).
+        if (TryRandomMountFiltered(spells, masterSpeed) || TryRandomMountFiltered(spells, 0))
             return true;
     }
 

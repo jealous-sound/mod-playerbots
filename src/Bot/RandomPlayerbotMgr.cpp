@@ -6,6 +6,7 @@
 
 #include "RandomPlayerbotMgr.h"
 #include "ActivityRegistry.h"
+#include "BattlegroundUtils.h"
 #include "AiFactory.h"
 #include "Battleground.h"
 #include "BattlegroundMgr.h"
@@ -430,7 +431,7 @@ void RandomPlayerbotMgr::UpdateAIInternal(uint32 /*elapsed*/, bool /*minimal*/)
                 break;
         }
 
-        if (loginBots && botLoading.empty())
+        if (loginBots && !HasPendingLogins())
         {
             loginBots += updateBots;
             loginBots = std::min(loginBots, maxNewBots);
@@ -1015,6 +1016,37 @@ void RandomPlayerbotMgr::CheckBgQueue()
         }
     }
 
+    // A real player's battleground starts only once each faction holds its minimum in the core queue:
+    // "21/20" was announced for a random battleground that never started, the 21 almost all of one
+    // faction (jealous-sound #5826). What each faction still lacks is read from the queue itself.
+    for (int bracket = BG_BRACKET_ID_FIRST; bracket < MAX_BATTLEGROUND_BRACKETS; ++bracket)
+    {
+        for (int queueType = BATTLEGROUND_QUEUE_AV; queueType < MAX_BATTLEGROUND_QUEUE_TYPES; ++queueType)
+        {
+            BattlegroundInfo& info = BattlegroundData[queueType][bracket];
+            if (!info.activeBgQueue || !(info.bgAlliancePlayerCount + info.bgHordePlayerCount) ||
+                BattlegroundMgr::BGArenaType(BattlegroundQueueTypeId(queueType)))
+                continue;
+
+            Battleground* bg =
+                sBattlegroundMgr->GetBattlegroundTemplate(BattlegroundMgr::BGTemplateId(BattlegroundQueueTypeId(queueType)));
+            PvPDifficultyEntry const* bracketEntry =
+                bg ? GetBattlegroundBracketById(bg->GetMapId(), BattlegroundBracketId(bracket)) : nullptr;
+            if (!bracketEntry)
+                continue;
+
+            uint32 const needed = GetMinPlayersPerTeam(bg, bracketEntry);
+            BattlegroundQueue& queue = sBattlegroundMgr->GetBattlegroundQueue(BattlegroundQueueTypeId(queueType));
+            uint32 const alliance = queue.GetPlayersCountInGroupsQueue(BattlegroundBracketId(bracket), BG_QUEUE_NORMAL_ALLIANCE);
+            uint32 const horde = queue.GetPlayersCountInGroupsQueue(BattlegroundBracketId(bracket), BG_QUEUE_NORMAL_HORDE);
+            info.bgAllianceMissing = needed > alliance ? needed - alliance : 0;
+            info.bgHordeMissing = needed > horde ? needed - horde : 0;
+            if (info.bgAllianceMissing || info.bgHordeMissing)
+                LOG_DEBUG("playerbots", "BG queue {} bracket {}: {} Alliance and {} Horde queued, {} each needed",
+                          queueType, bracket, alliance, horde, needed);
+        }
+    }
+
     // Process player bots
     for (auto& [guid, bot] : playerBots)
     {
@@ -1263,6 +1295,7 @@ void RandomPlayerbotMgr::CheckLfgQueue()
     // Clear LFG list
     LfgDungeons[TEAM_ALLIANCE].clear();
     LfgDungeons[TEAM_HORDE].clear();
+    bool needTankOrHeal[2] = {false, false};
 
     for (std::vector<Player*>::iterator i = players.begin(); i != players.end(); ++i)
     {
@@ -1285,8 +1318,15 @@ void RandomPlayerbotMgr::CheckLfgQueue()
 
                 LfgDungeons[player->GetTeamId()].push_back(dungeon->id);
             }
+
+            uint8 roles = sLFGMgr->GetRoles(player->GetGUID());
+            if (!(roles & lfg::PLAYER_ROLE_TANK) || !(roles & lfg::PLAYER_ROLE_HEALER))
+                needTankOrHeal[player->GetTeamId()] = true;
         }
     }
+
+    LfgNeedTankOrHeal[TEAM_ALLIANCE] = needTankOrHeal[TEAM_ALLIANCE];
+    LfgNeedTankOrHeal[TEAM_HORDE] = needTankOrHeal[TEAM_HORDE];
 
     LOG_DEBUG("playerbots", "LFG Queue check finished");
 }
@@ -2642,10 +2682,24 @@ bool RandomPlayerbotMgr::HandlePlayerbotConsoleCommand(ChatHandler* handler, cha
 
 void RandomPlayerbotMgr::HandleCommand(uint32 type, std::string const text, Player* fromPlayer, std::string channelName)
 {
+    // The sender needs guarding too: chatting right after a (GM/panel) teleport
+    // reached LevelFor(from) with transient map/group state and crashed
+    // (Andrew's repro, 2026-08-20). Symmetric to the per-bot guard below.
+    if (!fromPlayer || !fromPlayer->IsInWorld() || fromPlayer->IsBeingTeleported() || !fromPlayer->FindMap())
+        return;
+
     for (PlayerBotMap::const_iterator it = GetPlayerBotsBegin(); it != GetPlayerBotsEnd(); ++it)
     {
         Player* const bot = it->second;
-        if (!bot)
+        // Bots mid-login/logout sit in this map without a usable Player or AI.
+        // Chatting during a login flood walked into them: GET_PLAYERBOT_AI
+        // returned null and ->HandleCommand crashed the server (SIGSEGV 0x258,
+        // 2026-08-20). Skip anything not fully in the world with an attached AI.
+        if (!bot || !bot->IsInWorld() || bot->IsBeingTeleported())
+            continue;
+
+        PlayerbotAI* botAI = GET_PLAYERBOT_AI(bot);
+        if (!botAI)
             continue;
 
         if (!channelName.empty())
@@ -2658,7 +2712,7 @@ void RandomPlayerbotMgr::HandleCommand(uint32 type, std::string const text, Play
             }
         }
 
-        GET_PLAYERBOT_AI(bot)->HandleCommand(type, text, fromPlayer);
+        botAI->HandleCommand(type, text, fromPlayer);
     }
 }
 
@@ -2881,6 +2935,7 @@ void RandomPlayerbotMgr::PrintStats()
     uint32 engine_combat = 0;
     uint32 engine_dead = 0;
     std::unordered_map<NewRpgStatus, int> rpgStatusCount;
+    uint32 botsInCity = 0;
     // static NewRpgStatistic rpgStasticTotal;
     std::unordered_map<uint32, int> zoneCount;
     uint8 maxBotLevel = 0;
@@ -2969,6 +3024,8 @@ void RandomPlayerbotMgr::PrintStats()
         if (sPlayerbotAIConfig.enableNewRpgStrategy)
         {
             rpgStatusCount[botAI->rpgInfo.GetStatus()]++;
+            if (botAI->rpgInfo.cityStayMs)
+                ++botsInCity;
             rpgStasticTotal += botAI->rpgStatistic;
             botAI->rpgStatistic = NewRpgStatistic();
         }
@@ -3045,10 +3102,11 @@ void RandomPlayerbotMgr::PrintStats()
         LOG_INFO("playerbots", "Bots rpg status:");
         LOG_INFO("playerbots",
                  "    Idle: {}, Rest: {}, GoGrind: {}, GoCamp: {}, MoveRandom: {}, MoveNpc: {}, DoQuest: {}, "
-                 "TravelFlight: {}, OutdoorPvP: {}",
+                 "TravelFlight: {}, OutdoorPvP: {}, GoCity: {}, InCity: {}",
                  rpgStatusCount[RPG_IDLE], rpgStatusCount[RPG_REST], rpgStatusCount[RPG_GO_GRIND],
                  rpgStatusCount[RPG_GO_CAMP], rpgStatusCount[RPG_WANDER_RANDOM], rpgStatusCount[RPG_WANDER_NPC],
-                 rpgStatusCount[RPG_DO_QUEST], rpgStatusCount[RPG_TRAVEL_FLIGHT], rpgStatusCount[RPG_OUTDOOR_PVP]);
+                 rpgStatusCount[RPG_DO_QUEST], rpgStatusCount[RPG_TRAVEL_FLIGHT], rpgStatusCount[RPG_OUTDOOR_PVP],
+                 rpgStatusCount[RPG_GO_CITY], botsInCity);
 
         LOG_INFO("playerbots", "Bots total quests:");
         LOG_INFO("playerbots", "    Accepted: {}, Rewarded: {}, Dropped: {}", rpgStasticTotal.questAccepted,

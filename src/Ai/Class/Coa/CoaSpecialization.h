@@ -104,6 +104,11 @@ uint8 FindCoaClass(std::string const& name);
 // Recruits a free random bot for the role, of that class when classId is not 0.
 bool RecruitCoaBot(Player* master, CoaRole role, std::string& message, uint8 classId = 0);
 
+// Turns the master's group into a raid of `size` (25 when 0, 6 to 40) filled with recruited bots:
+// `tanks` tanks and `heals` healers (from the size when 0: 3 and 6 for 25), the rest damage dealers,
+// the classes taken in turn. Members already there count. The outcome is told in `message`.
+bool RecruitCoaRaid(Player* master, uint32 size, uint32 tanks, uint32 heals, std::string& message);
+
 // The free random bot best placed to play `role` for `master` (same faction, on its map, already of
 // the role, nearest level), of that class when classId is not 0, none of those in `skip`. chosenFits
 // tells whether it already holds a specialization of the role.
@@ -120,6 +125,9 @@ bool CoaLfgHeard(Player* player, std::string const& message, Channel* channel);
 
 // Whether `bot` was offered to `inviter` by "lfg bot" and the offer still holds; the offer is used up.
 bool CoaLfgTakeOffer(Player* bot, Player* inviter);
+// The bot is offered by "lfg bot" to a player other than this one (any player when null): it keeps out of
+// any other group or queue until the offer is taken or runs out.
+bool CoaLfgOfferedToOther(Player* bot, Player* player);
 
 // Whether `bot` has an "lfg bot" offer that still holds, to anyone (the offer is kept). Any thread (LfgLock). The CoA
 // activity director leaves such bots alone.

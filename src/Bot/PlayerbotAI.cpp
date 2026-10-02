@@ -583,6 +583,19 @@ void PlayerbotAI::RejoinLfgDungeon()
         return;
 
     lfgRejoinAt = now;
+
+    // The finder picks dungeons from the DBC level range while the entrance checks
+    // dungeon_access_template: a bot below that level would be revived and sent to the door every
+    // 5 seconds forever. It leaves the group instead, so the finder can offer the seat to someone else.
+    if (DungeonProgressionRequirements const* access = sObjectMgr->GetAccessRequirement(mapId, group->GetDifficulty(false)))
+        if ((access->levelMin && bot->GetLevel() < access->levelMin) || (access->levelMax && bot->GetLevel() > access->levelMax))
+        {
+            LOG_INFO("playerbots", "Bot {} (level {}) cannot enter dungeon map {} (levels {}-{}), leaving the finder group",
+                     bot->GetName(), bot->GetLevel(), mapId, access->levelMin, access->levelMax);
+            bot->RemoveFromGroup();
+            return;
+        }
+
     if (!bot->IsAlive())
     {
         bot->ResurrectPlayer(1.0f);
@@ -1786,12 +1799,14 @@ void PlayerbotAI::DoNextAction(bool min)
             if (!bot->isMoving() && distance < 10.0f)
                 bot->SetStandState(UNIT_STAND_STATE_SIT);
         }
-        else if (nextAICheckDelay < 1000)
+        // Not out of an aura that seats its wearer: Rejuvenating Rays sat the bot again every tick
+        // (jealous-sound/azerothcore-wotlk-coa#4572).
+        else if (nextAICheckDelay < 1000 && !(bot->GetInterruptMask() & AURA_INTERRUPT_FLAG_NOT_SEATED))
             bot->SetStandState(UNIT_STAND_STATE_STAND);
     }
     else if (bot->m_movementInfo.HasMovementFlag(MOVEMENTFLAG_WALKING))
         bot->m_movementInfo.RemoveMovementFlag(MOVEMENTFLAG_WALKING);
-    else if ((nextAICheckDelay < 1000) && bot->IsSitState())
+    else if ((nextAICheckDelay < 1000) && bot->IsSitState() && !(bot->GetInterruptMask() & AURA_INTERRUPT_FLAG_NOT_SEATED))
         bot->SetStandState(UNIT_STAND_STATE_STAND);
 
     bool hasMountAura = bot->HasAuraType(SPELL_AURA_MOD_INCREASE_MOUNTED_SPEED) ||
@@ -1862,8 +1877,8 @@ void PlayerbotAI::ApplyInstanceStrategies(uint32 mapId, bool tellMaster)
     {
         "aq20", "blacktemple", "bwl", "gruulslair", "hyjal", "icc", "karazhan", "magtheridon",
         "moltencore", "naxx", "onyxia", "rs", "ssc", "tbc-ac", "tbc-mech", "tbc-mgt", "tbc-seth", "tbc-ub",
-        "tempestkeep", "ulduar", "voa", "wotlk-an", "wotlk-cos", "wotlk-dtk", "wotlk-eoe",
-        "wotlk-fos", "wotlk-gd", "wotlk-hol", "wotlk-hos", "wotlk-nex", "wotlk-occ", "wotlk-ok",
+        "tempestkeep", "ulduar", "vanilla-rfc", "vanilla-sfk", "voa", "wotlk-an", "wotlk-cos", "wotlk-dtk",
+        "wotlk-eoe", "wotlk-fos", "wotlk-gd", "wotlk-hol", "wotlk-hos", "wotlk-nex", "wotlk-occ", "wotlk-ok",
         "wotlk-os", "wotlk-pos", "wotlk-toc", "wotlk-uk", "wotlk-up", "wotlk-vh", "zulaman"
     };
 
@@ -1876,8 +1891,14 @@ void PlayerbotAI::ApplyInstanceStrategies(uint32 mapId, bool tellMaster)
     std::string strategyName;
     switch (mapId)
     {
+        case 33:
+            strategyName = "vanilla-sfk";  // Shadowfang Keep
+            break;
         case 249:
             strategyName = "onyxia";  // Onyxia's Lair
+            break;
+        case 389:
+            strategyName = "vanilla-rfc";  // Ragefire Chasm
             break;
         case 409:
             strategyName = "moltencore";  // Molten Core

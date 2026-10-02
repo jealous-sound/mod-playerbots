@@ -135,9 +135,19 @@ Player* RandomPlayerbotFactory::CreateRandomBot(WorldSession* session, uint8 cls
 
     std::vector<uint8> skinColors, facialHairTypes;
     std::vector<std::pair<uint8, uint8>> faces, hairs;
+    // CoA: the draw had no criterion and also picked the sections reserved to Death Knights
+    // (SECTION_FLAG_DEATH_KNIGHT): 1271 of 2944 characters wore a DK face on a realm without a
+    // single Death Knight (23/09). Only that bit is filtered: also requiring SECTION_FLAG_PLAYER
+    // would drop 17 skin colours added by the Ascension client, 8 of the 11 of the male Human.
+    // Reachable (face, colour) pairs go from 639 to 587: what goes is the pale tints that only
+    // existed paired with a DK face.
+    bool const wantsDeathKnightLook = (cls == CLASS_DEATH_KNIGHT);
     for (CharSectionsEntry const* charSection : sCharSectionsStore)
     {
         if (charSection->Race != race || charSection->Gender != gender)
+            continue;
+
+        if (!wantsDeathKnightLook && (charSection->Flags & SECTION_FLAG_DEATH_KNIGHT))
             continue;
 
         switch (charSection->GenType)
@@ -158,12 +168,30 @@ Player* RandomPlayerbotFactory::CreateRandomBot(WorldSession* session, uint8 cls
     }
 
     //uint8 skinColor = skinColors[urand(0, skinColors.size() - 1)]; //not used, line marked for removal.
+
+    // urand(0, v.size() - 1) on an empty vector underflows and draws a huge index. No race empties
+    // these lists today (the Gnome keeps 91 faces and 216 hair styles at least), but the filter
+    // above is what could.
+    if (faces.empty() || hairs.empty())
+    {
+        LOG_ERROR("playerbots",
+                  "No usable character sections for race {} gender {} (faces: {}, hairs: {}) - using the default look",
+                  uint32(race), uint32(gender), faces.size(), hairs.size());
+
+        if (faces.empty())
+            faces.emplace_back(0, 0);
+        if (hairs.empty())
+            hairs.emplace_back(0, 0);
+    }
+
     std::pair<uint8, uint8> face = faces[urand(0, faces.size() - 1)];
     std::pair<uint8, uint8> hair = hairs[urand(0, hairs.size() - 1)];
 
     bool excludeCheck = (race == RACE_TAUREN) || (race == RACE_DRAENEI) ||
                         (gender == GENDER_FEMALE && race != RACE_NIGHTELF && race != RACE_UNDEAD_PLAYER);
-    uint8 facialHair = excludeCheck ? 0 : facialHairTypes[urand(0, facialHairTypes.size() - 1)];
+    uint8 facialHair = (excludeCheck || facialHairTypes.empty())
+                           ? 0
+                           : facialHairTypes[urand(0, facialHairTypes.size() - 1)];
 
     std::unique_ptr<CharacterCreateInfo> characterInfo = std::make_unique<CharacterCreateInfo>(
         name, race, cls, gender, face.second, face.first, hair.first, hair.second, facialHair);

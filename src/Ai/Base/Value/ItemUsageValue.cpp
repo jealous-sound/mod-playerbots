@@ -279,7 +279,8 @@ ItemUsage ItemUsageValue::QueryItemUsageForEquip(ItemTemplate const* itemProto, 
         // - The bot can Titan Grip and it is a valid TG weapon
         // Then we can consider the offhand slot as well.
         if (bot->CanDualWield() &&
-            ((itemProto->InventoryType != INVTYPE_2HWEAPON && !have2HWeapon) ||
+            ((itemProto->InventoryType != INVTYPE_2HWEAPON && itemProto->InventoryType != INVTYPE_WEAPONMAINHAND &&
+              !have2HWeapon) ||
              (bot->CanTitanGrip() && isValidTGWeapon)))
         {
             possibleSlots = 2;

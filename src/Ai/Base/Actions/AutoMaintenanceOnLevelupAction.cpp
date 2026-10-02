@@ -139,6 +139,9 @@ void AutoMaintenanceOnLevelupAction::LearnQuestSpells(std::ostringstream* out)
             if (spellInfo->Effects[i].Effect == SPELL_EFFECT_LEARN_SPELL && spellInfo->Effects[i].TriggerSpell &&
                 !bot->HasSpell(spellInfo->Effects[i].TriggerSpell))
             {
+                if (PlayerbotFactory::IsCoaForeignClassSpell(bot, spellInfo->Effects[i].TriggerSpell))
+                    break;
+
                 if (SpellInfo const* triggeredInfo = sSpellMgr->GetSpellInfo(spellInfo->Effects[i].TriggerSpell))
                     if (triggeredInfo->Effects[0].Effect == SPELL_EFFECT_TRADE_SKILL)
                         break;

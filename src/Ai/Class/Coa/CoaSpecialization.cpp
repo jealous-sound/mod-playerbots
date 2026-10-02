@@ -35,9 +35,13 @@
 #include "AscensionSpecialization.h"
 #include "AscensionCoATalentData.h"
 #include "AscensionSpellProgressionData.h"
+#include "AscensionCustomClassData.h"
+#include "AscensionLiveBaselineData.h"
 
 #include <algorithm>
 #include <cctype>
+#include <map>
+#include <random>
 #include <iterator>
 #include <cstdlib>
 #include <array>
@@ -47,6 +51,7 @@
 #include <mutex>
 #include <sstream>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace
 {
@@ -356,6 +361,8 @@ bool EnsureCoaSpecialization(Player* bot)
     }
 
     std::vector<uint32> const& candidates = byRole[chosenRole];
+    if (candidates.empty())
+        return false;
     uint32 const specializationId = candidates[Hash(bot->GetGUID().GetCounter(), 0x50494B4Bu) % candidates.size()];   // 'PIKK'
 
     // The specialization a character is created with decides nothing about the group: keep it only
@@ -412,10 +419,57 @@ uint32 ApplyCoaTalents(Player* bot)
             itr->second = pick.Rank;
     }
 
+    // Entries of one free-choice group exclude each other: the core removes the others when one is set.
+    // Keeping two of them in the build made the bot swap them back and forth on every refresh.
+    auto const freeGroupOf = [](uint32 entryId) -> uint32
+    {
+        for (AscensionCompatData::CoASelectableFreeEntry const& free : AscensionCompatData::CoASelectableFreeEntries)
+            if (free.EntryId == entryId)
+                return free.GroupId;
+        return 0;
+    };
+    for (size_t i = wanted.size(); i-- > 0;)
+    {
+        uint32 const group = freeGroupOf(wanted[i].first);
+        if (!group)
+            continue;
+        for (size_t j = 0; j < i; ++j)
+            if (freeGroupOf(wanted[j].first) == group)
+            {
+                wanted.erase(wanted.begin() + j);
+                --i;
+                --j;
+            }
+    }
+
+    // The core teaches the class baseline again right after any change (SynchronizeProgression), so
+    // lowering an entry whose spell is part of that baseline never sticks and was redone every refresh.
+    auto const coreGrants = [bot](uint32 spellId)
+    {
+        for (AscensionLiveBaseline::Spell const& spell : AscensionLiveBaseline::Spells)
+            if (spell.ClassId == bot->getClass() && spell.SpellId == spellId &&
+                (!spell.RaceId || spell.RaceId == bot->getRace()))
+                return true;
+        for (AscensionCompatData::ClassSpell const& spell : AscensionCompatData::ClassSpells)
+            if (spell.ClassId == bot->getClass() && spell.SpellId == spellId && spell.RequiredLevel <= bot->GetLevel())
+                return true;
+        return false;
+    };
+
+    // Two entries can hold the same spell: taking it away from the one the build does not want took it
+    // from the wanted one too, which was raised again next time, for ever.
+    std::unordered_set<uint32> wantedSpells;
+    for (auto const& [entryId, rank] : wanted)
+        if (AscensionCompatData::CoATalentEntry const* entry = entryOf(entryId))
+            for (uint32 r = 0; r < rank && r < entry->SpellIds.size(); ++r)
+                if (entry->SpellIds[r])
+                    wantedSpells.insert(entry->SpellIds[r]);
+
     // Down first: a bot brought down in level kept the entries of the level it had, the core only ever
     // raises them (Fiery Judgement, spell level 31, on a level 3 Witch Hunter). Every entry of its class
     // above what the build holds at this level goes back down, to 0 when the build has none of it yet.
     uint32 lowered = 0;
+    std::string changes;
     for (AscensionCompatData::CoATalentEntry const& entry : AscensionCompatData::CoATalentEntries)
     {
         if (entry.ClassId != bot->getClass())
@@ -423,8 +477,14 @@ uint32 ApplyCoaTalents(Player* bot)
         auto itr = std::find_if(wanted.begin(), wanted.end(),
             [&entry](std::pair<uint32, uint8> const& w) { return w.first == entry.EntryId; });
         uint32 const allowed = itr == wanted.end() ? 0 : itr->second;
-        if (GetAscensionTalentRank(bot, entry.EntryId) > allowed && SetAscensionTalentRank(bot, entry.EntryId, allowed))
+        uint32 const current = GetAscensionTalentRank(bot, entry.EntryId);
+        if (current <= allowed || coreGrants(entry.SpellIds[current - 1]) || wantedSpells.count(entry.SpellIds[current - 1]))
+            continue;
+        if (SetAscensionTalentRank(bot, entry.EntryId, allowed) && GetAscensionTalentRank(bot, entry.EntryId) < current)
+        {
             ++lowered;
+            changes += " -" + std::to_string(entry.EntryId);
+        }
     }
     // The higher ranks of an ability taken away stay otherwise: the rank table learns rank 2+ from the
     // first one, and nothing removes them with it.
@@ -439,12 +499,16 @@ uint32 ApplyCoaTalents(Player* bot)
 
     uint32 raised = 0;
     for (auto const& [entryId, rank] : wanted)
-        if (GetAscensionTalentRank(bot, entryId) < rank && SetAscensionTalentRank(bot, entryId, rank))
+        if (GetAscensionTalentRank(bot, entryId) < rank && SetAscensionTalentRank(bot, entryId, rank) &&
+            GetAscensionTalentRank(bot, entryId) >= rank)
+        {
             ++raised;
+            changes += " +" + std::to_string(entryId);
+        }
 
     if (raised || lowered)
-        LOG_INFO("playerbots", "coa: {} (class {}, level {}, specialization {}) raised {}, lowered {} talent entries ({} orphan ranks)",
-                 bot->GetName(), bot->getClass(), bot->GetLevel(), specializationId, raised, lowered, orphans);
+        LOG_INFO("playerbots", "coa: {} (class {}, level {}, specialization {}) raised {}, lowered {} talent entries ({} orphan ranks):{}",
+                 bot->GetName(), bot->getClass(), bot->GetLevel(), specializationId, raised, lowered, orphans, changes);
     return raised;
 }
 
@@ -511,11 +575,12 @@ Player* FindCoaRecruit(Player* master, CoaRole role, uint8 classId, std::set<Obj
     {
         if (!bot || bot == master || !bot->IsInWorld() || bot->IsBeingTeleported() ||
             !IsAscensionCustomClassId(bot->getClass()) || !bot->IsAlive() || bot->IsInCombat() || bot->GetGroup() ||
-            bot->InBattleground() || bot->IsInFlight())
+            bot->GetGroupInvite() || bot->InBattleground() || bot->InBattlegroundQueue() || bot->IsInFlight() ||
+            sLFGMgr->GetState(bot->GetGUID()) != lfg::LFG_STATE_NONE)
             continue;
 
         // Already offered to another player (lfg bots) or otherwise set aside by the caller.
-        if (skip.count(bot->GetGUID()))
+        if (skip.count(bot->GetGUID()) || CoaLfgOfferedToOther(bot, master))
             continue;
 
         // Held by a CoA activity (a participant, or being asked to join one).
@@ -619,8 +684,8 @@ bool PrepareCoaRecruit(Player* master, Player* chosen, CoaRole role, bool chosen
         // Keep the array alive: a reference into the temporary would dangle.
         std::array<std::vector<uint32>, 3> const byRole = SpecializationsByRole(chosen->getClass());
         std::vector<uint32> const& candidates = byRole[uint8(role)];
-        uint32 const specialization = candidates[urand(0, candidates.size() - 1)];
-        if (!SwitchAscensionSpecialization(chosen, specialization))
+        uint32 const specialization = candidates.empty() ? 0 : candidates[urand(0, candidates.size() - 1)];
+        if (!specialization || !SwitchAscensionSpecialization(chosen, specialization))
         {
             message = "Could not give " + chosen->GetName() + " a specialization.";
             return false;
@@ -764,6 +829,124 @@ bool RecruitCoaBot(Player* master, CoaRole role, std::string& message, uint8 cla
     return true;
 }
 
+bool RecruitCoaRaid(Player* master, uint32 size, uint32 tanks, uint32 heals, std::string& message)
+{
+    size = std::clamp<uint32>(size ? size : 25, 6, MAXRAIDSIZE);
+    if (!tanks)
+        tanks = std::max<uint32>(2, size / 8);
+    if (!heals)
+        heals = (size + 2) / 4;
+    tanks = std::min(tanks, size - 1);
+    heals = std::min(heals, size - 1 - tanks);
+
+    if (master->InBattleground() || master->InArena())
+    {
+        message = "Not in a battleground.";
+        return false;
+    }
+
+    Group* group = master->GetGroup();
+    if (group && (group->isLFGGroup() || group->isBGGroup() || group->isBFGroup()))
+    {
+        message = "Leave the Dungeon Finder or battleground group first.";
+        return false;
+    }
+    if (group && !group->IsLeader(master->GetGUID()))
+    {
+        message = "Only the group leader can build a raid.";
+        return false;
+    }
+    if (!group)
+    {
+        group = new Group();
+        if (!group->Create(master))
+        {
+            delete group;
+            message = "Could not create a group.";
+            return false;
+        }
+        sGroupMgr->AddGroup(group);
+    }
+    if (!group->isRaidGroup())
+        group->ConvertToRaid();
+
+    // The members already there count: a tank or a healer already in the group is one less to find.
+    std::array<uint32, 3> wanted = { 0, tanks, heals };
+    std::map<uint8, uint32> classCount;
+    for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+        if (Player* member = ref->GetSource())
+        {
+            ++classCount[member->getClass()];
+            uint8 const role = uint8(GetCoaRole(member));
+            if (role != uint8(CoaRole::Dps) && wanted[role])
+                --wanted[role];
+        }
+    uint32 const members = group->GetMembersCount();
+    if (members >= size)
+    {
+        message = "Your raid already has " + std::to_string(members) + " members.";
+        return false;
+    }
+    uint32 const free = size - members;
+    wanted[uint8(CoaRole::Tank)] = std::min(wanted[uint8(CoaRole::Tank)], free);
+    wanted[uint8(CoaRole::Heal)] = std::min(wanted[uint8(CoaRole::Heal)], free - wanted[uint8(CoaRole::Tank)]);
+    wanted[uint8(CoaRole::Dps)] = free - wanted[uint8(CoaRole::Tank)] - wanted[uint8(CoaRole::Heal)];
+
+    // Classes taken in turn, the least represented first, so that 15 damage dealers are not 15 of a kind.
+    std::mt19937 shuffler(urand(0, 0x7FFFFFFF));
+    std::array<uint32, 3> got = {};
+    std::string stopped;
+    for (CoaRole role : { CoaRole::Tank, CoaRole::Heal, CoaRole::Dps })
+    {
+        for (uint32 i = 0; i < wanted[uint8(role)]; ++i)
+        {
+            std::vector<uint8> classes;
+            for (uint8 classId = FirstCoaClass; classId < FirstCoaClass + std::size(CoaClassNames); ++classId)
+                if (!SpecializationsByRole(classId)[uint8(role)].empty())
+                    classes.push_back(classId);
+            std::shuffle(classes.begin(), classes.end(), shuffler);
+            std::stable_sort(classes.begin(), classes.end(),
+                             [&classCount](uint8 a, uint8 b) { return classCount[a] < classCount[b]; });
+
+            bool recruited = false;
+            std::string reason;
+            for (uint8 classId : classes)
+                if (RecruitCoaBot(master, role, reason, classId))
+                {
+                    ++classCount[classId];
+                    recruited = true;
+                    break;
+                }
+            if (!recruited)
+            {
+                stopped += " No free bot left to play " + std::string(RoleName(role)) + ".";
+                break;
+            }
+            ++got[uint8(role)];
+        }
+    }
+
+    // The raid panel counts tanks and healers from the group roles: each bot shows the one it plays.
+    for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
+        if (Player* member = ref->GetSource())
+            if (GET_PLAYERBOT_AI(member))
+            {
+                CoaRole const role = GetCoaRole(member);
+                group->SetLfgRoles(member->GetGUID(), role == CoaRole::Tank   ? lfg::PLAYER_ROLE_TANK
+                                                      : role == CoaRole::Heal ? lfg::PLAYER_ROLE_HEALER
+                                                                              : lfg::PLAYER_ROLE_DAMAGE);
+            }
+
+    LOG_INFO("playerbots", "coa: {} built a raid of {}: {} tanks, {} healers, {} damage dealers recruited",
+             master->GetName(), size, got[uint8(CoaRole::Tank)], got[uint8(CoaRole::Heal)], got[uint8(CoaRole::Dps)]);
+
+    message = "Raid: " + std::to_string(got[uint8(CoaRole::Tank)]) + " tanks, " +
+              std::to_string(got[uint8(CoaRole::Heal)]) + " healers and " + std::to_string(got[uint8(CoaRole::Dps)]) +
+              " damage dealers joined (" + std::to_string(group->GetMembersCount()) + "/" + std::to_string(size) + ").";
+    message += stopped;
+    return got[0] + got[1] + got[2] > 0;
+}
+
 /*
  * Bots that answer "lfg bot heal" in a chat channel.
  *
@@ -787,7 +970,7 @@ struct CoaLfgSettings
     bool requireBotWord = true;
     std::array<uint32, 3> offers = { 3, 2, 2 };  // by CoaRole: dps, tank, heal
     uint32 levelRange = 2;
-    uint32 offerSeconds = 5 * MINUTE;
+    uint32 offerSeconds = 2 * MINUTE;
     uint32 cooldownSeconds = 30;
     uint32 announceSeconds = 10 * MINUTE;
     std::string announce;
@@ -834,7 +1017,7 @@ void LoadLfgSettings()
     for (uint32& count : settings.offers)
         count = std::min<uint32>(count, 5);
     settings.levelRange = sConfigMgr->GetOption<uint32>("AiPlayerbot.CoaLfgLevelRange", 2);
-    settings.offerSeconds = sConfigMgr->GetOption<uint32>("AiPlayerbot.CoaLfgOfferMinutes", 5) * MINUTE;
+    settings.offerSeconds = sConfigMgr->GetOption<uint32>("AiPlayerbot.CoaLfgOfferMinutes", 2) * MINUTE;
     settings.cooldownSeconds = sConfigMgr->GetOption<uint32>("AiPlayerbot.CoaLfgCooldown", 15);
     settings.announceSeconds = sConfigMgr->GetOption<uint32>("AiPlayerbot.CoaLfgAnnounceMinutes", 10) * MINUTE;
     settings.announce = sConfigMgr->GetOption<std::string>("AiPlayerbot.CoaLfgAnnounceText", "");
@@ -1064,6 +1247,16 @@ bool CoaLfgHeard(Player* player, std::string const& message, Channel* channel)
             chat.PSendSysMessage("No bot of your faction is free to play {} right now.", RoleName(role));
     }
     return true;
+}
+
+bool CoaLfgOfferedToOther(Player* bot, Player* player)
+{
+    if (!bot)
+        return false;
+    std::lock_guard<std::mutex> guard(LfgLock);
+    auto const offer = LfgOffers.find(bot->GetGUID());
+    return offer != LfgOffers.end() && offer->second.until >= time(nullptr) &&
+           (!player || offer->second.player != player->GetGUID());
 }
 
 bool CoaLfgTakeOffer(Player* bot, Player* inviter)

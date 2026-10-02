@@ -79,6 +79,9 @@ struct MemberStats
     uint32 diedUnhealed = 0;
     // As a tank: taunts that went off.
     uint32 taunts = 0;
+    // Kicks it cast at enemy casts, and how many of them went to a cast another bot had already kicked.
+    uint32 interrupts = 0;
+    uint32 interruptsWasted = 0;
     // Every heal this member tried, by spell and outcome (0 = cast).
     std::map<std::pair<uint32, uint16>, uint32> healTries;
     // Damage dealt by spell (0 = melee swing): the amount, and how many times it landed.
@@ -197,6 +200,8 @@ void Write(Fight const& fight, uint32 now)
         line << ", hit " << Seconds(m.hit);
         if (m.role == CoaRole::Tank)
             line << ", taunts " << m.taunts;
+        if (m.interrupts)
+            line << ", interrupts " << m.interrupts << " (" << m.interruptsWasted << " on a cast already kicked)";
         if (m.criticalTimes)
         {
             line << ", under 25% " << m.criticalTimes << " times";
@@ -649,6 +654,7 @@ public:
         sPlayerbotAIConfig.coaSmartTank = sConfigMgr->GetOption<bool>("AiPlayerbot.CoaSmartTank", true);
         sPlayerbotAIConfig.coaThreatHold = sConfigMgr->GetOption<uint32>("AiPlayerbot.CoaThreatHold", 0);
         sPlayerbotAIConfig.coaTankOpenerSeconds = sConfigMgr->GetOption<uint32>("AiPlayerbot.CoaTankOpenerSeconds", 2);
+        sPlayerbotAIConfig.coaInterruptCoordination = sConfigMgr->GetOption<bool>("AiPlayerbot.CoaInterruptCoordination", false);
         sPlayerbotAIConfig.coaExcludedSpecializations.clear();
         std::string const excluded = sConfigMgr->GetOption<std::string>("AiPlayerbot.CoaExcludedSpecializations", "51,101");
         std::istringstream ids(excluded);
@@ -660,8 +666,9 @@ public:
         for (std::string id; std::getline(offensive, id, ',');)
             if (!id.empty())
                 sPlayerbotAIConfig.coaOffensiveHealerSpecs.insert(uint32(std::stoul(id)));
-        LOG_INFO("playerbots.coa", "coa settings reloaded: smart heal {}, smart tank {}, group telemetry {}",
-                 sPlayerbotAIConfig.coaSmartHeal, sPlayerbotAIConfig.coaSmartTank, sPlayerbotAIConfig.coaGroupTelemetry);
+        LOG_INFO("playerbots.coa", "coa settings reloaded: smart heal {}, smart tank {}, group telemetry {}, interrupt coordination {}",
+                 sPlayerbotAIConfig.coaSmartHeal, sPlayerbotAIConfig.coaSmartTank, sPlayerbotAIConfig.coaGroupTelemetry,
+                 sPlayerbotAIConfig.coaInterruptCoordination);
     }
 };
 }  // namespace
@@ -680,6 +687,25 @@ void CoaTelemetryNoteTaunt(Player* bot)
     auto member = fight->second.members.find(bot->GetGUID().GetRawValue());
     if (member != fight->second.members.end())
         ++member->second.taunts;
+}
+
+// A kick of `bot` went off, `wasted` when another bot had already kicked that cast: counted in its
+// group's fight, if one is being followed.
+void CoaTelemetryNoteInterrupt(Player* bot, bool wasted)
+{
+    Group* group = bot->GetGroup();
+    if (!group || !ActiveFights.load(std::memory_order_relaxed))
+        return;
+
+    std::lock_guard<std::mutex> guard(Lock);
+    auto fight = Fights.find(group->GetGUID().GetRawValue());
+    if (fight == Fights.end())
+        return;
+    auto member = fight->second.members.find(bot->GetGUID().GetRawValue());
+    if (member == fight->second.members.end())
+        return;
+    ++member->second.interrupts;
+    member->second.interruptsWasted += wasted;
 }
 
 // A heal `bot` tried, and what came of it: counted in its group's fight, if one is being followed.

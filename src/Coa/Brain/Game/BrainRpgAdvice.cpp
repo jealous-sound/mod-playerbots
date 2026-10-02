@@ -26,6 +26,7 @@
 #include <iomanip>
 #include <limits>
 #include <mutex>
+#include <numeric>
 #include <sstream>
 #include <utility>
 
@@ -35,11 +36,12 @@ std::mutex SnapshotMutex;
 std::shared_ptr<BrainRpgSnapshot const> Snapshot = std::make_shared<BrainRpgSnapshot>();
 std::atomic<float> Influence{0.0f};
 constexpr std::array<char const*, BRAIN_RPG_OPTIONS> Keys{
-    "wander_random", "wander_npc", "go_grind", "go_camp", "do_quest", "travel_flight", "rest", "outdoor_pvp"};
+    "wander_random", "wander_npc", "go_grind", "go_camp", "do_quest", "travel_flight", "rest", "outdoor_pvp", "go_city"};
 constexpr std::array<char const*, BRAIN_RPG_OPTIONS> Descriptions{
     "explore the surroundings and fight whatever they meet", "walk among the villagers and visit NPCs",
     "go to a good spot and grind monsters", "go back to camp: an inn or a hub", "work on their quests",
-    "take a flight path to another area", "sit down and rest", "contest an outdoor PvP objective"};
+    "take a flight path to another area", "sit down and rest", "contest an outdoor PvP objective",
+    "visit a friendly capital and spend time among its NPCs"};
 constexpr std::array<char const*, 3> Roles{"damage dealers", "tanks", "healers"};
 
 BrainRpgKey Unpack(uint64 packed)
@@ -90,10 +92,23 @@ bool ReadAdvice(BrainResult const& result, BrainRpgEntry& entry)
     auto found = std::find_if(Keys.begin(), Keys.end(), [&](char const* value) { return answer->choice == value; });
     if (found == Keys.end() || !std::isfinite(answer->p))
         return false;
-    float const chosen = std::clamp(answer->p, 0.125f, 1.0f);
-    entry.p.fill((1.0f - chosen) / 7.0f);
+    float const chosen = std::clamp(answer->p, 1.0f / float(BRAIN_RPG_OPTIONS), 1.0f);
+    entry.p.fill((1.0f - chosen) / float(BRAIN_RPG_OPTIONS - 1));
     entry.p[std::size_t(found - Keys.begin())] = chosen;
     return true;
+}
+
+BrainQuestion AdviceQuestion()
+{
+    BrainQuestion question;
+    question.name = "next";
+    question.cacheable = false;
+    question.instructions = "Which activity should this group of adventurers do next? Consider how many real "
+        "players are around (lively places are more fun), the time of day and the active events. "
+        "Answer with the option that fits best.";
+    for (std::size_t i = 0; i < Keys.size(); ++i)
+        question.options.push_back({Keys[i], Descriptions[i], {}});
+    return question;
 }
 
 BrainJob BuildJob(BrainRpgKey const& key, uint32 bots, uint32 humans, uint64 now, uint32 epoch)
@@ -105,15 +120,7 @@ BrainJob BuildJob(BrainRpgKey const& key, uint32 bots, uint32 humans, uint64 now
     job.tag = key.Packed();
     job.epoch = epoch;
     job.deadlineMs = now + 8000;
-    BrainQuestion question;
-    question.name = "next";
-    question.cacheable = false;
-    question.instructions = "Which activity should this group of adventurers do next? Consider how many real "
-        "players are around (lively places are more fun), the time of day and the active events. "
-        "Answer with the option that fits best.";
-    for (std::size_t i = 0; i < Keys.size(); ++i)
-        question.options.push_back({Keys[i], Descriptions[i], {}});
-    job.questions.push_back(std::move(question));
+    job.questions.push_back(AdviceQuestion());
     std::time_t const unixTime = std::time(nullptr);
     std::tm local{};
 #ifdef _WIN32
@@ -194,6 +201,7 @@ int32 BrainRpgAdvice::OptionOfStatus(int32 status)
         case 6: return int32(BrainRpgOption::TravelFlight);
         case 7: return int32(BrainRpgOption::Rest);
         case 8: return int32(BrainRpgOption::OutdoorPvp);
+        case 9: return int32(BrainRpgOption::GoCity);
         default: return -1;
     }
 }
@@ -241,6 +249,65 @@ bool BrainRpgAdvice::BlendWeights(BrainRpgEntry const& entry, float influence, i
         return false;
     std::copy(changed.begin(), changed.end(), weights);
     return true;
+}
+
+bool BrainRpgAdvice::SelfTest()
+{
+    // Existing option numbers are protocol/cache identifiers; the city option is appended.
+    if (BRAIN_RPG_OPTIONS != 9 || uint8(BrainRpgOption::OutdoorPvp) != 7 || uint8(BrainRpgOption::GoCity) != 8)
+        return false;
+    constexpr std::array<int32, BRAIN_RPG_OPTIONS> statuses{3, 4, 1, 2, 5, 6, 7, 8, 9};
+    BrainQuestion const question = AdviceQuestion();
+    if (question.name != "next" || question.cacheable || question.type != BrainQuestionType::Choice ||
+        question.options.size() != BRAIN_RPG_OPTIONS)
+        return false;
+    BrainRpgEntry entry;
+    for (std::size_t i = 0; i < BRAIN_RPG_OPTIONS; ++i)
+    {
+        if (entry.p[i] != -1.0f || OptionOfStatus(statuses[i]) != int32(i) ||
+            question.options[i].key != Keys[i] || question.options[i].text.empty() ||
+            std::string(BrainRpgOptionKey(BrainRpgOption(i))) != Keys[i])
+            return false;
+        for (std::size_t j = 0; j < i; ++j)
+            if (question.options[i].key == question.options[j].key)
+                return false;
+    }
+    if (OptionOfStatus(0) != -1 || OptionOfStatus(10) != -1 || OptionOfStatus(-1) != -1)
+        return false;
+    BrainResult result;
+    BrainAnswer answer;
+    answer.name = "next";
+    answer.valid = true;
+    answer.choice = "go_city";
+    answer.p = 0.5f;
+    result.answers.push_back(answer);
+    if (!ReadAdvice(result, entry) || entry.p[8] != 0.5f ||
+        std::fabs(std::accumulate(entry.p.begin(), entry.p.end(), 0.0f) - 1.0f) > 0.00001f)
+        return false;
+    for (std::size_t i = 0; i < 8; ++i)
+        if (entry.p[i] != 0.0625f)
+            return false;
+    result.answers[0].p = 0.0f;
+    if (!ReadAdvice(result, entry))
+        return false;
+    for (float probability : entry.p)
+        if (std::fabs(probability - 1.0f / 9.0f) > 0.00001f)
+            return false;
+    result.answers[0].dist = {{"go_city", 3.0f}, {"rest", 1.0f}};
+    if (!ReadAdvice(result, entry) || entry.p[8] != 0.75f || entry.p[6] != 0.25f)
+        return false;
+    std::array<int32, 2> const options{int32(BrainRpgOption::GoCity), int32(BrainRpgOption::Rest)};
+    std::array<uint32, 2> weights{10, 10};
+    if (!BlendWeights(entry, 1.0f, options.data(), weights.data(), weights.size()) ||
+        weights != std::array<uint32, 2>{240, 80})
+        return false;
+    weights = {10, 10};
+    if (BlendWeights(entry, 0.0f, options.data(), weights.data(), weights.size()) ||
+        weights != std::array<uint32, 2>{10, 10})
+        return false;
+    result.answers[0].dist.clear();
+    result.answers[0].choice = "unoffered_city";
+    return !ReadAdvice(result, entry);
 }
 
 bool BrainRpgAdvice::Blend(Player* bot, int32 const* statuses, uint32* weights, std::size_t count)
@@ -431,7 +498,8 @@ std::vector<std::string> BrainRpgAdvice::FormatStatus() const
              << uint32(group.band) * 10 + 9 << ' ' << Roles[std::min<std::size_t>(group.role, 2)]
              << ": " << entry.bots << " bots, expires in "
              << (entry.untilMs > now ? (entry.untilMs - now) / 1000 : 0) << " s:";
-        std::array<std::size_t, BRAIN_RPG_OPTIONS> order{0, 1, 2, 3, 4, 5, 6, 7};
+        std::array<std::size_t, BRAIN_RPG_OPTIONS> order;
+        std::iota(order.begin(), order.end(), std::size_t(0));
         std::sort(order.begin(), order.end(), [&](std::size_t a, std::size_t b) { return entry.p[a] > entry.p[b]; });
         for (std::size_t i = 0; i < 5; ++i)
             line << ' ' << Keys[order[i]] << ' ' << std::fixed << std::setprecision(2) << entry.p[order[i]];

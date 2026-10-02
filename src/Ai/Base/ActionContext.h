@@ -273,6 +273,7 @@ public:
         creators["new rpg status update"] = &ActionContext::new_rpg_status_update;
         creators["new rpg go grind"] = &ActionContext::new_rpg_go_grind;
         creators["new rpg go camp"] = &ActionContext::new_rpg_go_camp;
+        creators["new rpg go city"] = &ActionContext::new_rpg_go_city;
         creators["new rpg wander random"] = &ActionContext::new_rpg_wander_random;
         creators["new rpg wander npc"] = &ActionContext::new_rpg_wander_npc;
         creators["new rpg do quest"] = &ActionContext::new_rpg_do_quest;
@@ -479,6 +480,7 @@ private:
     static Action* new_rpg_status_update(PlayerbotAI* ai) { return new NewRpgStatusUpdateAction(ai); }
     static Action* new_rpg_go_grind(PlayerbotAI* ai) { return new NewRpgGoGrindAction(ai); }
     static Action* new_rpg_go_camp(PlayerbotAI* ai) { return new NewRpgGoCampAction(ai); }
+    static Action* new_rpg_go_city(PlayerbotAI* ai) { return new NewRpgGoCityAction(ai); }
     static Action* new_rpg_wander_random(PlayerbotAI* ai) { return new NewRpgWanderRandomAction(ai); }
     static Action* new_rpg_wander_npc(PlayerbotAI* ai) { return new NewRpgWanderNpcAction(ai); }
     static Action* new_rpg_do_quest(PlayerbotAI* ai) { return new NewRpgDoQuestAction(ai); }

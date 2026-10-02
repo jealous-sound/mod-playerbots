@@ -70,11 +70,20 @@ struct NewRpgInfo
     {
         ObjectGuid::LowType capturePointSpawnId{0};
     };
+    // RPG_GO_CITY
+    struct GoCity
+    {
+        WorldPosition pos{};
+    };
     struct Idle
     {
     };
 
     uint32 startT{0};  // start timestamp of the current status
+
+    // City life: until when the bot keeps visiting the city NPCs, and where it came from.
+    uint32 cityStayMs{0};
+    WorldPosition cityReturnPos{};
 
     // MOVE_FAR
     float nearestMoveFarDis{FLT_MAX};
@@ -92,7 +101,8 @@ struct NewRpgInfo
         DoQuest,
         Rest,
         TravelFlight,
-        OutdoorPvP
+        OutdoorPvP,
+        GoCity
     >;
     RpgData data;
 
@@ -106,6 +116,7 @@ struct NewRpgInfo
     void ChangeToDoQuest(uint32 questId, Quest const* quest);
     void ChangeToTravelFlight(uint32 flightMasterEntry, WorldPosition flightMasterPos, std::vector<uint32> path);
     void ChangeToOutdoorPvp(ObjectGuid::LowType capturePointSpawnId = 0);
+    void ChangeToGoCity(WorldPosition pos);
     void ChangeToRest();
     void ChangeToIdle();
     bool CanChangeTo(NewRpgStatus status);

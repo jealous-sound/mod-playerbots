@@ -1707,17 +1707,31 @@ const Movement::PointsArray MovementAction::SearchForBestPath(float x, float y, 
     Movement::PointsArray result = gen.GetPath();
     float min_length = gen.getPathLength();
     int typeOk = PATHFIND_NORMAL | PATHFIND_INCOMPLETE;
-    if ((gen.GetPathType() & typeOk) && abs(tempZ - z) < 0.5f)
+    // Inside instances a straight line that ignores the navmesh (off-mesh start or end) runs under
+    // stairs and through floors, and the other heights tried below are often another floor of the
+    // same room: take a real navmesh path at the asked height when there is one, and never a
+    // straight line.
+    bool const strict = bot->GetMap()->IsDungeon();
+    auto usable = [typeOk, strict](PathGenerator const& path)
+    {
+        uint32 type = path.GetPathType();
+        if (!(type & typeOk))
+            return false;
+        return !strict || !(type & (PATHFIND_NOT_USING_PATH | PATHFIND_SHORTCUT));
+    };
+    if (usable(gen) && (strict || abs(tempZ - z) < 0.5f))
     {
         modified_z = tempZ;
         return result;
     }
     // Start searching
-    if (gen.GetPathType() & typeOk)
+    if (usable(gen))
     {
         modified_z = tempZ;
         found = true;
     }
+    else
+        min_length = std::numeric_limits<float>::max();
     int count = 1;
     for (float delta = step; count < maxSearchCount / 2 + 1; count++, delta += step)
     {
@@ -1728,7 +1742,7 @@ const Movement::PointsArray MovementAction::SearchForBestPath(float x, float y, 
         }
         PathGenerator gen(bot);
         gen.CalculatePath(x, y, tempZ);
-        if ((gen.GetPathType() & typeOk) && gen.getPathLength() < min_length)
+        if (usable(gen) && gen.getPathLength() < min_length)
         {
             found = true;
             min_length = gen.getPathLength();
@@ -1745,7 +1759,7 @@ const Movement::PointsArray MovementAction::SearchForBestPath(float x, float y, 
         }
         PathGenerator gen(bot);
         gen.CalculatePath(x, y, tempZ);
-        if ((gen.GetPathType() & typeOk) && gen.getPathLength() < min_length)
+        if (usable(gen) && gen.getPathLength() < min_length)
         {
             found = true;
             min_length = gen.getPathLength();

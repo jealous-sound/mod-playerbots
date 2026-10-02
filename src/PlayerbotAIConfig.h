@@ -71,7 +71,9 @@ enum NewRpgStatus : int
     // Taking a break
     RPG_REST = 7,
     RPG_OUTDOOR_PVP = 8,
-    RPG_STATUS_END = 9
+    // Spend a while in a capital of the bot's faction
+    RPG_GO_CITY = 9,
+    RPG_STATUS_END = 10
 };
 
 #define MAX_SPECNO 20
@@ -402,9 +404,14 @@ public:
     bool coaGroupTelemetry;
     bool coaSmartHeal;
     bool coaSmartTank;
+    bool coaBossKnowledge;
     bool coaRecruitSameFaction;
     bool coaBotSurname;
     uint32 coaThreatHold;
+    bool coaAttackLoop;
+    bool coaSpellReplacement;
+    bool coaAttackCheckBench;
+    bool coaInterruptCoordination;
     uint32 coaTankOpenerSeconds;
     std::string coaStatusFile;
     uint32 coaStatusIntervalSeconds;

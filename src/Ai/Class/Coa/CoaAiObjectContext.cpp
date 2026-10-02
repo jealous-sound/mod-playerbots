@@ -34,11 +34,18 @@
 #include <mutex>
 #include <unordered_map>
 #include <unordered_set>
+#include <tuple>
 #include <vector>
 
-// CoaGroupTelemetry.cpp: counts a taunt, or a heal tried, in the group fight being measured.
+// CoaBossKnowledge.cpp: "coa boss dodge", out of the way of the casts of dungeon and raid enemies.
+Strategy* NewCoaBossDodgeStrategy(PlayerbotAI* botAI);
+Action* NewCoaBossDodgeAction(PlayerbotAI* botAI);
+Trigger* NewCoaBossDangerTrigger(PlayerbotAI* botAI);
+
+// CoaGroupTelemetry.cpp: counts a taunt, a heal tried, or an interrupt, in the group fight being measured.
 void CoaTelemetryNoteTaunt(Player* bot);
 void CoaTelemetryNoteHeal(Player* bot, uint32 spellId, uint16 outcome);
+void CoaTelemetryNoteInterrupt(Player* bot, bool wasted);
 
 namespace
 {
@@ -60,7 +67,8 @@ enum AbilityKind : uint16
     KIND_INTERRUPT  = 0x0800,
     KIND_CONTROL    = 0x1000,  // stuns, fears, polymorphs... never aimed at a group member
     KIND_STANCE     = 0x2000,  // a form or stance on the caster that never expires
-    KIND_RESURRECT  = 0x4000   // brings a dead ally back
+    KIND_RESURRECT  = 0x4000,  // brings a dead ally back
+    KIND_SHARE_HARM = 0x8000   // the caster takes part of the damage its target takes
 };
 
 /*
@@ -84,13 +92,14 @@ struct ClassKit
     uint16 kinds = 0;  // every kind some ability of the class has
 };
 
-// Ally targets: pet, party and raid areas, ally or any unit, chain heal.
+// Ally targets: pet, party and raid areas, ally or any unit, chain heal, nearby ally, party or raid
+// member and allies in a cone.
 bool IsAllyTarget(uint32 target)
 {
     switch (target)
     {
-        case 5: case 20: case 21: case 25: case 30: case 31: case 33:
-        case 34: case 35: case 37: case 45: case 56: case 57: case 61:
+        case 3: case 4: case 5: case 20: case 21: case 25: case 30: case 31: case 33:
+        case 34: case 35: case 37: case 45: case 56: case 57: case 58: case 59: case 61:
             return true;
         default:
             return false;
@@ -272,6 +281,42 @@ bool WearsBuffNamed(Unit* unit, SpellInfo const* buff)
     return false;
 }
 
+// The family flags a CoA class gives the buffs a caster keeps one of on each target, read on the
+// highest rank: Woodsman's Adaptation rank 1 (800266) carries none, its other ranks carry 0x200.
+flag96 BuffFamilyFlags(SpellInfo const* buff)
+{
+    if (buff->SpellFamilyFlags)
+        return buff->SpellFamilyFlags;
+    if (SpellInfo const* last = sSpellMgr->GetSpellInfo(sSpellMgr->GetLastSpellInChain(buff->Id)))
+        return last->SpellFamilyFlags;
+    return buff->SpellFamilyFlags;
+}
+
+// Whether the unit wears another buff of the caster sharing the family flags of this one: the
+// Pyromancer's Seal of Al'ar and Seal of Alysrazor (family 30, 0x10000) and the Ranger's Woodsman's
+// and Footpad's Adaptation (family 27, 0x200) are one seal per caster, and a bot put both of each
+// pair on the same player (jealous-sound/azerothcore-wotlk-coa#5971).
+bool WearsRivalBuffFrom(Unit* unit, Unit* caster, SpellInfo const* buff)
+{
+    if (buff->SpellFamilyName <= SPELLFAMILY_PET)
+        return false;
+    flag96 const flags = BuffFamilyFlags(buff);
+    if (!flags)
+        return false;
+    for (auto const& [id, application] : unit->GetAppliedAuras())
+    {
+        Aura const* aura = application->GetBase();
+        SpellInfo const* worn = aura->GetSpellInfo();
+        if (aura->GetCasterGUID() != caster->GetGUID() || worn->IsPassive() || !application->IsPositive() ||
+            worn->SpellFamilyName != buff->SpellFamilyName ||
+            sSpellMgr->GetFirstSpellInChain(worn->Id) == sSpellMgr->GetFirstSpellInChain(buff->Id))
+            continue;
+        if (BuffFamilyFlags(worn) & flags)
+            return true;
+    }
+    return false;
+}
+
 // Whether the bot wears a stance of its own that raises its threat.
 bool WearsThreatStance(Player* bot)
 {
@@ -341,6 +386,9 @@ void Classify(SpellInfo const* info, CoaAbility& ability, uint8 depth = 0)
                 ability.kind |= KIND_HOT;
         }
 
+        if (aura && !self && effect.ApplyAuraName == SPELL_AURA_SPLIT_DAMAGE_PCT)
+            ability.kind |= KIND_SHARE_HARM;
+
         if (effect.Effect == SPELL_EFFECT_ATTACK_ME || (aura && effect.ApplyAuraName == SPELL_AURA_MOD_TAUNT))
             ability.kind |= KIND_TAUNT;
 
@@ -355,6 +403,11 @@ void Classify(SpellInfo const* info, CoaAbility& ability, uint8 depth = 0)
             ability.kind |= KIND_INTERRUPT;
 
         if (aura && self && IsDefensiveAura(effect) && duration > 0 && duration < LongAura)
+            ability.kind |= KIND_DEFENSIVE;
+
+        // A heal only for the caster (Barbarian, several tanks) matched no kind, so no bot ever cast
+        // it: it is used like the other self-saving spells, when the bot is in trouble.
+        if (heal && self && !ally)
             ability.kind |= KIND_DEFENSIVE;
 
         // Stances and forms (no duration) are left out: two of them would take turns forever.
@@ -376,6 +429,13 @@ void Classify(SpellInfo const* info, CoaAbility& ability, uint8 depth = 0)
             if (SpellInfo const* triggered = sSpellMgr->GetSpellInfo(effect.TriggerSpell))
                 Classify(triggered, ability, depth + 1);
     }
+
+    // A heal that also moves part of the target's damage onto the caster is no heal to spread around:
+    // Earthmother's Binding (Primalist, 805107) passes 30% of what the target takes to the caster
+    // (807858), and a Primalist bot binding itself to the tank in the middle of a pack died in two
+    // blows (jealous-sound/azerothcore-wotlk-coa#5844, #5846).
+    if (!depth && (ability.kind & KIND_SHARE_HARM))
+        ability.kind &= ~(KIND_HEAL | KIND_GROUP_HEAL | KIND_HOT);
 
     // Un soin mis de côté à la main (AiPlayerbot.CoaHealsExcluded) : il garde tous ses autres
     // effets, il cesse seulement de compter comme un soin. Le bot ne le mettra donc plus dans sa
@@ -526,6 +586,29 @@ bool IsFriendlyDispel(uint16 kind)
     return (kind & KIND_DISPEL) && !(kind & (KIND_CONTROL | KIND_HOSTILE));
 }
 
+// The spell the bot will really cast. Ascension swaps a spell for another while a proc is up
+// (Malefic Wrath -> Malefic Arrow) and PlayerbotAI::CastSpell follows the swap, so the check, the
+// cooldown and the bench have to bear on the replacement; the cast keeps the listed id, or the proc
+// is not consumed. AiPlayerbot.CoaSpellReplacement (StevenLeclerc 9ee20729).
+SpellInfo const* EffectiveSpell(Player* bot, SpellInfo const* info)
+{
+    if (!sPlayerbotAIConfig.coaSpellReplacement)
+        return info;
+
+    uint32 const replacement = bot->GetTemporarySpellReplacement(info->Id);
+    if (replacement && replacement != info->Id)
+        if (SpellInfo const* swapped = sSpellMgr->GetSpellInfo(replacement))
+            return swapped;
+
+    return info;
+}
+
+bool IsBenched(std::unordered_map<uint32, time_t> const& benched, uint32 spellId, time_t now)
+{
+    auto const bench = benched.find(spellId);
+    return bench != benched.end() && bench->second > now;
+}
+
 // Whether the bot knows an ability for which `wanted(kind)` is true and that is off cooldown:
 // actions only run when they have something to cast, which keeps the usage counters honest.
 template <typename Filter>
@@ -536,8 +619,9 @@ bool HasReadyAbility(PlayerbotAI* botAI, Player* bot, Filter wanted)
 
     for (Usable const& spell : KnownAbilities(bot, wanted))
     {
-        auto const bench = benched.find(spell.info->Id);
-        if (!bot->HasSpellCooldown(spell.info->Id) && (bench == benched.end() || bench->second <= now))
+        SpellInfo const* const info = EffectiveSpell(bot, spell.info);
+        if (!bot->HasSpellCooldown(info->Id) && !IsBenched(benched, spell.info->Id, now) &&
+            (info == spell.info || !IsBenched(benched, info->Id, now)))
             return true;
     }
 
@@ -579,6 +663,9 @@ bool IsAttack(uint16 kind, bool tank)
  */
 SpellCastResult StrictCheck(Player* bot, SpellInfo const* info, Unit* target)
 {
+    // The spell prepare() will see, replacement included: its cost and range, not the base spell's.
+    info = EffectiveSpell(bot, info);
+
     ObjectGuid const oldSel = bot->GetTarget();
 
     // Spell::CheckCast reads m_powerCost, and that is only worked out in Spell::prepare: a check run
@@ -611,6 +698,9 @@ constexpr uint16 FAILURE_SITTING = 1003;  // refused while sitting (eating, drin
 constexpr uint16 FAILURE_CASTING = 1004;  // refused while still casting a heal or buff
 constexpr uint16 SKIPPED_COOLDOWN = 2000;  // not tried: on cooldown (group fight log only)
 constexpr uint16 SKIPPED_BENCHED = 2001;   // not tried: set aside after an earlier failure (group fight log only)
+
+// Whether a cast of this usage kind drops the attack in progress: an attack never cuts off another.
+bool PreemptsAttackCast(uint8 usage);
 
 // A bot busy casting an attack drops it for a heal, dispel, defensive, taunt or interrupt. A heal
 // or buff in progress is kept, or heals would keep cutting each other off.
@@ -982,6 +1072,47 @@ void RecordFailure(uint8 kind, uint32 spellId, uint16 reason);
 // Casts the first ability of the list that passes the strict check on the target. Returns it,
 // or nullptr when none went off. With a usage kind, why each ability failed is counted.
 
+// How long the creature a spell summons stays, looking into the spells it triggers: 0 when the
+// spell summons nothing. Totems and wards are summons without a cooldown, and a bot recast them
+// on every global cooldown while the first one was still up (Cultist Tentacle of Yogg-Saron,
+// Witch Doctor Healing Ward, jealous-sound/azerothcore-wotlk-coa#5739, #5605).
+time_t SummonSeconds(SpellInfo const* info, uint8 depth = 0)
+{
+    for (SpellEffectInfo const& effect : info->Effects)
+    {
+        if (effect.Effect == SPELL_EFFECT_SUMMON)
+        {
+            int32 const duration = info->GetMaxDuration();
+            return duration > 0 ? std::min<time_t>(duration / IN_MILLISECONDS, 120) : 30;
+        }
+        if (effect.TriggerSpell && depth < 2)
+            if (SpellInfo const* triggered = sSpellMgr->GetSpellInfo(effect.TriggerSpell))
+                if (time_t const seconds = SummonSeconds(triggered, depth + 1))
+                    return seconds;
+    }
+    return 0;
+}
+
+// How far an attack centred on its caster reaches: a cleave, a cone or a spin that hits
+// around the bot, whatever unit it is aimed at. 0 when the spell reaches its target instead.
+float CasterCentredReach(Player* bot, SpellInfo const* info)
+{
+    float reach = 0.0f;
+    for (SpellEffectInfo const& effect : info->Effects)
+    {
+        if (!effect.IsEffect() || (!IsEnemyTarget(effect.TargetA.GetTarget()) && !IsEnemyTarget(effect.TargetB.GetTarget())))
+            continue;
+
+        uint32 const a = effect.TargetA.GetTarget();
+        bool const centred = a == TARGET_SRC_CASTER || a == TARGET_UNIT_CONE_ENEMY_24 || a == TARGET_UNIT_CONE_ENEMY_104 ||
+                             a == TARGET_UNIT_CONE_ENEMY_54;
+        if (!centred)
+            return 0.0f;
+        reach = std::max(reach, effect.CalcRadius(bot));
+    }
+    return reach;
+}
+
 SpellInfo const* CastFirst(PlayerbotAI* botAI, Player* bot, std::vector<Usable> const& spells, Unit* target,
                            uint8 usage = 255)
 {
@@ -990,6 +1121,10 @@ SpellInfo const* CastFirst(PlayerbotAI* botAI, Player* bot, std::vector<Usable> 
     // Heals are followed spell by spell in a measured group fight, skipped ones included.
     // USAGE_HEAL, USAGE_GROUP_HEAL and USAGE_HOT, whose enum comes further down.
     bool const healing = usage == 2 || usage == 3 || usage == 4;
+    // USAGE_ATTACK: the attack loop runs again on the next tick, and a proc, a target aura or a
+    // few points of rage come back sooner than a bench ends. As in 1.6, an attack turned down by
+    // the check is only skipped, unless AiPlayerbot.CoaAttackCheckBench.
+    bool const retryAttack = usage == 0 && !sPlayerbotAIConfig.coaAttackCheckBench;
     auto note = [bot, healing](uint32 spellId, uint16 outcome)
     {
         if (healing)
@@ -998,43 +1133,71 @@ SpellInfo const* CastFirst(PlayerbotAI* botAI, Player* bot, std::vector<Usable> 
 
     for (Usable const& spell : spells)
     {
+        // What the bot will really cast (see EffectiveSpell): cooldown, cast time, bench and the
+        // failure log go by the replacement, the cast itself by the listed id.
+        SpellInfo const* const info = EffectiveSpell(bot, spell.info);
+
         // A spell on cooldown would only fail with SPELL_FAILED_NOT_READY.
-        if (bot->HasSpellCooldown(spell.info->Id))
+        if (bot->HasSpellCooldown(info->Id))
         {
             note(spell.info->Id, SKIPPED_COOLDOWN);
             continue;
         }
 
         // The global cooldown blocks every spell alike: try again on a later tick.
-        if (bot->GetGlobalCooldownMgr().HasGlobalCooldown(spell.info))
+        if (bot->GetGlobalCooldownMgr().HasGlobalCooldown(info))
             return nullptr;
 
-        auto const bench = benched.find(spell.info->Id);
-        if (bench != benched.end())
+        // The bench is posted under the id that was checked: a failure of a short-lived replacement
+        // never sidelines the listed spell. Both ids are read, spent entries dropped.
+        bool stillBenched = false;
+        for (uint32 const benchedId : { spell.info->Id, info->Id })
         {
-            if (bench->second > now)
-            {
-                note(spell.info->Id, SKIPPED_BENCHED);
+            auto const bench = benched.find(benchedId);
+            if (bench == benched.end())
                 continue;
-            }
-            benched.erase(bench);
+            if (bench->second > now)
+                stillBenched = true;
+            else
+                benched.erase(bench);
+            if (info == spell.info)
+                break;
+        }
+        if (stillBenched)
+        {
+            note(spell.info->Id, SKIPPED_BENCHED);
+            continue;
         }
 
-        SpellCastResult const check = StrictCheck(bot, spell.info, target);
+        // A melee cleave or spin hits around the bot, not at its target: cast from afar it only
+        // cost a global cooldown and resources (KoX Meatsaw, Guardian Broad Sweep on the pull,
+        // jealous-sound/azerothcore-wotlk-coa#5500, #5453).
+        if (target && target != bot)
+            if (float const reach = CasterCentredReach(bot, info))
+                if (!bot->IsWithinDistInMap(target, reach))
+                {
+                    note(spell.info->Id, SKIPPED_BENCHED);
+                    continue;
+                }
+
+        SpellCastResult const check = StrictCheck(bot, info, target);
         if (check == SPELL_CAST_OK)
         {
             // PlayerbotAI::CastSpell refuses a spell with a cast time while the bot moves: stop
             // now and cast it on a later tick, once standing still.
-            if (bot->isMoving() && spell.info->CalcCastTime(bot))
+            if (bot->isMoving() && info->CalcCastTime(bot))
             {
-                bot->StopMoving();
+                // Out of combat nothing is urgent: stopping the follow for a top-up heal that the next tick
+                // might not cast made bots stutter behind their master (jealous-sound/azerothcore-wotlk-coa#5595).
+                if (bot->IsInCombat())
+                    bot->StopMoving();
                 if (usage != 255)
-                    RecordFailure(usage, spell.info->Id, FAILURE_MOVING);
+                    RecordFailure(usage, info->Id, FAILURE_MOVING);
                 note(spell.info->Id, FAILURE_MOVING);
                 continue;
             }
 
-            if (usage != 255)
+            if (PreemptsAttackCast(usage))
                 DropAttackCast(bot);
 
             bool const sitting = !bot->IsStandState();
@@ -1042,6 +1205,8 @@ SpellInfo const* CastFirst(PlayerbotAI* botAI, Player* bot, std::vector<Usable> 
             if (botAI->CastSpell(spell.info->Id, target))
             {
                 note(spell.info->Id, 0);
+                if (time_t const seconds = SummonSeconds(info))
+                    benched[spell.info->Id] = now + seconds;
                 return spell.info;
             }
 
@@ -1049,10 +1214,10 @@ SpellInfo const* CastFirst(PlayerbotAI* botAI, Player* bot, std::vector<Usable> 
             // resources when the cast is prepared): leave it aside briefly so the next ability
             // of the list gets its turn instead of this one failing every tick.
             if (!sitting && !casting)
-                benched[spell.info->Id] = now + RefusedBenchSeconds;
+                benched[info->Id] = now + RefusedBenchSeconds;
 
             if (usage != 255)
-                RecordFailure(usage, spell.info->Id, sitting ? FAILURE_SITTING : casting ? FAILURE_CASTING : FAILURE_REFUSED);
+                RecordFailure(usage, info->Id, sitting ? FAILURE_SITTING : casting ? FAILURE_CASTING : FAILURE_REFUSED);
             note(spell.info->Id, sitting ? FAILURE_SITTING : casting ? FAILURE_CASTING : FAILURE_REFUSED);
             continue;
         }
@@ -1060,20 +1225,20 @@ SpellInfo const* CastFirst(PlayerbotAI* botAI, Player* bot, std::vector<Usable> 
         // one: it leaves the form and heals on the next tick, instead of setting its heals aside.
         else if (check == SPELL_FAILED_NOT_SHAPESHIFT && healing && bot->HasAuraType(SPELL_AURA_MOD_SHAPESHIFT))
             bot->RemoveAurasByType(SPELL_AURA_MOD_SHAPESHIFT);
-        else if (check == SPELL_FAILED_CASTER_AURASTATE && spell.info->CasterAuraSpell)
+        else if (check == SPELL_FAILED_CASTER_AURASTATE && info->CasterAuraSpell)
         {
             // Waiting on its marker (see CoaHealAction::AddPrerequisites): not set aside.
         }
-        else if (IsLastingFailure(check))
-            benched[spell.info->Id] = now + SpellBenchSeconds;
+        else if (IsLastingFailure(check) && (!retryAttack || check == SPELL_FAILED_STUNNED))
+            benched[info->Id] = now + SpellBenchSeconds;
         // Out of mana, energy or rage: asking again on the very next tick changes nothing, and
         // with the spell set aside the action reports itself useless, so the bot does something
         // it can afford instead of spending its ticks being turned down.
-        else if (check == SPELL_FAILED_NO_POWER)
-            benched[spell.info->Id] = now + NoPowerBenchSeconds;
+        else if (check == SPELL_FAILED_NO_POWER && !retryAttack)
+            benched[info->Id] = now + NoPowerBenchSeconds;
 
         if (usage != 255)
-            RecordFailure(usage, spell.info->Id, uint16(check));
+            RecordFailure(usage, info->Id, uint16(check));
         note(spell.info->Id, uint16(check));
     }
 
@@ -1096,6 +1261,19 @@ constexpr char const* UsageNames[USAGE_MAX] =
     "attack", "aoe", "heal", "group heal", "hot", "taunt", "defensive", "dispel", "interrupt", "buff"
 };
 
+bool PreemptsAttackCast(uint8 usage)
+{
+    return usage != 255 && usage != USAGE_ATTACK && usage != USAGE_AOE;
+}
+
+// Usage kind passed to CastFirst by the area attack, defensive and interrupt actions: none in the
+// 1.6 loop, their own with AiPlayerbot.CoaAttackLoop, so that they drop an attack cast and log why
+// they fail.
+uint8 LoopUsage(UsageKind kind)
+{
+    return sPlayerbotAIConfig.coaAttackLoop ? uint8(kind) : uint8(255);
+}
+
 struct UsageCounter
 {
     std::atomic<uint64> tried{ 0 };
@@ -1108,6 +1286,24 @@ std::map<uint32, uint32> UsageSpells[USAGE_MAX];  // spell id -> casts, dispels 
 std::atomic<time_t> UsageLastReport{ 0 };
 // (spell id, reason) -> failures, for the kinds whose casts are diagnosed
 std::map<std::pair<uint32, uint16>, uint32> UsageFailures[USAGE_MAX];
+
+// What became of the interruptible enemy casts grouped bots saw (see InterruptClaims below), with
+// AiPlayerbot.CoaInterruptCoordination on or off, so that both can be compared on the same runs.
+struct InterruptCounters
+{
+    std::atomic<uint64> seen{ 0 };        // enemy casts a grouped bot with an interrupt ready saw
+    std::atomic<uint64> seenDanger{ 0 };  // of which heals, crowd control, summons, channels, long casts
+    std::atomic<uint64> kicked{ 0 };      // enemy casts at least one kick went to
+    std::atomic<uint64> kickedDanger{ 0 };
+    std::atomic<uint64> kicks{ 0 };       // kicks cast by grouped bots
+    std::atomic<uint64> wasted{ 0 };      // kicks at a cast another bot had already kicked
+    std::atomic<uint64> waited{ 0 };      // times a bot let the chosen one kick
+    std::atomic<uint64> takenOver{ 0 };   // the chosen bot let the hand-over pass and another kicked
+    std::atomic<uint64> heldBack{ 0 };    // routine casts let through to keep the last kick in reach
+};
+
+InterruptCounters InterruptStats;
+bool CoordinateInterrupts() { return sPlayerbotAIConfig.coaInterruptCoordination; }
 
 void RecordFailure(uint8 kind, uint32 spellId, uint16 reason)
 {
@@ -1125,6 +1321,13 @@ void ReportUsage(time_t now)
         line += Acore::StringFormat("{}{} {}/{}", kind ? ", " : "", UsageNames[kind],
                                     Usage[kind].cast.load(), Usage[kind].tried.load());
     LOG_INFO("playerbots.coa", "coa usage since start (cast/tried): {}", line);
+
+    InterruptCounters const& kicks = InterruptStats;
+    LOG_INFO("playerbots.coa", "coa interrupt coordination {}: enemy casts seen {} ({} dangerous), kicked {} ({} dangerous), "
+             "kicks {}, on a cast already kicked {}, waited for another bot {}, taken over {}, routine casts let through {}",
+             CoordinateInterrupts() ? "on" : "off", kicks.seen.load(), kicks.seenDanger.load(), kicks.kicked.load(),
+             kicks.kickedDanger.load(), kicks.kicks.load(), kicks.wasted.load(), kicks.waited.load(),
+             kicks.takenOver.load(), kicks.heldBack.load());
 
     std::lock_guard<std::mutex> guard(UsageSpellsLock);
     // Attacks and heals list more spells: they show which rank of each spell the bots cast.
@@ -1146,7 +1349,8 @@ void ReportUsage(time_t now)
     // Why heals and taunts fail: spell (id) reason xcount. Reasons are SpellCastResult values,
     // "refused" when CastSpell turned down a spell the check accepted, "nothing" when no
     // ability was left to try.
-    for (UsageKind kind : { USAGE_HEAL, USAGE_GROUP_HEAL, USAGE_HOT, USAGE_TAUNT, USAGE_DISPEL })
+    for (UsageKind kind : { USAGE_HEAL, USAGE_GROUP_HEAL, USAGE_HOT, USAGE_TAUNT, USAGE_DISPEL,
+                            USAGE_ATTACK, USAGE_AOE, USAGE_DEFENSIVE, USAGE_INTERRUPT })
     {
         std::vector<std::pair<std::pair<uint32, uint16>, uint32>> top(UsageFailures[kind].begin(), UsageFailures[kind].end());
         if (top.empty())
@@ -1252,32 +1456,305 @@ bool HasDispellable(Unit* unit, uint32 mask)
     return false;
 }
 
-bool IsInterruptibleCast(Unit* unit)
+// The cast of the unit an interrupt would stop, if any.
+Spell* InterruptibleSpell(Unit* unit)
 {
     if (Spell* spell = unit->GetCurrentSpell(CURRENT_GENERIC_SPELL))
         if (spell->getState() == SPELL_STATE_PREPARING &&
             (spell->GetSpellInfo()->InterruptFlags & SPELL_INTERRUPT_FLAG_INTERRUPT))
-            return true;
+            return spell;
 
     if (Spell* spell = unit->GetCurrentSpell(CURRENT_CHANNELED_SPELL))
         if (spell->getState() == SPELL_STATE_CASTING &&
             (spell->GetSpellInfo()->ChannelInterruptFlags & CHANNEL_INTERRUPT_FLAG_INTERRUPT))
-            return true;
+            return spell;
 
+    return nullptr;
+}
+
+bool IsInterruptibleCast(Unit* unit) { return InterruptibleSpell(unit) != nullptr; }
+
+/*
+ * Interrupt coordination (AiPlayerbot.CoaInterruptCoordination).
+ *
+ * Every bot of a group kicked the first interruptible cast it saw, the moment its own tick came.
+ * An instant kick lands at once and the others then see no cast, but a kick that travels (Shield
+ * of Denial, Chainwhip, Burrow Bolt, Toxic Dart, Hammer of the Law) leaves the cast running for
+ * a few hundred milliseconds, and every other bot ready at that moment spends its kick on it too.
+ * And whoever kicked first was whoever ticked first: the tank as often as anyone, on a two second
+ * Frostbolt as readily as on a heal, so that nobody had a kick left for the heal that followed.
+ * 6 out of 7 tries also came to nothing (17 182 kicks for 114 381 tries on 01/10), mostly
+ * SPELL_FAILED_OUT_OF_RANGE: a five yard kick tried on casters up to 30 yards away.
+ *
+ * With coordination on, the first grouped bot that sees a cast chooses who kicks it among the
+ * bots of its group on the same map instance that are fighting and have a kick ready within
+ * reach: a damage dealer before a healer before the tank, and among them the one that kicked
+ * longest ago. The others leave that cast alone until the kick has landed, or until the chosen
+ * bot let its hand-over time pass (stunned, busy, moved off) and one of them takes it over. In a
+ * dungeon a routine cast is let through when only one kick is left in reach, kept for the heal,
+ * crowd control or long cast that follows. A bot without a group is left as it was; a real
+ * player is never counted on, as nothing tells what they mean to kick.
+ *
+ * Claims are kept by map instance and caster: creature guids are only unique within a map. A
+ * group can spread over several maps, each updated by its own thread, hence the lock; it is only
+ * taken while an interruptible enemy cast is in view of a grouped bot that has a kick ready.
+ */
+constexpr uint32 InterruptHandOverMs = 600;    // how long the chosen bot has to kick before another may
+constexpr uint32 InterruptLandMarginMs = 300;  // after a kick should have landed: the cast is then over or missed
+constexpr int32 DangerousCastMs = 2500;        // a longer cast is taken for a big hit
+
+struct InterruptClaim
+{
+    uint32 spellId = 0;   // the enemy cast
+    ObjectGuid bot;       // the bot that is to kick it, or that did; empty when it is let through
+    uint32 handOver = 0;  // getMSTime() after which another bot may take it
+    uint32 until = 0;     // getMSTime() after which the claim is dropped
+    bool danger = false;
+    bool kicked = false;
+};
+
+using CasterKey = std::tuple<uint32, uint32, uint64>;  // map, instance, caster guid
+std::mutex InterruptClaimsLock;
+std::map<CasterKey, InterruptClaim> InterruptClaims;
+
+// Whether `when` (a getMSTime() value) is reached, through the wrap of the millisecond clock.
+bool Passed(uint32 now, uint32 when) { return int32(now - when) >= 0; }
+
+CasterKey KeyOf(Unit* caster)
+{
+    return { caster->GetMapId(), caster->GetInstanceId(), caster->GetGUID().GetRawValue() };
+}
+
+// Counts a claim that is dropped: one enemy cast seen, and whether it was kicked.
+void Retire(InterruptClaim const& claim)
+{
+    ++InterruptStats.seen;
+    InterruptStats.seenDanger += claim.danger;
+    InterruptStats.kicked += claim.kicked;
+    InterruptStats.kickedDanger += claim.kicked && claim.danger;
+}
+
+// Under InterruptClaimsLock. A handful of entries at most: the casts in progress right now.
+void DropSpentClaims(uint32 now)
+{
+    for (auto itr = InterruptClaims.begin(); itr != InterruptClaims.end();)
+        if (Passed(now, itr->second.until))
+        {
+            Retire(itr->second);
+            itr = InterruptClaims.erase(itr);
+        }
+        else
+            ++itr;
+}
+
+// Whether letting this cast through hurts the group more than an ordinary hit: a heal, crowd
+// control, a summon, a shield, a channel, or a long cast that is likely a big hit.
+bool IsDangerousCast(Spell* cast)
+{
+    SpellInfo const* info = cast->GetSpellInfo();
+    if (info->IsChanneled() || cast->GetCastTime() >= DangerousCastMs)
+        return true;
+
+    for (SpellEffectInfo const& effect : info->Effects)
+    {
+        switch (effect.Effect)
+        {
+            case SPELL_EFFECT_HEAL: case SPELL_EFFECT_HEAL_PCT: case SPELL_EFFECT_HEAL_MAX_HEALTH:
+            case SPELL_EFFECT_SUMMON:
+                return true;
+            default:
+                break;
+        }
+        if (!effect.IsAura())
+            continue;
+        switch (effect.ApplyAuraName)
+        {
+            case SPELL_AURA_PERIODIC_HEAL: case SPELL_AURA_MOD_STUN: case SPELL_AURA_MOD_FEAR:
+            case SPELL_AURA_MOD_CONFUSE: case SPELL_AURA_MOD_CHARM: case SPELL_AURA_MOD_POSSESS:
+            case SPELL_AURA_MOD_SILENCE: case SPELL_AURA_MOD_PACIFY_SILENCE: case SPELL_AURA_MOD_ROOT:
+            case SPELL_AURA_SCHOOL_ABSORB: case SPELL_AURA_SCHOOL_IMMUNITY:
+                return true;
+            default:
+                break;
+        }
+    }
     return false;
+}
+
+// Whether this kick reaches the caster from where the bot stands. A kick with no range of its
+// own hits around the bot (Gust of Wind, Ghastly Screech); five yards or less is a melee kick.
+bool KickReaches(Player* bot, SpellInfo const* kick, Unit* caster)
+{
+    float range = kick->GetMaxRange(false, bot);
+    if (!range)
+        range = CasterCentredReach(bot, kick);
+    if (range <= NOMINAL_MELEE_RANGE)
+        return bot->IsWithinMeleeRange(caster);
+    return bot->IsWithinCombatRange(caster, range);
+}
+
+// A kick the bot has ready that reaches the caster. Also read for other bots of the group, which
+// is safe for members on the bot's own map instance: the same thread updates them.
+SpellInfo const* ReadyKickFor(PlayerbotAI* ai, Player* member, Unit* caster)
+{
+    auto const* context = dynamic_cast<CoaAiObjectContext const*>(ai->GetAiObjectContext());
+    if (!context)
+        return nullptr;
+
+    time_t const now = time(nullptr);
+    for (Usable const& spell : KnownAbilities(member, [](uint16 kind) { return (kind & KIND_INTERRUPT) != 0; }))
+    {
+        SpellInfo const* const info = EffectiveSpell(member, spell.info);
+        if (member->HasSpellCooldown(info->Id) || IsBenched(context->benchedSpells, spell.info->Id, now) ||
+            IsBenched(context->benchedSpells, info->Id, now))
+            continue;
+        if (KickReaches(member, info, caster))
+            return spell.info;
+    }
+    return nullptr;
+}
+
+// The bot of the group that should kick this cast, and how many could have.
+Player* ChooseKicker(Player* bot, Unit* caster, uint32& ready)
+{
+    Player* best = nullptr;
+    int32 bestRank = 0;
+    uint32 bestLast = 0;
+    ready = 0;
+    for (GroupReference* ref = bot->GetGroup()->GetFirstMember(); ref; ref = ref->next())
+    {
+        Player* member = ref->GetSource();
+        if (!member || !member->IsAlive() || !member->IsInCombat() || !OnSameInstance(bot, member) ||
+            !ClassHas(member, KIND_INTERRUPT))
+            continue;
+        PlayerbotAI* ai = GET_PLAYERBOT_AI(member);
+        if (!ai || !ReadyKickFor(ai, member, caster))
+            continue;
+
+        ++ready;
+        CoaRole const role = GetCoaRole(member);
+        int32 const rank = role == CoaRole::Tank ? 2 : role == CoaRole::Heal ? 1 : 0;
+        uint32 const last = static_cast<CoaAiObjectContext*>(ai->GetAiObjectContext())->lastInterrupt;
+        if (!best || rank < bestRank || (rank == bestRank && last < bestLast))
+        {
+            best = member;
+            bestRank = rank;
+            bestLast = last;
+        }
+    }
+    return best;
+}
+
+// Whether this grouped bot is the one to kick the cast. Every grouped bot reports the casts it
+// sees, coordination on or off, so that the counters compare the two.
+bool MayKick(Player* bot, Unit* caster, Spell* cast)
+{
+    uint32 const now = getMSTime();
+    uint32 const spellId = cast->GetSpellInfo()->Id;
+    uint32 const remaining = uint32(std::max(cast->GetCastTimeRemaining(), 0));
+
+    std::lock_guard<std::mutex> guard(InterruptClaimsLock);
+    DropSpentClaims(now);
+    auto itr = InterruptClaims.find(KeyOf(caster));
+    if (itr != InterruptClaims.end() && itr->second.spellId != spellId)
+    {
+        Retire(itr->second);
+        InterruptClaims.erase(itr);
+        itr = InterruptClaims.end();
+    }
+
+    if (itr != InterruptClaims.end())
+    {
+        InterruptClaim& claim = itr->second;
+        if (!CoordinateInterrupts() || claim.bot == bot->GetGUID())
+            return true;
+        if (claim.bot.IsEmpty())  // let through, kept for a worse cast
+            return false;
+        if (claim.kicked || !Passed(now, claim.handOver))
+        {
+            ++InterruptStats.waited;
+            return false;
+        }
+        claim.bot = bot->GetGUID();
+        claim.handOver = now + InterruptHandOverMs;
+        ++InterruptStats.takenOver;
+        return true;
+    }
+
+    InterruptClaim claim;
+    claim.spellId = spellId;
+    claim.danger = IsDangerousCast(cast);
+    claim.until = now + remaining + InterruptLandMarginMs;
+    if (!CoordinateInterrupts())
+    {
+        InterruptClaims.emplace(KeyOf(caster), claim);
+        return true;
+    }
+
+    uint32 ready = 0;
+    Player* const chosen = ChooseKicker(bot, caster, ready);
+    if (!claim.danger && ready < 2 && bot->GetMap()->IsDungeon())
+        ++InterruptStats.heldBack;
+    else
+    {
+        claim.bot = chosen ? chosen->GetGUID() : bot->GetGUID();
+        claim.handOver = now + std::min(InterruptHandOverMs, remaining / 2);
+    }
+    InterruptClaims.emplace(KeyOf(caster), claim);
+    return claim.bot == bot->GetGUID();
+}
+
+// A grouped bot kicked: the cast is taken care of until the kick has landed. True when another
+// bot had already kicked that very cast, a kick wasted.
+bool NoteKick(Player* bot, Unit* caster, uint32 enemySpellId, SpellInfo const* kick)
+{
+    uint32 const now = getMSTime();
+    uint32 const travel = kick->Speed > 0.0f ? uint32(bot->GetDistance(caster) / kick->Speed * IN_MILLISECONDS) : 0;
+
+    std::lock_guard<std::mutex> guard(InterruptClaimsLock);
+    InterruptClaim& claim = InterruptClaims[KeyOf(caster)];
+    if (claim.spellId != enemySpellId)
+    {
+        if (claim.spellId)
+            Retire(claim);
+        claim = InterruptClaim();
+        claim.spellId = enemySpellId;
+    }
+
+    bool const wasted = claim.kicked && claim.bot != bot->GetGUID() && !Passed(now, claim.until);
+    claim.bot = bot->GetGUID();
+    claim.kicked = true;
+    claim.until = now + travel + InterruptLandMarginMs;
+    ++InterruptStats.kicks;
+    InterruptStats.wasted += wasted;
+    return wasted;
+}
+
+// Whether the bot should go for this unit's cast: with coordination, only a cast one of its
+// kicks reaches, and only if it is the bot's turn.
+bool WorthKicking(PlayerbotAI* botAI, Player* bot, Unit* unit)
+{
+    if (!unit || !unit->IsAlive())
+        return false;
+    Spell* const cast = InterruptibleSpell(unit);
+    if (!cast)
+        return false;
+    if (CoordinateInterrupts() && !ReadyKickFor(botAI, bot, unit))
+        return false;
+    return !bot->GetGroup() || MayKick(bot, unit, cast);
 }
 
 // The enemy to interrupt: the current target when it casts, else an attacker that does.
 Unit* FindCaster(PlayerbotAI* botAI, Player* bot)
 {
     Unit* target = botAI->GetAiObjectContext()->GetValue<Unit*>("current target")->Get();
-    if (target && target->IsAlive() && IsInterruptibleCast(target))
+    if (WorthKicking(botAI, bot, target))
         return target;
 
     for (ObjectGuid const guid : botAI->GetAiObjectContext()->GetValue<GuidVector>("attackers")->Get())
     {
         Unit* attacker = botAI->GetUnit(guid);
-        if (attacker && attacker->IsAlive() && bot->IsWithinDistInMap(attacker, 30.0f) && IsInterruptibleCast(attacker))
+        if (attacker && attacker != target && bot->IsWithinDistInMap(attacker, 30.0f) && WorthKicking(botAI, bot, attacker))
             return attacker;
     }
 
@@ -1315,6 +1792,9 @@ public:
         std::vector<Usable> const usable = KnownAbilities(bot, [tank](uint16 kind) { return IsAttack(kind, tank); });
         if (usable.empty())
             return false;
+
+        if (sPlayerbotAIConfig.coaAttackLoop)
+            return AttackThroughCastFirst(usable, target, saveMana);
 
         time_t const now = time(nullptr);
 
@@ -1363,6 +1843,35 @@ public:
     }
 
 private:
+    // AiPlayerbot.CoaAttackLoop (StevenLeclerc 9ee20729): the attack goes through CastFirst like the
+    // other actions. The 1.6 loop below benches a spell for a minute after three refusals by
+    // PlayerbotAI::CastSpell, strikes never decaying, while CastSpell also refuses for reasons that
+    // pass in a tick (moving with a cast time, sitting, casting): a ranged bot moving all fight lost
+    // its main spell. CastFirst stops the bot, benches 8 seconds and logs why; it also waits for
+    // melee reach before a cleave and does not recast a summon while it is up.
+    bool AttackThroughCastFirst(std::vector<Usable> usable, Unit* target, bool saveMana)
+    {
+        if (saveMana)
+            DropManaSpells(bot, usable);
+        if (usable.empty())
+            return RecordUsage(USAGE_ATTACK, nullptr);
+
+        // Start after the last ability that went off, so the whole kit gets used.
+        size_t const start = next % usable.size();
+        std::rotate(usable.begin(), usable.begin() + start, usable.end());
+
+        SpellInfo const* const cast = CastFirst(botAI, bot, usable, target, USAGE_ATTACK);
+        if (cast)
+        {
+            auto const itr = std::find_if(usable.begin(), usable.end(),
+                [cast](Usable const& spell) { return spell.info == cast; });
+            if (itr != usable.end())
+                next = start + size_t(std::distance(usable.begin(), itr)) + 1;
+        }
+
+        return RecordUsage(USAGE_ATTACK, cast);
+    }
+
     static constexpr uint8 MaxStrikes = 3;
     static constexpr time_t BenchSeconds = 60;
 
@@ -1395,7 +1904,7 @@ public:
         if (SavingManaForHeals(bot))
             DropManaSpells(bot, spells);
 
-        return RecordUsage(USAGE_AOE, CastFirst(botAI, bot, spells, target));
+        return RecordUsage(USAGE_AOE, CastFirst(botAI, bot, spells, target, LoopUsage(USAGE_AOE)));
     }
 
     bool isUseful() override
@@ -1797,7 +2306,8 @@ public:
     bool Execute(Event /*event*/) override
     {
         SpellInfo const* cast =
-            CastFirst(botAI, bot, KnownAbilities(bot, [](uint16 kind) { return (kind & KIND_DEFENSIVE) != 0; }), bot);
+            CastFirst(botAI, bot, KnownAbilities(bot, [](uint16 kind) { return (kind & KIND_DEFENSIVE) != 0; }), bot,
+                      LoopUsage(USAGE_DEFENSIVE));
         if (!cast)
         {
             std::vector<Usable> heals = KnownAbilities(bot, [](uint16 kind)
@@ -1805,7 +2315,7 @@ public:
             if (SavingManaForHeals(bot))
                 CheapestFirst(bot, heals);
 
-            cast = CastFirst(botAI, bot, heals, bot);
+            cast = CastFirst(botAI, bot, heals, bot, LoopUsage(USAGE_DEFENSIVE));
         }
 
         return RecordUsage(USAGE_DEFENSIVE, cast);
@@ -1862,8 +2372,18 @@ public:
         if (!caster)
             return false;
 
-        return RecordUsage(USAGE_INTERRUPT,
-            CastFirst(botAI, bot, KnownAbilities(bot, [](uint16 kind) { return (kind & KIND_INTERRUPT) != 0; }), caster));
+        // Read before the kick, which ends the cast.
+        uint32 const enemySpellId = InterruptibleSpell(caster)->GetSpellInfo()->Id;
+        SpellInfo const* kick =
+            CastFirst(botAI, bot, KnownAbilities(bot, [](uint16 kind) { return (kind & KIND_INTERRUPT) != 0; }), caster,
+                      LoopUsage(USAGE_INTERRUPT));
+        if (kick && bot->GetGroup())
+        {
+            static_cast<CoaAiObjectContext*>(botAI->GetAiObjectContext())->lastInterrupt = getMSTime();
+            CoaTelemetryNoteInterrupt(bot, NoteKick(bot, caster, enemySpellId, kick));
+        }
+
+        return RecordUsage(USAGE_INTERRUPT, kick);
     }
 
     bool isUseful() override
@@ -1967,6 +2487,11 @@ public:
                 if (WearsBuffNamed(member, spell.info))
                     continue;
 
+                // Nor a second seal of the same caster: CoA classes give the buffs a caster keeps one of
+                // on each target the same family flag (Seals of Al'ar and Alysrazor, Adaptations, Edicts).
+                if (!(spell.kind & KIND_STANCE) && WearsRivalBuffFrom(member, bot, spell.info))
+                    continue;
+
                 // The aura may come from a triggered spell under another id: do not recast
                 // it on the same member before it would have run out.
                 auto const key = std::make_pair(member->GetGUID(), spell.info->Id);
@@ -2019,8 +2544,11 @@ public:
 
     bool IsActive() override
     {
-        return ClassHas(bot, KIND_INTERRUPT) && FindCaster(botAI, bot) &&
-               HasReadyAbility(botAI, bot,[](uint16 kind) { return (kind & KIND_INTERRUPT) != 0; });
+        // The kick first: FindCaster reports the casts it sees to the group (MayKick), which only
+        // counts those a bot with a kick ready saw.
+        return ClassHas(bot, KIND_INTERRUPT) &&
+               HasReadyAbility(botAI, bot,[](uint16 kind) { return (kind & KIND_INTERRUPT) != 0; }) &&
+               FindCaster(botAI, bot);
     }
 };
 
@@ -2366,7 +2894,8 @@ Player* DeadGroupMember(Player* bot)
     float bestDistance = 0.0f;
     auto consider = [&](Player* dead, int rank)
     {
-        if (!dead || dead == bot || dead->IsAlive() || dead->HasPlayerFlag(PLAYER_FLAGS_GHOST) || !OnSameInstance(bot, dead))
+        if (!dead || dead == bot || dead->IsAlive() || dead->HasPlayerFlag(PLAYER_FLAGS_GHOST) || dead->isResurrectRequested() ||
+            !OnSameInstance(bot, dead))
             return;
         float const distance = dead->GetDistance(bot);
         if (distance > sPlayerbotAIConfig.sightDistance)
@@ -2551,6 +3080,9 @@ public:
         creators["coa buff"] = &CoaNonCombatStrategyFactoryInternal::coa_buff;
         creators["coa auto pull"] = &CoaNonCombatStrategyFactoryInternal::coa_auto_pull;
         creators["nc"] = &CoaNonCombatStrategyFactoryInternal::nc;
+        // Here, not with the role strategies above: those are siblings, and adding one removes the
+        // others - registered there, "coa boss dodge" took "coa" itself away from every bot (01/10).
+        creators["coa boss dodge"] = &NewCoaBossDodgeStrategy;
     }
 
 private:
@@ -2580,6 +3112,7 @@ public:
         creators["coa auto pull"] = &CoaActionFactoryInternal::coa_auto_pull;
         creators["coa resurrect"] = &CoaActionFactoryInternal::coa_resurrect;
         creators["coa catch up"] = &CoaActionFactoryInternal::coa_catch_up;
+        creators["coa boss dodge"] = &NewCoaBossDodgeAction;
     }
 
 private:
@@ -2623,6 +3156,7 @@ public:
         creators["coa out of healing reach"] = &CoaTriggerFactoryInternal::coa_out_of_healing_reach;
         creators["coa healer low mana"] = &CoaTriggerFactoryInternal::coa_healer_low_mana;
         creators["coa loose enemy"] = &CoaTriggerFactoryInternal::coa_loose_enemy;
+        creators["coa boss danger"] = &NewCoaBossDangerTrigger;
     }
 
 private:
