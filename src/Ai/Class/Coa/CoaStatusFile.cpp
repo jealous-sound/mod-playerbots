@@ -15,10 +15,12 @@
  * interval, only the newest snapshot waits; older ones are dropped.
  *
  * "us" in the file is how long the world thread spent building the previous snapshot, "io_us" how long
- * the writer thread spent writing it, both in microseconds. Nothing a bot does reads this file or
- * anything kept for it.
+ * the writer thread spent writing it, both in microseconds. "brain" holds the CoA brain's budget and
+ * counters ({"enabled":false} while it is off). Nothing a bot does reads this file or anything kept
+ * for it.
  */
 
+#include "BrainStats.h"
 #include "Config.h"
 #include "Engine.h"
 #include "Group.h"
@@ -503,6 +505,8 @@ private:
         AppendUInt(text, lastBuild);
         text += ",\"io_us\":";
         AppendUInt(text, writer.LastWriteMicroseconds());
+        text += ",\"brain\":";
+        BrainStatus::AppendJson(text);
         text += ",\"bots\":[";
         bool first = true;
         for (auto it = sRandomPlayerbotMgr.GetPlayerBotsBegin(); it != sRandomPlayerbotMgr.GetPlayerBotsEnd(); ++it)

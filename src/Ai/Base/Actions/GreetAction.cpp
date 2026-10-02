@@ -5,8 +5,11 @@
  */
 
 #include "GreetAction.h"
+#include "CoaMemoryConfig.h"
+#include "CoaMemoryValues.h"
 #include "Event.h"
 #include "Playerbots.h"
+#include <ctime>
 
 GreetAction::GreetAction(PlayerbotAI* botAI) : Action(botAI, "greet") {}
 
@@ -15,6 +18,20 @@ bool GreetAction::Execute(Event /*event*/)
     ObjectGuid guid = AI_VALUE(ObjectGuid, "new player nearby");
     if (!guid || !guid.IsPlayer())
         return false;
+
+    // CoA memory (GreetByMemory): "coa greet known" greeted this player within the hour. Switch off: legacy.
+    if (CoaMemoryConfig::BehaviourActive(MemoryBehaviour::GreetByMemory) &&
+        botAI->HasStrategy("coa memory", BOT_STATE_NON_COMBAT))
+    {
+        CoaMemoryBotState& state = AI_VALUE(CoaMemoryBotState&, "coa memory state");
+        auto const greeted = state.greetedAt.find(guid.GetCounter());
+        uint32 const now = uint32(time(nullptr));
+        if (greeted != state.greetedAt.end() && now >= greeted->second && now - greeted->second < 3600)
+        {
+            AI_VALUE(GuidSet&, "already seen players").insert(guid);
+            return false;
+        }
+    }
 
     Player* player = dynamic_cast<Player*>(botAI->GetUnit(guid));
     if (!player)

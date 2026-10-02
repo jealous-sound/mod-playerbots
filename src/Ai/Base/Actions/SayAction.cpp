@@ -6,6 +6,8 @@
 
 #include "SayAction.h"
 #include "AiFactory.h"
+#include "CoaText.h"
+#include "CoaVoiceConfig.h"
 #include "Event.h"
 #include "PlayerbotTextMgr.h"
 #include "Playerbots.h"
@@ -99,6 +101,11 @@ bool SayAction::Execute(Event /*event*/)
         for (GroupReference* ref = group->GetFirstMember(); ref; ref = ref->next())
         {
             Player* member = ref->GetSource();
+            // Only members on this map hear a /say, and only their AI values are safe to write from this thread.
+            // FindMap, not GetMap: a member between maps has no map, and GetMap asserts on that.
+            if (!member || member->FindMap() != bot->GetMap())
+                continue;
+
             PlayerbotAI* memberAi = GET_PLAYERBOT_AI(member);
             if (memberAi)
                 members.push_back(member);
@@ -215,6 +222,10 @@ void ChatReplyAction::ChatReplyDo(Player* bot, uint32& type, uint32& guid1, std:
         return;
     }
 
+    // Voice mode: the director answers people itself; only the special replies above remain.
+    if (CoaVoiceConfig::Enabled())
+        return;
+
     auto messageRepy = GenerateReplyMessage(bot, msg, guid1, name);
     SendGeneralResponse(bot, chatChannelSource, messageRepy, name);
 }
@@ -243,7 +254,7 @@ bool ChatReplyAction::HandleThunderfuryReply(Player* bot, ChatChannelSource chat
             break;
     }
 
-    GET_PLAYERBOT_AI(bot)->GetAiObjectContext()->GetValue<time_t>("last said", "chat")->Set(time(0) + urand(5, 25));
+    GET_PLAYERBOT_AI(bot)->SetChatPausedUntil(time(0) + urand(5, 25));
     return true;
 }
 
@@ -309,7 +320,7 @@ bool ChatReplyAction::HandleToxicLinksReply(Player* bot, ChatChannelSource chatC
             break;
     }
 
-    GET_PLAYERBOT_AI(bot)->GetAiObjectContext()->GetValue<time_t>("last said", "chat")->Set(time(0) + urand(5, 60));
+    GET_PLAYERBOT_AI(bot)->SetChatPausedUntil(time(0) + urand(5, 60));
 
     return true;
 }
@@ -403,7 +414,7 @@ bool ChatReplyAction::HandleWTBItemsReply(Player* bot, ChatChannelSource chatCha
             default:
             break;
         }
-        GET_PLAYERBOT_AI(bot)->GetAiObjectContext()->GetValue<time_t>("last said", "chat")->Set(time(0) + urand(5, 60));
+        GET_PLAYERBOT_AI(bot)->SetChatPausedUntil(time(0) + urand(5, 60));
     }
 
     return true;
@@ -489,7 +500,7 @@ bool ChatReplyAction::HandleLFGQuestsReply(Player* bot, ChatChannelSource chatCh
             default:
             break;
         }
-        GET_PLAYERBOT_AI(bot)->GetAiObjectContext()->GetValue<time_t>("last said", "chat")->Set(time(0) + urand(5, 25));
+        GET_PLAYERBOT_AI(bot)->SetChatPausedUntil(time(0) + urand(5, 25));
     }
 
     return true;
@@ -580,7 +591,7 @@ bool ChatReplyAction::SendGeneralResponse(Player* bot, ChatChannelSource chatCha
         default:
             break;
     }
-    GET_PLAYERBOT_AI(bot)->GetAiObjectContext()->GetValue<time_t>("last said", "chat")->Set(time(0) + urand(5, 25));
+    GET_PLAYERBOT_AI(bot)->SetChatPausedUntil(time(0) + urand(5, 25));
 
     return true;
 }
@@ -1055,10 +1066,7 @@ std::string ChatReplyAction::GenerateReplyMessage(Player* bot, std::string& inco
         respondsText = PlayerbotTextMgr::instance().GetBotText(replyType, name);
     }
 
-    if (respondsText.size() > 255)
-    {
-        respondsText.resize(255);
-    }
+    CoaText::CutUtf8Bytes(respondsText, 255);
 
     return respondsText;
 }

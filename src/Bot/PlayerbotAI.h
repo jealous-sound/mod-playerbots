@@ -23,6 +23,10 @@
 #include "SpellAuras.h"
 #include "Util.h"
 #include "WorldPacket.h"
+#include <atomic>
+#include <list>
+#include <memory>
+#include <mutex>
 #include <stack>
 #include <vector>
 
@@ -33,6 +37,7 @@ class ExternalEventHelper;
 class Group;
 class Gameobject;
 class Item;
+class MemoryView;
 class ObjectGuid;
 class Player;
 class PlayerbotMgr;
@@ -365,22 +370,23 @@ class ChatCommandHolder
 public:
     ChatCommandHolder(std::string const command, Player* owner = nullptr, uint32 type = CHAT_MSG_WHISPER,
                       time_t time = 0)
-        : command(command), owner(owner), type(type), time(time)
+        : command(command), ownerGuid(owner ? owner->GetGUID() : ObjectGuid::Empty), type(type), time(time)
     {
     }
     ChatCommandHolder(ChatCommandHolder const& other)
-        : command(other.command), owner(other.owner), type(other.type), time(other.time)
+        : command(other.command), ownerGuid(other.ownerGuid), type(other.type), time(other.time)
     {
     }
 
     std::string const& GetCommand() { return command; }
-    Player* GetOwner() { return owner; }
+    ObjectGuid GetOwnerGuid() const { return ownerGuid; }
     uint32& GetType() { return type; }
     time_t& GetTime() { return time; }
 
 private:
     std::string const command;
-    Player* owner;
+    // A GUID, not a Player*: a queued command can run after its sender logged out and was deleted.
+    ObjectGuid ownerGuid;
     uint32 type;
     time_t time;
 };
@@ -399,8 +405,49 @@ public:
     void UpdateAIInternal(uint32 elapsed, bool minimal = false) override;
 
     std::string const HandleRemoteCommand(std::string const command);
-    void HandleCommand(uint32 type, std::string const text, Player* fromPlayer);
+    // quietRefusals: the voice director took this whisper as conversation and answers or refuses by itself, so the
+    // security checks refuse without whispering the legacy refusal.
+    void HandleCommand(uint32 type, std::string const text, Player* fromPlayer, bool quietRefusals = false);
     void QueueChatResponse(const ChatQueuedReply reply);
+    // Until when this bot ignores what other random bots say in chat. Read and written on the speaker's
+    // thread as well as the bot's own.
+    time_t GetChatPausedUntil() const { return chatPausedUntil.load(std::memory_order_relaxed); }
+    void SetChatPausedUntil(time_t until) { chatPausedUntil.store(until, std::memory_order_relaxed); }
+    // CoA memory (M3). The epoch (CoaEpoch::Next(), taken by the constructor) names this life of the bot: events and
+    // snapshots of an older life are dropped. GetMemoryView: any thread (the bot's map thread in practice); null while
+    // memory is off, still loading, or when this bot keeps none. SetMemoryView: world thread, CoaMemoryMgr only,
+    // inside CoaWorldScript::OnUpdate while the map threads are idle; the lock only makes the swap formally safe.
+    uint64 GetCoaEpoch() const { return coaEpoch; }
+    bool HasM7ControlledGuard() const { return m7ControlledGuard; }
+    void SetM7ControlledGuard(bool value) { m7ControlledGuard = value; }
+    std::shared_ptr<MemoryView const> GetMemoryView() const
+    {
+        std::lock_guard<std::mutex> guard(memoryViewLock);
+        return memoryView;
+    }
+    void SetMemoryView(std::shared_ptr<MemoryView const> view)
+    {
+        {
+            std::lock_guard<std::mutex> guard(memoryViewLock);
+            memoryView.swap(view);
+        }
+        // `view` holds the previous snapshot now: released here, outside the lock.
+    }
+    // CoA activity (M4). The director sets the flag in CoaWorldScript::OnUpdate when this bot's activity membership
+    // changed; the bot's map thread runs ResetStrategies() at the start of its next UpdateAIInternal (AiFactory then
+    // reads the registry). Never set with CoaActivity off: the check costs one relaxed load.
+    void SetCoaStrategiesDirty() { coaStrategiesDirty.store(true, std::memory_order_relaxed); }
+    bool TakeCoaStrategiesDirty()
+    {
+        if (!coaStrategiesDirty.load(std::memory_order_relaxed))
+            return false;
+        coaStrategiesDirty.store(false, std::memory_order_relaxed);
+        return true;
+    }
+    // A duel accept waits for the brain (ActivityDuelRules): set by AcceptDuelAction, cleared by
+    // ActivityDuelRules::Continue, both on the bot's map thread; UpdateAIInternal calls Continue while it is set.
+    void SetCoaDuelPending(bool pending) { coaDuelPending.store(pending, std::memory_order_relaxed); }
+    bool HasCoaDuelPending() const { return coaDuelPending.load(std::memory_order_relaxed); }
     void HandleBotOutgoingPacket(WorldPacket const& packet);
     void HandleMasterIncomingPacket(WorldPacket const& packet);
     void HandleMasterOutgoingPacket(WorldPacket const& packet);
@@ -545,6 +592,8 @@ public:
     static uint32 GetMixedGearScore(Player* player, bool withBags, bool withBank, uint32 topN = 0);
     bool HasSkill(SkillType skill);
     bool IsAllowedCommand(std::string const text);
+    // The commands any player may give (IsAllowedCommand), for CoaChatIntent::LooksLikeCommand.
+    static std::set<std::string> const& GetUnsecuredCommands() { return unsecuredCommands; }
     float GetRange(std::string const type);
 
     Player* GetBot() { return bot; }
@@ -563,7 +612,7 @@ public:
     bool HasPlayerNearby(float range = sPlayerbotAIConfig.reactDistance);
     bool AllowActive(ActivityType activityType);
     bool AllowActivity(ActivityType activityType = ALL_ACTIVITY, bool checkNow = false);
-    bool IsActivityAllowedCached() const { return allowActive[ALL_ACTIVITY]; }
+    bool IsActivityAllowedCached() const { return allowActive[ALL_ACTIVITY].load(std::memory_order_relaxed); }
     uint32 AutoScaleActivity(uint32 mod);
 
     // Check if player is safe to use.
@@ -624,12 +673,14 @@ public:
 
 private:
     time_t lfgRejoinAt = 0;
+    bool m7ControlledGuard = false;
     static void _fillGearScoreData(Player* player, Item* item, std::vector<uint32>* gearScore, uint32& twoHandScore,
                                    bool mixed = false);
     bool IsTellAllowed(PlayerbotSecurityLevel securityLevel = PLAYERBOT_SECURITY_ALLOW_ALL);
     void UpdateAIGroupMaster();
     Item* FindItemInInventory(std::function<bool(ItemTemplate const*)> checkItem) const;
     void HandleCommands();
+    void QueueChatCommand(ChatCommandHolder const& command);
     void HandleCommand(uint32 type, std::string const& text, Player& fromPlayer, const uint32 lang = LANG_UNIVERSAL);
     inline bool IsValidUnit(Unit const* unit) const
     {
@@ -649,8 +700,17 @@ protected:
     Engine* engines[BOT_STATE_MAX];
     BotState currentState;
     ChatHelper chatHelper;
+    // chatCommands and chatReplies are filled from the world thread and other bots' map threads too: chatMutex
+    // guards both, and is never held while a command or a reply runs.
+    std::mutex chatMutex;
     std::list<ChatCommandHolder> chatCommands;
     std::list<ChatQueuedReply> chatReplies;
+    std::atomic<time_t> chatPausedUntil{0};
+    uint64 coaEpoch = 0;                              // CoaEpoch::Next() in PlayerbotAI(Player*); 0 otherwise
+    mutable std::mutex memoryViewLock;                // guards memoryView only
+    std::shared_ptr<MemoryView const> memoryView;    // CoaMemoryMgr's latest snapshot of this bot's memory
+    std::atomic<bool> coaStrategiesDirty{false};      // the activity director changed this bot's membership
+    std::atomic<bool> coaDuelPending{false};          // a duel accept waits for the brain
     PacketHandlingHelper botOutgoingPacketHandlers;
     PacketHandlingHelper masterIncomingPacketHandlers;
     PacketHandlingHelper masterOutgoingPacketHandlers;
@@ -664,8 +724,9 @@ protected:
     time_t lastCommandAt = 0;
     bool greeting = false;
     bool MasterWantsThis();
-    static std::set<std::string> unsecuredCommands;
-    bool allowActive[MAX_ACTIVITY_TYPE];
+    static std::set<std::string> const unsecuredCommands;
+    // Atomic: other threads read the cached answer (IsActivityAllowedCached) while this bot refreshes it.
+    std::atomic<bool> allowActive[MAX_ACTIVITY_TYPE];
     time_t allowActiveCheckTimer[MAX_ACTIVITY_TYPE];
     bool inCombat = false;
     BotCheatMask cheatMask = BotCheatMask::none;

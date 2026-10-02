@@ -8,6 +8,9 @@
 #include "DungeonStrategyContext.h"
 #include "RaidStrategyContext.h"
 #include "CoaGenericContext.h"
+#include "CoaActivityAiContext.h"
+#include "CoaMemoryContext.h"
+#include "CoaPartyAiContext.h"
 #include "StrategyContext.h"
 
 void AiObjectContext::BuildSharedStrategyContexts(SharedNamedObjectContextList<Strategy>& strategyContexts)
@@ -19,4 +22,7 @@ void AiObjectContext::BuildSharedStrategyContexts(SharedNamedObjectContextList<S
     strategyContexts.Add(new DungeonStrategyContext());
     strategyContexts.Add(new RaidStrategyContext());
     strategyContexts.Add(new CoaGenericStrategyContext());
+    strategyContexts.Add(new CoaMemoryStrategyContext());
+    strategyContexts.Add(new CoaActivityStrategyContext());
+    strategyContexts.Add(new CoaPartyStrategyContext());
 }

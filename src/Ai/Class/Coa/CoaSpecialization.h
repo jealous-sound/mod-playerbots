@@ -120,13 +120,18 @@ bool PrepareCoaRecruit(Player* master, Player* chosen, CoaRole role, bool chosen
                        std::string& message);
 
 // "lfg bot heal" and the like, said by a player in a listened chat channel: free bots whisper offers.
-void CoaLfgHeard(Player* player, std::string const& message, Channel* channel);
+// True when the message was such a request (whatever came of it), so the voice director leaves it alone.
+bool CoaLfgHeard(Player* player, std::string const& message, Channel* channel);
 
 // Whether `bot` was offered to `inviter` by "lfg bot" and the offer still holds; the offer is used up.
 bool CoaLfgTakeOffer(Player* bot, Player* inviter);
 // The bot is offered by "lfg bot" to a player other than this one (any player when null): it keeps out of
 // any other group or queue until the offer is taken or runs out.
 bool CoaLfgOfferedToOther(Player* bot, Player* player);
+
+// Whether `bot` has an "lfg bot" offer that still holds, to anyone (the offer is kept). Any thread (LfgLock). The CoA
+// activity director leaves such bots alone.
+bool CoaLfgIsOffered(ObjectGuid bot);
 
 // Takes a bot out of the battleground and Dungeon Finder queues it joined by itself, so its new group can
 // queue for anything ("You cannot queue for a dungeon while using battlegrounds or arenas", PTR 28/09).

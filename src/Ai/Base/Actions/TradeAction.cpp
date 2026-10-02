@@ -7,12 +7,16 @@
 #include "TradeAction.h"
 #include "ChatHelper.h"
 #include "Event.h"
+#include "GoldRoll.h"
 #include "ItemCountValue.h"
 #include "ItemVisitors.h"
 #include "PlayerbotAI.h"
 
 bool TradeAction::Execute(Event event)
 {
+    // The wager controls only its exact bot-side money offer; ordinary commands cannot add items or change it.
+    if (GoldRollActions::Active(botAI))
+        return false;
     std::string const text = event.getParam();
 
     // If text starts with any excluded prefix, don't process it further.

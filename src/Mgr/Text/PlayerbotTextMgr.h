@@ -8,6 +8,7 @@
 #define PLAYERBOTS_PLAYERBOTTEXTMGR_H
 
 #include "Common.h"
+#include <atomic>
 #include <map>
 #include <vector>
 
@@ -75,6 +76,12 @@ public:
     bool GetBotText(std::string name, std::string& text, std::map<std::string, std::string> placeholders);
     std::string GetBotTextOrDefault(std::string name, std::string defaultText,
                                     std::map<std::string, std::string> placeholders);
+    // World thread (CoA voice director). Clears `out`, then appends at most maxCount distinct texts of the rows named
+    // `name`, in random order: text_loc<locale> of the rows that have one when locale != 0 and at least one row has
+    // one, `text` otherwise. Lookup only, strings copied. Returns out.size().
+    uint32 GetCandidates(std::string const& name, uint32 locale, uint32 maxCount, std::vector<std::string>& out) const;
+    // The same over the "reply" rows whose reply_type equals replyType.
+    uint32 GetCandidates(ChatReplyType replyType, uint32 locale, uint32 maxCount, std::vector<std::string>& out) const;
     void LoadBotTexts();
     void LoadBotTextChance();
     static void replaceAll(std::string& str, std::string const& from, std::string const& to);
@@ -89,7 +96,7 @@ private:
     {
         for (uint8 i = 0; i < TOTAL_LOCALES; ++i)
         {
-            botTextLocalePriority[i] = 0;
+            botTextLocalePriority[i].store(0, std::memory_order_relaxed);
         }
     };
     ~PlayerbotTextMgr() = default;
@@ -102,7 +109,8 @@ private:
 
     std::map<std::string, std::vector<BotTextEntry>> botTexts;
     std::map<std::string, uint32> botTextChance;
-    uint32 botTextLocalePriority[TOTAL_LOCALES];
+    // GetLocalePriority resets it from map threads when no player is online.
+    std::atomic<uint32> botTextLocalePriority[TOTAL_LOCALES];
 };
 
 #endif

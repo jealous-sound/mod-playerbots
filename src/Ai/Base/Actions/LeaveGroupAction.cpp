@@ -5,6 +5,7 @@
  */
 
 #include "LeaveGroupAction.h"
+#include "ActivityRegistry.h"
 #include "Event.h"
 #include "PlayerbotAIConfig.h"
 #include "PlayerbotTextMgr.h"
@@ -103,6 +104,10 @@ bool LeaveFarAwayAction::Execute(Event /*event*/)
 
 bool LeaveFarAwayAction::isUseful()
 {
+    // CoA activity: the director decides who leaves an activity group.
+    if (ActivityRegistry::IsParticipant(bot->GetGUID().GetCounter()))
+        return false;
+
     if (bot->InBattleground())
         return false;
 

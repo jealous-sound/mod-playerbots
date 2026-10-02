@@ -1,0 +1,22 @@
+--- a/modules/mod-coa-challenges/src/CoA.Challenges.Scripts.cpp
++++ b/modules/mod-coa-challenges/src/CoA.Challenges.Scripts.cpp
+@@ -2084,5 +2084,9 @@
+         void OnPlayerCreatureKill(Player* player, Creature* killed) override
+         {
++            // Town defense owns temporary waves whose native kill rewards and challenge objectives are disabled.
++            if (killed && killed->IsSummon() && killed->IsLootRewardDisabled() &&
++                killed->CustomData.Get<DataMap::Base>("coa.activity.rewardless_wave"))
++                return;
+             CreditKill(player, killed);
+             FailForbiddenKill(player, killed);
+         }
+@@ -2090,6 +2094,9 @@
+         // Pet/guardian kills credit the owner (and their group) too.
+         void OnPlayerCreatureKilledByPet(Player* petOwner, Creature* killed) override
+         {
++            if (killed && killed->IsSummon() && killed->IsLootRewardDisabled() &&
++                killed->CustomData.Get<DataMap::Base>("coa.activity.rewardless_wave"))
++                return;
+             CreditKill(petOwner, killed);
+             FailForbiddenKill(petOwner, killed);
+         }

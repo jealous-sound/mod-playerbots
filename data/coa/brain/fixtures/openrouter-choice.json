@@ -1,0 +1,51 @@
+{
+  "fixture": "openrouter-choice",
+  "source": "documentation",
+  "note": "Built by hand from OpenRouter's documented Decisions API (2026-09-30), not recorded from a live call. Replace it with a recorded fixture (see ../README.md).",
+  "dialect": "openrouter",
+  "url": "https://openrouter.ai/api/alpha/decisions",
+  "status": 200,
+  "request": {
+    "model": "~typesafe/jev-latest",
+    "state": "[realm]\nWorld of Warcraft 3.3.5 private server \"Conquest of Azeroth\" (custom classes). The bots are computer-controlled adventurers of level 1 to 60 who live in the world like players. Players chat mostly in French. A real player's message is described below by its features; the words themselves are shared only when a [player text] section is present. Answer only with the options given.\n[situation]\nplace: say, heard by the bots nearby\nspeaker: a real player, level 10-19\n[message]\nlanguage: french\nintent: greeting\nalso: none\nlength: medium (4 words)\nquestion: no\nexclamation: no\nshouting: no\nlaughter: no\nnumber: no\nnames a bot: no\n[bots]\nb0: level 14 Witch Hunter (Boltslinger), named: no, same group: no, same guild: no, distance: near, fighting: no, answered in the last minute: no, chattiness: high",
+    "questions": {
+      "line": {
+        "type": "choice",
+        "instructions": "Which line should the answering bot say? Each option starts with its kind in brackets. {name} is the player's name and {me}, {class}, {spec}, {level}, {zone} are the bot's own details; they are filled in afterwards. The lines are in the players' language, mostly French. Pick silent when no line fits the message.",
+        "criteria": {
+          "greet_1": "[GREETING] Salut {name} !",
+          "greet_2": "[GREETING] Coucou, \u00e7a va ?",
+          "generic_1": "[NEUTRAL REPLY] Ah ouais ?",
+          "silent": "[SILENT] say nothing"
+        }
+      }
+    }
+  },
+  "response": {
+    "id": "dec-01JCHOICEXXXXXXXXXXX",
+    "model": "typesafe/jev-1.13",
+    "provider": "TypeSafe",
+    "answers": {
+      "line": {
+        "type": "choice",
+        "choice": "greet_2",
+        "confidence": 0.58,
+        "probabilities": {"greet_1": 0.31, "greet_2": 0.58, "generic_1": 0.07, "silent": 0.04}
+      }
+    },
+    "usage": {"input_tokens": 512, "output_tokens": 0, "cost": 0.0000215}
+  },
+  "expect": {
+    "error": "none",
+    "answers": {
+      "line": {
+        "valid": true,
+        "calibrated": true,
+        "choice": "greet_2",
+        "p": 0.58,
+        "order": ["greet_2", "greet_1", "generic_1", "silent"]
+      }
+    },
+    "usage": {"input_tokens": 512, "output_tokens": 0, "usd_micros": 22}
+  }
+}

@@ -5,6 +5,7 @@
  */
 
 #include "RandomPlayerbotMgr.h"
+#include "ActivityRegistry.h"
 #include "BattlegroundUtils.h"
 #include "AiFactory.h"
 #include "Battleground.h"
@@ -1383,6 +1384,13 @@ bool RandomPlayerbotMgr::ProcessBot(uint32 bot)
     PlayerbotAI* botAI = player ? GET_PLAYERBOT_AI(player) : nullptr;
 
     uint32 isValid = GetEventValue(bot, "add");
+    // CoA activity: a participant or a reserved bot stays in the world while its activity runs; with "add" valid
+    // again both logout branches below are skipped. One relaxed load with activities off.
+    if (!isValid && player && ActivityRegistry::IsHeld(bot))
+    {
+        SetEventValue(bot, "add", 1, ActivityThreshold::ADD_EXTENSION_SECONDS);
+        isValid = 1;
+    }
     if (!isValid)
     {
         if (!player || !player->GetGroup())
@@ -1491,6 +1499,10 @@ bool RandomPlayerbotMgr::ProcessBot(Player* bot)
     if (!botAI)
         return false;
 
+    // CoA activity: the director owns a participant (revival, group, position) until its activity ends.
+    if (ActivityRegistry::IsParticipant(bot->GetGUID().GetCounter()))
+        return false;
+
     if (bot->InBattleground())
         return false;
 
@@ -1524,7 +1536,8 @@ bool RandomPlayerbotMgr::ProcessBot(Player* bot)
 
     // leave group if leader is rndbot
     Group* group = bot->GetGroup();
-    if (group && !group->isLFGGroup() && IsRandomBot(group->GetLeader()))
+    if (group && !group->isLFGGroup() && IsRandomBot(group->GetLeader()) &&
+        !ActivityRegistry::IsActivityGroup(group->GetGUID()))
     {
         botAI->LeaveOrDisbandGroup();
         LOG_INFO("playerbots", "Bot {} remove from group since leader is random bot.", bot->GetName().c_str());

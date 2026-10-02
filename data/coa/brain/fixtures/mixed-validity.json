@@ -1,0 +1,69 @@
+{
+  "fixture": "mixed-validity",
+  "source": "documentation",
+  "note": "Built by hand to test the parser's rejection rules on the documented shape (2026-09-30); no provider sent it. reply is valid, line's choice is not an option, emote's probabilities hold a key that is not an option (dropped, the rest renormalized: wave 0.4 / 0.8 = 0.5), and an answer to a question never asked is ignored: the response stands with line invalid.",
+  "dialect": "openrouter",
+  "url": "https://openrouter.ai/api/alpha/decisions",
+  "status": 200,
+  "request": {
+    "model": "~typesafe/jev-latest",
+    "state": "[realm]\nWorld of Warcraft 3.3.5 private server \"Conquest of Azeroth\" (custom classes). The bots are computer-controlled adventurers of level 1 to 60 who live in the world like players. Players chat mostly in French. A real player's message is described below by its features; the words themselves are shared only when a [player text] section is present. Answer only with the options given.\n[situation]\nplace: a whisper to one bot (b0)\nspeaker: a real player, level 20-29\n[message]\nlanguage: french\nintent: greeting\nalso: question\nlength: short (3 words)\nquestion: yes\nexclamation: no\nshouting: no\nlaughter: no\nnumber: no\nnames a bot: no\n[bots]\nb0: level 23 Barbarian (Berserker), whisper receiver, named: no, same group: no, same guild: no, distance: n/a, fighting: no, answered in the last minute: no, chattiness: high",
+    "questions": {
+      "reply": {
+        "type": "noul",
+        "instructions": "Should one of the bots listed in [bots] answer this message in chat? Say yes when a player standing there would answer: the message greets, thanks, asks, compliments, teases or insults these bots, names one of them, or invites an answer. Say no when it is aimed at someone else, is a trade or group post, spam, or chatter that needs no answer.",
+        "criteria": {"true": "one bot should answer in chat", "false": "the bots should stay silent"}
+      },
+      "line": {
+        "type": "choice",
+        "instructions": "Which line should the answering bot say? Each option starts with its kind in brackets. {name} is the player's name and {me}, {class}, {spec}, {level}, {zone} are the bot's own details; they are filled in afterwards. The lines are in the players' language, mostly French. Pick silent when no line fits the message.",
+        "criteria": {
+          "greet_1": "[GREETING] Salut {name} !",
+          "greet_2": "[GREETING] Yo {name}, bien ou quoi ?",
+          "question_1": "[VAGUE ANSWER] Aucune idee, desole.",
+          "question_2": "[VAGUE ANSWER] Bonne question, je sais pas trop.",
+          "joke_1": "[LAUGHS ALONG] Haha, pas mal.",
+          "generic_1": "[NEUTRAL REPLY] Ah d'accord.",
+          "silent": "[SILENT] say nothing"
+        }
+      },
+      "emote": {
+        "type": "choice",
+        "instructions": "Which emote, if any, should the answering bot play with its line?",
+        "criteria": {
+          "none": "no emote",
+          "wave": "wave",
+          "bow": "bow politely",
+          "nod": "nod in agreement",
+          "smile": "smile",
+          "laugh": "laugh",
+          "cheer": "cheer",
+          "thank": "thank the player",
+          "shrug": "shrug",
+          "flex": "flex proudly"
+        }
+      }
+    }
+  },
+  "response": {
+    "id": "dec-01JMIXEDXXXXXXXXXXXX",
+    "model": "typesafe/jev-1.13",
+    "provider": "TypeSafe",
+    "answers": {
+      "reply": {"type": "noul", "noul": 0.62},
+      "line": {"type": "choice", "choice": "greet_9", "confidence": 0.7},
+      "emote": {"type": "choice", "choice": "wave", "probabilities": {"none": 0.2, "wave": 0.4, "dance": 0.2, "bow": 0.2}},
+      "mood": {"type": "choice", "choice": "happy"}
+    },
+    "usage": {"input_tokens": 700, "output_tokens": 0, "cost": 0.0000294}
+  },
+  "expect": {
+    "error": "none",
+    "answers": {
+      "reply": {"valid": true, "calibrated": true, "p": 0.62},
+      "line": {"valid": false},
+      "emote": {"valid": true, "calibrated": true, "choice": "wave", "p": 0.5, "order": ["wave"]}
+    },
+    "usage": {"input_tokens": 700, "output_tokens": 0, "usd_micros": 30}
+  }
+}

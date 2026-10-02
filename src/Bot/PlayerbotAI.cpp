@@ -6,12 +6,25 @@
 
 #include "PlayerbotAI.h"
 #include "CoaSpecialization.h"
+#include "ActivityDuelRules.h"
+#include "ActivityRegistry.h"
+#include "ActivityPvePolicy.h"
+#include "ActivityPvpPolicy.h"
+#include "FestivalVisit.h"
+#include "GoldRoll.h"
+#include "WorldBoss.h"
+#include "PugRaid.h"
+#include "CoaTime.h"
 #include "AiFactory.h"
 #include "BudgetValues.h"
 #include "ChannelMgr.h"
 #include "CharacterPackets.h"
 #include "ChatHelper.h"
 #include "CheckMountStateAction.h"
+#include "CoaEpoch.h"
+#include "CoaHooks.h"
+#include "CoaVoiceConfig.h"
+#include "CoaVoiceEvent.h"
 #include "Common.h"
 #include "CreatureData.h"
 #include "DBCStores.h"
@@ -82,7 +95,10 @@ std::vector<std::string> split(std::string const s, char delim);
 char* strstri(char const* str1, char const* str2);
 std::string& trim(std::string& s);
 
-std::set<std::string> PlayerbotAI::unsecuredCommands;
+// Filled at static init: IsAllowedCommand runs on several threads and only reads it.
+std::set<std::string> const PlayerbotAI::unsecuredCommands = {
+    "who", "wts", "sendmail", "invite", "leave", "lfg", "pvp stats", "rpg status",
+};
 
 PlayerbotChatHandler::PlayerbotChatHandler(Player* pMasterPlayer) : ChatHandler(pMasterPlayer->GetSession()) {}
 
@@ -225,6 +241,9 @@ PlayerbotAI::PlayerbotAI(Player* bot)
       chatFilter(this),
       security(bot)  // reorder args - whipowill
 {
+    // This life of the bot: memory events and views of an older life are dropped (CoaEpoch.h).
+    coaEpoch = CoaEpoch::Next();
+
     if (!bot->isTaxiCheater() && HasCheat((BotCheatMask::taxi)))
         bot->SetTaxiCheater(true);
 
@@ -251,10 +270,20 @@ PlayerbotAI::PlayerbotAI(Player* bot)
     masterIncomingPacketHandlers.SetHandlers(registry[0]);
     botOutgoingPacketHandlers.SetHandlers(registry[1]);
     masterOutgoingPacketHandlers.SetHandlers(registry[2]);
+
+    // Memory on: a bot session's AI asks CoaMemoryMgr for its memory (BotLogin, loaded on the world thread).
+    CoaHooks::OnBotAiCreated(bot, coaEpoch);
 }
 
 PlayerbotAI::~PlayerbotAI()
 {
+    FestivalVisitActions::Release(this);
+    GoldRollActions::Release(this);
+    ActivityPvePolicy::Release(this);
+
+    // Map or world thread: only a BotLogout is posted; the manager closes this life's memory on the world thread.
+    CoaHooks::OnBotAiDestroyed(bot ? bot->GetGUID() : ObjectGuid::Empty, coaEpoch);
+
     for (uint8 i = 0; i < BOT_STATE_MAX; i++)
     {
         if (engines[i])
@@ -280,6 +309,13 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
     if (!bot || !bot->GetSession() || !bot->IsInWorld() || bot->IsBeingTeleported() ||
         bot->GetSession()->isLogingOut() || bot->IsDuringRemoveFromWorld())
         return;
+
+    ActivityPvePolicy::Update(this);
+    ActivityPvpPolicy::Update(this);
+    FestivalVisitActions::Tick(this);
+    GoldRollActions::Tick(this);
+    WorldBossTactics::Update(this, CoaTime::NowMs());
+    PugRaidTactics::Update(this, CoaTime::NowMs());
 
     // Handle cheat options (set bot health and power if cheats are enabled)
     if (bot->IsAlive() &&
@@ -458,6 +494,11 @@ void PlayerbotAI::UpdateAIGroupMaster()
         return;
     }
 
+    // CoA activity: a participant keeps the master the director gave it (its bot leader; none for the leader): a real
+    // player joining the group does not take over. One relaxed load with activities off.
+    if (ActivityRegistry::IsParticipant(bot->GetGUID().GetCounter()))
+        return;
+
     // Bot in BG, but master no longer part of a group: release master
     // Exclude alt and addclass bots as they rely on current (real player) master, security-wise.
     if (bot->InBattleground() && sRandomPlayerbotMgr.IsRandomBot(bot) && master && !master->GetGroup())
@@ -588,6 +629,10 @@ void PlayerbotAI::UpdateAIInternal([[maybe_unused]] uint32 elapsed, bool minimal
     if (!bot->GetMap())
         return; // instances are created and destroyed on demand
 
+    // CoA activity: this bot joined or left an activity in the last director tick (never set with activities off).
+    if (TakeCoaStrategiesDirty())
+        ResetStrategies();
+
     ClearStaleFall();
     RejoinLfgDungeon();
 
@@ -599,18 +644,27 @@ void PlayerbotAI::UpdateAIInternal([[maybe_unused]] uint32 elapsed, bool minimal
     ExternalEventHelper helper(aiObjectContext);
 
     // chat replies
-    for (auto it = chatReplies.begin(); it != chatReplies.end();)
+    std::list<ChatQueuedReply> dueReplies;
     {
-        time_t checkTime = it->m_time;
-        if (checkTime && time(0) < checkTime)
+        std::lock_guard<std::mutex> guard(chatMutex);
+        time_t const now = time(nullptr);
+        for (auto it = chatReplies.begin(); it != chatReplies.end();)
         {
-            ++it;
-            continue;
-        }
+            auto const next = std::next(it);
+            time_t checkTime = it->m_time;
+            if (!checkTime || now >= checkTime)
+                dueReplies.splice(dueReplies.end(), chatReplies, it);
 
-        ChatReplyAction::ChatReplyDo(bot, it->m_type, it->m_guid1, it->m_msg, it->m_chanName, it->m_name);
-        it = chatReplies.erase(it);
+            it = next;
+        }
     }
+
+    for (ChatQueuedReply& reply : dueReplies)
+        ChatReplyAction::ChatReplyDo(bot, reply.m_type, reply.m_guid1, reply.m_msg, reply.m_chanName, reply.m_name);
+
+    // CoA activity: a duel accept waiting for the brain (never set with activities off).
+    if (HasCoaDuelPending())
+        ActivityDuelRules::Continue(this);
 
     HandleCommands();
 
@@ -670,42 +724,54 @@ void PlayerbotAI::HandleCommands()
 {
     ExternalEventHelper helper(aiObjectContext);
 
-    for (auto it = chatCommands.begin(); it != chatCommands.end();)
+    std::list<ChatCommandHolder> dueCommands;
     {
-        time_t& checkTime = it->GetTime();
-        if (checkTime && time(nullptr) < checkTime)
+        std::lock_guard<std::mutex> guard(chatMutex);
+        time_t const now = time(nullptr);
+        for (auto it = chatCommands.begin(); it != chatCommands.end();)
         {
-            ++it;
-            continue;
-        }
+            auto const next = std::next(it);
+            time_t& checkTime = it->GetTime();
+            if (!checkTime || now >= checkTime)
+                dueCommands.splice(dueCommands.end(), chatCommands, it);
 
-        Player* owner = it->GetOwner();
-        if (!owner)
-        {
-            it = chatCommands.erase(it);
-            continue;
+            it = next;
         }
+    }
 
-        std::string const& command = it->GetCommand();
+    for (ChatCommandHolder& holder : dueCommands)
+    {
+        // Look the sender up again: it may have logged out since the command was queued.
+        Player* owner = ObjectAccessor::FindConnectedPlayer(holder.GetOwnerGuid());
+        if (!owner || !owner->IsInWorld() || !owner->GetSession())
+            continue;
+
+        std::string const& command = holder.GetCommand();
         if (command.empty())
-        {
-            it = chatCommands.erase(it);
             continue;
-        }
 
-        if (!helper.ParseChatCommand(command, owner, it->GetType() == CHAT_MSG_WHISPER) &&
-            it->GetType() == CHAT_MSG_WHISPER)
+        if (!helper.ParseChatCommand(command, owner, holder.GetType() == CHAT_MSG_WHISPER) &&
+            holder.GetType() == CHAT_MSG_WHISPER)
         {
             // ostringstream out; out << "Unknown command " << command;
             // TellPlayer(out);
             // helper.ParseChatCommand("help");
         }
-
-        it = chatCommands.erase(it);
     }
 }
 
-std::map<std::string, ChatMsg> chatMap;
+void PlayerbotAI::QueueChatCommand(ChatCommandHolder const& command)
+{
+    std::lock_guard<std::mutex> guard(chatMutex);
+    chatCommands.push_back(command);
+}
+
+// Filled at static init: HandleCommand runs on several threads and only reads it.
+std::map<std::string, ChatMsg> const chatMap = {{"#w ", CHAT_MSG_WHISPER},
+                                                {"#p ", CHAT_MSG_PARTY},
+                                                {"#r ", CHAT_MSG_RAID},
+                                                {"#a ", CHAT_MSG_ADDON},
+                                                {"#g ", CHAT_MSG_GUILD}};
 void PlayerbotAI::HandleCommand(uint32 type, std::string const& text, Player& fromPlayer, const uint32 lang)
 {
     if (!bot)
@@ -747,23 +813,15 @@ void PlayerbotAI::HandleCommand(uint32 type, std::string const& text, Player& fr
         filtered = filtered.substr(sPlayerbotAIConfig.commandPrefix.size());
     }
 
-    if (chatMap.empty())
-    {
-        chatMap["#w "] = CHAT_MSG_WHISPER;
-        chatMap["#p "] = CHAT_MSG_PARTY;
-        chatMap["#r "] = CHAT_MSG_RAID;
-        chatMap["#a "] = CHAT_MSG_ADDON;
-        chatMap["#g "] = CHAT_MSG_GUILD;
-    }
     currentChat = std::pair<ChatMsg, time_t>(CHAT_MSG_WHISPER, 0);
     if (!GET_PLAYERBOT_AI(&fromPlayer))
         lastCommandAt = time(nullptr);
-    for (std::map<std::string, ChatMsg>::iterator i = chatMap.begin(); i != chatMap.end(); ++i)
+    for (auto const& prefix : chatMap)
     {
-        if (filtered.find(i->first) == 0)
+        if (filtered.find(prefix.first) == 0)
         {
             filtered = filtered.substr(3);
-            currentChat = std::pair<ChatMsg, time_t>(i->second, time(0) + 2);
+            currentChat = std::pair<ChatMsg, time_t>(prefix.second, time(0) + 2);
             break;
         }
     }
@@ -790,7 +848,7 @@ void PlayerbotAI::HandleCommand(uint32 type, std::string const& text, Player& fr
     if (type == CHAT_MSG_RAID_WARNING && filtered.find(bot->GetName()) != std::string::npos &&
         filtered.find("award") == std::string::npos)
     {
-        chatCommands.push_back(ChatCommandHolder("warning", &fromPlayer, type));
+        QueueChatCommand(ChatCommandHolder("warning", &fromPlayer, type));
         return;
     }
 
@@ -831,7 +889,7 @@ void PlayerbotAI::HandleCommand(uint32 type, std::string const& text, Player& fr
             }
         }
 
-        chatCommands.push_back(ChatCommandHolder(remaining, &fromPlayer, type, time(0) + index));
+        QueueChatCommand(ChatCommandHolder(remaining, &fromPlayer, type, time(0) + index));
     }
     else if (filtered == "reset")
     {
@@ -881,7 +939,7 @@ void PlayerbotAI::HandleCommand(uint32 type, std::string const& text, Player& fr
 
     else
     {
-        chatCommands.push_back(ChatCommandHolder(filtered, &fromPlayer, type));
+        QueueChatCommand(ChatCommandHolder(filtered, &fromPlayer, type));
     }
 }
 
@@ -1038,21 +1096,9 @@ void PlayerbotAI::LeaveOrDisbandGroup()
 
 bool PlayerbotAI::IsAllowedCommand(std::string const text)
 {
-    if (unsecuredCommands.empty())
+    for (std::string const& command : unsecuredCommands)
     {
-        unsecuredCommands.insert("who");
-        unsecuredCommands.insert("wts");
-        unsecuredCommands.insert("sendmail");
-        unsecuredCommands.insert("invite");
-        unsecuredCommands.insert("leave");
-        unsecuredCommands.insert("lfg");
-        unsecuredCommands.insert("pvp stats");
-        unsecuredCommands.insert("rpg status");
-    }
-
-    for (std::set<std::string>::iterator i = unsecuredCommands.begin(); i != unsecuredCommands.end(); ++i)
-    {
-        if (text.find(*i) == 0)
+        if (text.find(command) == 0)
         {
             return true;
         }
@@ -1061,9 +1107,9 @@ bool PlayerbotAI::IsAllowedCommand(std::string const text)
     return false;
 }
 
-void PlayerbotAI::HandleCommand(uint32 type, std::string const text, Player* fromPlayer)
+void PlayerbotAI::HandleCommand(uint32 type, std::string const text, Player* fromPlayer, bool quietRefusals)
 {
-    if (!GetSecurity()->CheckLevelFor(PLAYERBOT_SECURITY_INVITE, type != CHAT_MSG_WHISPER, fromPlayer))
+    if (!GetSecurity()->CheckLevelFor(PLAYERBOT_SECURITY_INVITE, type != CHAT_MSG_WHISPER || quietRefusals, fromPlayer))
         return;
 
     if (type == CHAT_MSG_ADDON)
@@ -1078,7 +1124,7 @@ void PlayerbotAI::HandleCommand(uint32 type, std::string const text, Player* fro
         split(commands, text, sPlayerbotAIConfig.commandSeparator.c_str());
         for (std::vector<std::string>::iterator i = commands.begin(); i != commands.end(); ++i)
         {
-            HandleCommand(type, *i, fromPlayer);
+            HandleCommand(type, *i, fromPlayer, quietRefusals);
         }
 
         return;
@@ -1093,24 +1139,15 @@ void PlayerbotAI::HandleCommand(uint32 type, std::string const text, Player* fro
         filtered = filtered.substr(sPlayerbotAIConfig.commandPrefix.size());
     }
 
-    if (chatMap.empty())
-    {
-        chatMap["#w "] = CHAT_MSG_WHISPER;
-        chatMap["#p "] = CHAT_MSG_PARTY;
-        chatMap["#r "] = CHAT_MSG_RAID;
-        chatMap["#a "] = CHAT_MSG_ADDON;
-        chatMap["#g "] = CHAT_MSG_GUILD;
-    }
-
     currentChat = std::pair<ChatMsg, time_t>(CHAT_MSG_WHISPER, 0);
     if (fromPlayer && !GET_PLAYERBOT_AI(fromPlayer))
         lastCommandAt = time(nullptr);
-    for (std::map<std::string, ChatMsg>::iterator i = chatMap.begin(); i != chatMap.end(); ++i)
+    for (auto const& prefix : chatMap)
     {
-        if (filtered.find(i->first) == 0)
+        if (filtered.find(prefix.first) == 0)
         {
             filtered = filtered.substr(3);
-            currentChat = std::pair<ChatMsg, time_t>(i->second, time(nullptr) + 2);
+            currentChat = std::pair<ChatMsg, time_t>(prefix.second, time(nullptr) + 2);
             break;
         }
     }
@@ -1129,13 +1166,14 @@ void PlayerbotAI::HandleCommand(uint32 type, std::string const text, Player* fro
         return;
     }
     if (!IsAllowedCommand(filtered) &&
-        (!GetSecurity()->CheckLevelFor(PLAYERBOT_SECURITY_ALLOW_ALL, type != CHAT_MSG_WHISPER, fromPlayer)))
+        (!GetSecurity()->CheckLevelFor(PLAYERBOT_SECURITY_ALLOW_ALL, type != CHAT_MSG_WHISPER || quietRefusals,
+                                       fromPlayer)))
         return;
 
     if (type == CHAT_MSG_RAID_WARNING && filtered.find(bot->GetName()) != std::string::npos &&
         filtered.find("award") == std::string::npos)
     {
-        chatCommands.push_back(ChatCommandHolder("warning", fromPlayer, type));
+        QueueChatCommand(ChatCommandHolder("warning", fromPlayer, type));
         return;
     }
 
@@ -1165,7 +1203,7 @@ void PlayerbotAI::HandleCommand(uint32 type, std::string const text, Player* fro
             }
         }
 
-        chatCommands.push_back(ChatCommandHolder(remaining, fromPlayer, type, time(nullptr) + index));
+        QueueChatCommand(ChatCommandHolder(remaining, fromPlayer, type, time(nullptr) + index));
     }
     else if (filtered == "reset")
     {
@@ -1228,7 +1266,7 @@ void PlayerbotAI::HandleCommand(uint32 type, std::string const text, Player* fro
     }
     else
     {
-        chatCommands.push_back(ChatCommandHolder(filtered, fromPlayer, type));
+        QueueChatCommand(ChatCommandHolder(filtered, fromPlayer, type));
     }
 }
 
@@ -1261,6 +1299,21 @@ void PlayerbotAI::TakeSharedQuest(WorldPacket const& packet)
 
     sharer->SendPushToPartyResponse(bot, QUEST_PARTY_MSG_ACCEPT_QUEST);
     bot->AddQuestAndCheckCompletion(quest, sharer);
+}
+
+// Chat that ChatReplyAction::ChatReplyDo answers with something other than the generic reply: LFG/LFM quest
+// offers, WTB item offers, the toxic-links and Thunderfury jokes. Pure string parsing: runs on the speaker's thread.
+static bool IsLegacySpecialChat(std::string const& message)
+{
+    if (message.starts_with("LFG") || message.starts_with("LFM") || message.starts_with("WTB"))
+        return true;
+
+    std::set<uint32> const itemIds = ChatHelper::ExtractAllItemIds(message);
+    if (message.starts_with(sPlayerbotAIConfig.toxicLinksPrefix) &&
+        (!itemIds.empty() || !ChatHelper::ExtractAllQuestIds(message).empty()))
+        return true;
+
+    return itemIds.count(19019) > 0;
 }
 
 void PlayerbotAI::HandleBotOutgoingPacket(WorldPacket const& packet)
@@ -1328,7 +1381,8 @@ void PlayerbotAI::HandleBotOutgoingPacket(WorldPacket const& packet)
             if (!sPlayerbotAIConfig.randomBotTalk)
                 return;
 
-            if (!AllowActivity())
+            // This runs on the speaker's thread: read the cached answer, do not refresh it from here.
+            if (!IsActivityAllowedCached())
                 return;
 
             WorldPacket p(packet);
@@ -1373,14 +1427,19 @@ void PlayerbotAI::HandleBotOutgoingPacket(WorldPacket const& packet)
                         return;
                 }
 
+                // In voice mode the director answers people; only the special replies ChatReplyDo handles still
+                // queue here.
+                if (CoaVoiceConfig::Enabled() && !IsLegacySpecialChat(message))
+                    return;
+
                 if (chanName == "World")
                     return;
 
                 // do not reply to self but always try to reply to real player
                 if (guid1 != bot->GetGUID())
                 {
-                    time_t lastChat = GetAiObjectContext()->GetValue<time_t>("last said", "chat")->Get();
-                    bool isPaused = time(0) < lastChat;
+                    // This runs on the speaker's thread: the pause is an atomic, not an AI value of this bot.
+                    bool isPaused = time(0) < GetChatPausedUntil();
                     bool isFromFreeBot = false;
                     sCharacterCache->GetCharacterNameByGuid(guid1, name);
                     uint32 accountId = sCharacterCache->GetCharacterAccountIdByGuid(guid1);
@@ -1438,7 +1497,7 @@ void PlayerbotAI::HandleBotOutgoingPacket(WorldPacket const& packet)
                     QueueChatResponse(ChatQueuedReply{msgtype, guid1.GetCounter(), guid2.GetCounter(), message,
                                                       chanName, name,
                                                       time(nullptr) + urand(inCombat ? 10 : 5, inCombat ? 25 : 15)});
-                    GetAiObjectContext()->GetValue<time_t>("last said", "chat")->Set(time(0) + urand(5, 25));
+                    SetChatPausedUntil(time(0) + urand(5, 25));
                     return;
                 }
             }
@@ -3036,6 +3095,8 @@ std::vector<Player*> PlayerbotAI::GetAllPlayersInGroup()
 // gives that logger an appender.
 void PlayerbotAI::LogChat(std::string_view how, std::string const& msg) const
 {
+    if (CoaVoiceEmit::SuppressesChatLogging())
+        return;
     LOG_INFO("playerbots.chat", "Player {} {}: {}", bot->GetName(), how, msg);
 }
 
@@ -3594,6 +3655,9 @@ bool PlayerbotAI::CanCastSpell(uint32 spellid, Unit* target, bool checkHasSpell,
      if (!IsValidUnit(target))
         return false;
 
+    if (!ActivityPvePolicy::CastAllowed(this, sSpellMgr->GetSpellInfo(spellid), target))
+        return false;
+
     if (Pet* pet = bot->GetPet())
         if (pet->HasSpell(spellid))
             return true;
@@ -3791,6 +3855,9 @@ bool PlayerbotAI::CanCastSpell(uint32 spellid, float x, float y, float z, bool c
     if (!spellid)
         return false;
 
+    if (!ActivityPvePolicy::CastAllowed(this, sSpellMgr->GetSpellInfo(spellid), nullptr))
+        return false;
+
     Pet* pet = bot->GetPet();
     if (pet && pet->HasSpell(spellid))
         return true;
@@ -3877,6 +3944,9 @@ bool PlayerbotAI::CastSpell(uint32 spellId, Unit* target, Item* itemTarget)
 
     SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(spellId);
     if (!spellInfo)
+        return false;
+
+    if (!ActivityPvePolicy::CastAllowed(this, spellInfo, target))
         return false;
 
     Pet* pet = bot->GetPet();
@@ -4149,6 +4219,8 @@ bool PlayerbotAI::CastSpell(uint32 spellId, float x, float y, float z, Item* ite
 
     Pet* pet = bot->GetPet();
     SpellInfo const* spellInfo = sSpellMgr->GetSpellInfo(spellId);
+    if (!ActivityPvePolicy::CastAllowed(this, spellInfo, nullptr))
+        return false;
     if (pet && pet->HasSpell(spellId))
     {
         bool autocast = false;
@@ -4279,6 +4351,9 @@ bool PlayerbotAI::CanCastVehicleSpell(uint32 spellId, Unit* target)
     if (!spellId)
         return false;
 
+    if (!ActivityPvePolicy::CastAllowed(this, sSpellMgr->GetSpellInfo(spellId), target))
+        return false;
+
     if (!IsValidUnit(target))
         return false;
 
@@ -4362,6 +4437,9 @@ bool PlayerbotAI::CanCastVehicleSpell(uint32 spellId, Unit* target)
 bool PlayerbotAI::CastVehicleSpell(uint32 spellId, Unit* target)
 {
     if (!spellId)
+        return false;
+
+    if (!ActivityPvePolicy::CastAllowed(this, sSpellMgr->GetSpellInfo(spellId), target))
         return false;
 
     if (!IsValidUnit(target))
@@ -4883,6 +4961,10 @@ bool PlayerbotAI::AllowActive(ActivityType activityType)
         bot->GetSession()->isLogingOut() || bot->IsDuringRemoveFromWorld())
         return false;
 
+    // CoA activity: participants stay active whatever the rotation (CoaActivity.MaxParticipants bounds them).
+    if (ActivityRegistry::IsParticipant(bot->GetGUID().GetCounter()))
+        return true;
+
     // always allow packet handling (e.g. group invites, trade, loot, friend requests etc)
     if (activityType == PACKET_ACTIVITY)
         return true;
@@ -5068,10 +5150,10 @@ bool PlayerbotAI::AllowActivity(ActivityType activityType, bool checkNow)
     uint32 offset = bot->GetGUID().GetCounter() % 500;
 
     if (!checkNow && getMSTime() < (allowActiveCheckTimer[activityIndex] + 4500 + offset))
-        return allowActive[activityIndex];
+        return allowActive[activityIndex].load(std::memory_order_relaxed);
 
     const bool allowed = AllowActive(activityType);
-    allowActive[activityIndex] = allowed;
+    allowActive[activityIndex].store(allowed, std::memory_order_relaxed);
     allowActiveCheckTimer[activityIndex] = getMSTime();
 
     return allowed;
@@ -6296,6 +6378,8 @@ int32 PlayerbotAI::GetNearGroupMemberCount(float dis)
 
 bool PlayerbotAI::CanMove()
 {
+    if (!WorldBossTactics::MovementAllowed(this))
+        return false;
     // Most common checks: confused, stunned, fleeing, jumping, charging. All these
     // states are set when handling certain aura effects. We don't check against
     // UNIT_STATE_ROOT here, because this state is used by vehicles.
@@ -6338,7 +6422,11 @@ bool PlayerbotAI::IsInRealGuild()
     return PlayerbotGuildMgr::instance().IsRealGuild(bot->GetGuildId());
 }
 
-void PlayerbotAI::QueueChatResponse(const ChatQueuedReply chatReply) { chatReplies.push_back(std::move(chatReply)); }
+void PlayerbotAI::QueueChatResponse(const ChatQueuedReply chatReply)
+{
+    std::lock_guard<std::mutex> guard(chatMutex);
+    chatReplies.push_back(std::move(chatReply));
+}
 
 bool PlayerbotAI::EqualLowercaseName(std::string s1, std::string s2)
 {

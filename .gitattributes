@@ -103,3 +103,6 @@ TODO         text
 ## EXECUTABLES
 *.exe binary
 *.pyc binary
+
+# TSV empty and whitespace-only fuzz payloads are intentional test cases.
+data/coa/fuzz/sanitizer_v1.txt whitespace=-blank-at-eol

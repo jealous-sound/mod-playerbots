@@ -5,10 +5,64 @@
  */
 
 #include "EnemyPlayerValue.h"
+#include "CoaMemoryRules.h"
 #include "CombatManager.h"
+#include "Log.h"
+#include "MemoryView.h"
 #include "Playerbots.h"
 #include "ServerFacade.h"
 #include "Vehicle.h"
+#include <ctime>
+
+namespace
+{
+// CoA memory (Revenge): step 2's filters over `players`, keeping the player the bot holds the biggest grudge against
+// (CoaMemoryRules::RevengeScore). A flag carrier still comes first. Null when no grudge target passes.
+Unit* FindRevengeTarget(PlayerbotAI* botAI, Player* bot, MemoryView const& view, GuidVector const& players,
+                        Unit* pVictim, float maxAggroDistance, bool controllingCannon, bool controllingVehicle)
+{
+    uint32 const now = uint32(time(nullptr));
+    Player* best = nullptr;
+    int32 bestScore = 0;
+    for (auto const& gTarget : players)
+    {
+        Unit* pUnit = botAI->GetUnit(gTarget);
+        if (!pUnit)
+            continue;
+
+        Player* pTarget = dynamic_cast<Player*>(pUnit);
+        if (!pTarget || pTarget == pVictim)
+            continue;
+
+        if (pTarget->HasAura(bot->GetTeamId() == TEAM_HORDE ? 23333 : 23335))
+            return pTarget;
+
+        // The legacy aggro distance, truncated to whole yards the same way.
+        uint32 const aggroDistance = controllingVehicle                                               ? 5.0f
+                                     : (controllingCannon || bot->GetHealth() > pTarget->GetHealth()) ? maxAggroDistance
+                                                                                                      : 20.0f;
+        if (!bot->IsWithinDist(pTarget, aggroDistance))
+            continue;
+
+        int32 const score = CoaMemoryRules::RevengeScore(view, pTarget, now);
+        if (score <= bestScore)
+            continue;
+
+        if (bot->IsWithinLOSInMap(pTarget) &&
+            (controllingCannon || (fabs(bot->GetPositionZ() - pTarget->GetPositionZ()) < 30.0f)))
+        {
+            best = pTarget;
+            bestScore = score;
+        }
+    }
+
+    if (best)
+        LOG_DEBUG("playerbots.memory", "{} picks {} for revenge (grudge {})", bot->GetName(), best->GetName(),
+                  bestScore);
+
+    return best;
+}
+}  // namespace
 
 bool NearestEnemyPlayersValue::AcceptUnit(Unit* unit)
 {
@@ -82,6 +136,15 @@ Unit* EnemyPlayerValue::Calculate()
 
     GuidVector players = AI_VALUE(GuidVector, "nearest enemy players");
     float const maxAggroDistance = GetMaxAttackDistance();
+
+    // CoA memory (Revenge): a grudge in range first. With memory off the view is null: the loop below only.
+    if (std::shared_ptr<MemoryView const> const view = CoaMemoryRules::ViewFor(botAI, MemoryBehaviour::Revenge))
+    {
+        if (Unit* revenge = FindRevengeTarget(botAI, bot, *view, players, pVictim, maxAggroDistance, controllingCannon,
+                                              controllingVehicle))
+            return revenge;
+    }
+
     for (auto const& gTarget : players)
     {
         Unit* pUnit = botAI->GetUnit(gTarget);

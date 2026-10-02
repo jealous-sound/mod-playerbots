@@ -12,6 +12,8 @@
 #include "Config.h"
 #include "ScriptMgr.h"
 
+#include "ActivityRecruitment.h"
+#include "ActivityRegistry.h"
 #include "BattlegroundMgr.h"
 #include "LFGMgr.h"
 #include "Group.h"
@@ -581,6 +583,10 @@ Player* FindCoaRecruit(Player* master, CoaRole role, uint8 classId, std::set<Obj
         if (skip.count(bot->GetGUID()) || CoaLfgOfferedToOther(bot, master))
             continue;
 
+        // Held by a CoA activity (a participant, or being asked to join one).
+        if (ActivityRegistry::IsHeld(bot->GetGUID().GetCounter()))
+            continue;
+
         // The bot is added to the group directly, past the invitation checks, so the faction rule
         // has to be applied here: an Alliance player was handed a Forsaken healer, whom the first
         // city guard outside the dungeon would have attacked. A realm that allows cross-faction
@@ -1141,18 +1147,18 @@ std::string AnnounceText(CoaLfgSettings const& settings)
 }
 }  // namespace
 
-void CoaLfgHeard(Player* player, std::string const& message, Channel* channel)
+bool CoaLfgHeard(Player* player, std::string const& message, Channel* channel)
 {
     if (!player || !channel || GET_PLAYERBOT_AI(player))
-        return;
+        return false;
 
     CoaLfgSettings const settings = Settings();
     if (!settings.enabled || !Listened(settings, channel))
-        return;
+        return false;
 
     std::vector<CoaRole> const roles = RolesAsked(settings, message);
     if (roles.empty())
-        return;
+        return false;
 
     ChatHandler chat(player->GetSession());
     time_t const now = time(nullptr);
@@ -1174,7 +1180,7 @@ void CoaLfgHeard(Player* player, std::string const& message, Channel* channel)
         if (wanted.empty())
         {
             chat.SendSysMessage("The bots already heard you: invite the ones that whispered you, or ask again in a moment.");
-            return;
+            return true;
         }
 
         for (auto itr = LfgOffers.begin(); itr != LfgOffers.end();)
@@ -1191,10 +1197,18 @@ void CoaLfgHeard(Player* player, std::string const& message, Channel* channel)
         }
     }
 
+    // CoA activity: recruiting leaders whisper this player an offer on the director's next tick (queue only).
+    {
+        uint8 mask = 0;
+        for (CoaRole const role : wanted)
+            mask |= uint8(1 << uint8(role));
+        ActivityRecruitment::OnLfgRequest(player, mask);
+    }
+
     if (player->GetGroup() && player->GetGroup()->IsFull())
     {
         chat.SendSysMessage("Your group is full.");
-        return;
+        return true;
     }
 
     for (CoaRole const role : wanted)
@@ -1232,6 +1246,7 @@ void CoaLfgHeard(Player* player, std::string const& message, Channel* channel)
         if (!offered)
             chat.PSendSysMessage("No bot of your faction is free to play {} right now.", RoleName(role));
     }
+    return true;
 }
 
 bool CoaLfgOfferedToOther(Player* bot, Player* player)
@@ -1255,6 +1270,13 @@ bool CoaLfgTakeOffer(Player* bot, Player* inviter)
         return false;
     LfgOffers.erase(offer);
     return true;
+}
+
+bool CoaLfgIsOffered(ObjectGuid bot)
+{
+    std::lock_guard<std::mutex> guard(LfgLock);
+    auto const offer = LfgOffers.find(bot);
+    return offer != LfgOffers.end() && offer->second.until >= time(nullptr);
 }
 
 namespace

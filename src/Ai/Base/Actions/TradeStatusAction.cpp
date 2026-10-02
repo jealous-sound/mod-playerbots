@@ -5,9 +5,11 @@
  */
 
 #include "TradeStatusAction.h"
+#include "CoaHooks.h"
 #include "CraftValue.h"
 #include "Event.h"
 #include "GuildTaskMgr.h"
+#include "GoldRoll.h"
 #include "ItemUsageValue.h"
 #include "ItemVisitors.h"
 #include "PlayerbotMgr.h"
@@ -19,6 +21,13 @@
 
 bool TradeStatusAction::Execute(Event event)
 {
+    // Exact consented money-only wagers use their own map-thread native trade checks and never item pricing,
+    // discount accumulation, auto-crafted reagents, or the general unrelated-player security exception.
+    if (GoldRollActions::Active(botAI))
+    {
+        GoldRollActions::Tick(botAI);
+        return true;
+    }
     if (IsSelfBot(bot))
         return false;
 
@@ -97,6 +106,9 @@ bool TradeStatusAction::Execute(Event event)
                 sRandomPlayerbotMgr.SetTradeDiscount(bot, trader, discount);
                 return false;
             }
+
+            // The trade completed: memory on, the bot remembers it (givenItemIds is what the trader gave the bot).
+            CoaHooks::OnTradeCompleted(bot, trader, uint32(givenItemIds.size()), uint32(takenItemIds.size()));
 
             for (std::map<uint32, uint32>::iterator i = givenItemIds.begin(); i != givenItemIds.end(); ++i)
             {
