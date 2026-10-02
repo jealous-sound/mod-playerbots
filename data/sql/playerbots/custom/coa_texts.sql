@@ -77,7 +77,7 @@
 -- 30600-30635, 30636-30799 spare; activity bot lines 30800-30999 (M4 30800-30871, M5 30872-30999); activity
 -- system rows 31000-31016 (M4 31000-31009, M5 31010-31016), 31017-31099 spare; M5 activity bot lines
 -- 31100-31147; banter rows (coa_banter_*, M6), 8 per name, read only with CoaVoice.Banter.Enable = 1,
--- 31148-31203; M7 escort/scout rows 31204-31224, 31225-31499 spare. Re-runnable: the deletes below touch only coa_* rows, by id block (to drop
+-- 31148-31203; M7 escort/scout rows 31204-31224, 31225-31253 expanded M5b/M7 rows, 31254-31499 spare. Re-runnable: the deletes below touch only coa_* rows, by id block (to drop
 -- renamed or removed lines) and by name. The file ends by moving the table's AUTO_INCREMENT to 31500, so
 -- an insert without an id gets 31500 or above and never lands in this block.
 
@@ -1878,7 +1878,65 @@ VALUES
     (31223, 'coa_act_escort_usage', 'Usage: .playerbots activity escort <destination> or list or stop', 0, 0,
      '', 'Commande : .playerbots activity escort <destination> ou list ou stop', '', '', '', '', '', ''),
     (31224, 'coa_act_escort_no_destinations', 'No escort destinations are configured here.', 0, 0,
-     '', 'Aucune destination d''escorte n''est disponible ici.', '', '', '', '', '', '');
+     '', 'Aucune destination d''escorte n''est disponible ici.', '', '', '', '', '', ''),
+    (31225, 'coa_act_request_off', 'This activity is currently unavailable.', 0, 0,
+     '', 'Cette activité est actuellement indisponible.', '', '', '', '', '', ''),
+    (31226, 'coa_act_request_player', 'An online player must make this request.', 0, 0,
+     '', 'Un joueur connecté doit demander cette activité.', '', '', '', '', '', ''),
+    (31227, 'coa_act_request_gap', 'Please wait five seconds before requesting again.', 0, 0,
+     '', 'Attendez cinq secondes avant de refaire une demande.', '', '', '', '', '', ''),
+    (31228, 'coa_act_request_busy', 'All activity places are currently occupied.', 0, 0,
+     '', 'Toutes les places de cette activité sont occupées.', '', '', '', '', '', ''),
+    (31229, 'coa_act_request_cooldown', 'You must wait before requesting this activity again.', 0, 0,
+     '', 'Vous devez patienter avant de redemander cette activité.', '', '', '', '', '', ''),
+    (31230, 'coa_act_request_owned', 'You already have this activity; cancel it first.', 0, 0,
+     '', 'Vous avez déjà cette activité ; annulez-la d’abord.', '', '', '', '', '', ''),
+    (31231, 'coa_act_request_no', 'No suitable bot can start this request here.', 0, 0,
+     '', 'Aucun bot adapté ne peut répondre à cette demande ici.', '', '', '', '', '', ''),
+    (31232, 'coa_act_request_started', 'Your activity has started: #%id.', 0, 0,
+     '', 'Votre activité a commencé : #%id.', '', '', '', '', '', ''),
+    (31233, 'coa_act_request_none', 'You have no such activity to cancel.', 0, 0,
+     '', 'Vous n’avez aucune activité de ce type à annuler.', '', '', '', '', '', ''),
+    (31234, 'coa_act_request_cancelled', 'Your activity has ended.', 0, 0,
+     '', 'Votre activité est terminée.', '', '', '', '', '', ''),
+    (31235, 'coa_act_service_off', 'Player services are currently unavailable.', 0, 0,
+     '', 'Les services aux joueurs sont actuellement indisponibles.', '', '', '', '', '', ''),
+    (31236, 'coa_act_service_none', 'No qualified nearby free crafter is available.', 0, 0,
+     '', 'Aucun artisan libre et qualifié n’est disponible à proximité.', '', '', '', '', '', ''),
+    (31237, 'coa_act_service_invite', 'Accept my party invitation for %target. You choose any craft or trade; nothing is promised.', 0, 0,
+     '', 'Acceptez mon invitation pour %target. Vous décidez des fabrications et échanges, selon mes ressources.', '', '', '', '', '', ''),
+    (31238, 'coa_act_service_pending', 'Accept the pending service party invitation.', 0, 0,
+     '', 'Acceptez l’invitation de groupe de votre artisan.', '', '', '', '', '', ''),
+    (31239, 'coa_act_service_private', 'This service is reserved for its requester.', 0, 0,
+     '', 'Ce service est réservé au joueur qui l’a demandé.', '', '', '', '', '', ''),
+    (31240, 'coa_act_service_ready', 'I know %target. Lead me locally; whisper spells, craft %item, craft ?, or trade using native commands.', 0, 0,
+     '', 'Je connais %target. Guidez-moi ici ; envoyez spells, craft %item, craft ?, ou trade pour organiser la fabrication.', '', '', '', '', '', ''),
+    (31241, 'coa_act_service_offer', '%bot [%botid], %profession %skill: %item (item %itemid, recipe %recipe:%botid; %stock). Arrange crafting after accepting the party invitation.', 0, 0,
+     '', '%bot [%botid], %profession %skill : %item (objet %itemid, recette %recipe:%botid ; %stock). Organisez la fabrication après l’invitation de groupe.', '', '', '', '', '', ''),
+    (31242, 'coa_act_service_stock', 'Reagents present; tools and cooldown not checked.', 0, 0,
+     '', 'Composants disponibles ; outils et recharge à vérifier.', '', '', '', '', '', ''),
+    (31243, 'coa_act_service_no_stock', 'Reagents needed; tools and cooldown not checked.', 0, 0,
+     '', 'Composants nécessaires ; outils et recharge à vérifier.', '', '', '', '', '', ''),
+    (31244, 'coa_act_gold_no', 'No pending gold-roll proposal belongs to you.', 0, 0,
+     '', 'Aucune proposition de pari en attente ne vous appartient.', '', '', '', '', '', ''),
+    (31245, 'coa_act_gold_accept', 'Proposal accepted. The frozen roll result will arrive shortly.', 0, 0,
+     '', 'Pari accepté. Le résultat fixé des dés arrive bientôt.', '', '', '', '', '', ''),
+    (31246, 'coa_act_gold_terms', 'Bet #%id: %stake copper, dice 1-100, tie pays nobody. Loser pays through a money-only trade you accept. Agree within 60s: .playerbots activity gamble accept %id', 0, 0,
+     '', 'Pari #%id : %stake cuivre, dés 1-100, égalité sans paiement. Le perdant paie par un échange monétaire que vous acceptez. Accord sous 60 s : .playerbots activity gamble accept %id', '', '', '', '', '', ''),
+    (31247, 'coa_act_gold_result', 'Bet #%id: my roll %botroll, yours %playerroll, stake %stake copper. %result Confirm the exact money-only trade.', 0, 0,
+     '', 'Pari #%id : mon dé %botroll, le vôtre %playerroll, mise %stake cuivre. %result Confirmez l’échange du montant exact, sans objets.', '', '', '', '', '', ''),
+    (31248, 'coa_act_gold_tie', 'Tie: no payment.', 0, 0,
+     '', 'Égalité : aucun paiement.', '', '', '', '', '', ''),
+    (31249, 'coa_act_gold_player_pays', 'You pay the stake.', 0, 0,
+     '', 'Vous payez la mise.', '', '', '', '', '', ''),
+    (31250, 'coa_act_gold_bot_pays', 'I pay the stake.', 0, 0,
+     '', 'Je paie la mise.', '', '', '', '', '', ''),
+    (31251, 'coa_act_pug_no', 'Choose a live pickup raid you have joined.', 0, 0,
+     '', 'Choisissez un raid ouvert actif que vous avez rejoint.', '', '', '', '', '', ''),
+    (31252, 'coa_act_festival_solo', 'This visitor participates alone; the event remains yours.', 0, 0,
+     '', 'Ce visiteur participe seul ; l’événement reste le vôtre.', '', '', '', '', '', ''),
+    (31253, 'coa_act_combat_closed', 'This bot combat group does not recruit players.', 0, 0,
+     '', 'Ce groupe de combat de bots ne recrute pas de joueurs.', '', '', '', '', '', '');
 
--- The explicit ids push the counter to 31225, inside the block; move it past (never below max(id) + 1).
+-- The explicit ids push the counter to 31254, inside the block; move it past (never below max(id) + 1).
 ALTER TABLE `ai_playerbot_texts` AUTO_INCREMENT = 31500;

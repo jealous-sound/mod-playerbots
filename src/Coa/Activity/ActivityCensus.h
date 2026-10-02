@@ -27,6 +27,7 @@ public:
         std::array<std::array<uint16, ActivityThreshold::LEVEL_BANDS>, 2> free{};
         uint16 online = 0;  // random bots online (free or not)
         std::array<uint16, 2> raidFree{};  // M5: free bots per team at Raid.MinLevel or above (the raid pool)
+        std::array<uint16, 2> exactLevel60{};
         uint8 hour = 0;                    // M5: server local hour of day when taken (Acore::Time::GetHours)
     };
 
@@ -49,6 +50,10 @@ public:
     // M5, the outpost raid's gate: the p10 (nearest rank) of raidFree[team] over the samples taken at the current
     // server hour of day (every kept day); nullopt with fewer than CENSUS_MIN_HOUR_SAMPLES of them.
     std::optional<uint32> RaidPoolP10(uint8 team, uint32 nowUnix) const;
+
+    static std::vector<std::string> SelfTest();
+    bool HasHistory(uint32 nowUnix, uint32 hours) const;
+    std::optional<uint32> P10ExactLevel60(uint8 team, uint32 nowUnix, uint32 hours) const;
 
 private:
     // raidFree[team] of every kept sample taken at nowUnix's hour of day, sorted.

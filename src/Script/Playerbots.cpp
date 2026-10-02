@@ -464,6 +464,8 @@ public:
 
     void OnPlayerbotCheckKillTask(Player* player, Unit* victim) override
     {
+        if (victim && victim->CustomData.Get<DataMap::Base>("coa.activity.rewardless_wave"))
+            return;
         if (player)
             GuildTaskMgr::instance().CheckKillTask(player, victim);
     }

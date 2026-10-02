@@ -294,6 +294,66 @@ std::vector<ActivitySpot> ParsePlaces(char const* key, std::string const& text, 
         });
 }
 
+std::vector<ActivityCampaignTarget> ParseCampaignTargets(char const* key, std::string const& text, bool logErrors)
+{
+    return ParseEntries<ActivityCampaignTarget>(key, text, logErrors,
+        [](std::vector<std::string> const& fields, ActivityCampaignTarget& target, std::string& why)
+        {
+            if (fields.size() != 11)
+                why = "expected name:team:spawn:map:x:y:z:guardSpawnCSV:waveEntry:strategy:raidMap";
+            else if (!ParseTeam(fields[1], false, target.team) ||
+                     !ParseUInt(fields[2], 0xFFFFFFFFu, target.spawnId) || !target.spawnId ||
+                     !ParseUInt(fields[3], 0xFFFFFFFFu, target.rally.mapId) ||
+                     !ParseFloat(fields[4], target.rally.x) || !ParseFloat(fields[5], target.rally.y) ||
+                     !ParseFloat(fields[6], target.rally.z) ||
+                     !ParseUInt(fields[8], 0xFFFFFFFFu, target.waveEntry) ||
+                     !ParseUInt(fields[10], 0xFFFFFFFFu, target.raidMap))
+                why = "invalid faction, spawn, rally, wave entry or raid map";
+            else
+            {
+                target.rally.set = true;
+                target.strategy = Lower(fields[9]);
+                if (!target.strategy.empty() && !ValidSpotName(target.strategy))
+                    why = "invalid strategy name";
+                for (std::string const& word : Split(fields[7], ','))
+                {
+                    if (word.empty())
+                        continue;
+                    uint32 guard = 0;
+                    if (!ParseUInt(word, 0xFFFFFFFFu, guard) || !guard || target.guardSpawns.size() >= 40 ||
+                        std::find(target.guardSpawns.begin(), target.guardSpawns.end(), guard) != target.guardSpawns.end() ||
+                        guard == target.spawnId)
+                    {
+                        why = "invalid, duplicate or excessive guard spawn";
+                        break;
+                    }
+                    target.guardSpawns.push_back(guard);
+                }
+            }
+        });
+}
+
+std::vector<ActivityFestivalTarget> ParseFestivalTargets(std::string const& text, bool logErrors)
+{
+    return ParseEntries<ActivityFestivalTarget>("Festival.Targets", text, logErrors,
+        [](std::vector<std::string> const& fields, ActivityFestivalTarget& target, std::string& why)
+        {
+            if (fields.size() != 5)
+                why = "expected name:event:interaction:spawn:team";
+            else if (!ParseUInt(fields[1], 65535, target.eventId) || !target.eventId ||
+                     !ParseUInt(fields[3], 0xFFFFFFFFu, target.spawnId) || !target.spawnId ||
+                     !ParseTeam(fields[4], true, target.team))
+                why = "invalid event, spawn or faction";
+            else
+            {
+                target.interaction = Lower(fields[2]);
+                if (target.interaction != "faire" && target.interaction != "ribbon" &&
+                    target.interaction != "bonfire" && target.interaction != "fishing")
+                    why = "interaction must be faire, ribbon, bonfire or fishing";
+            }
+        });
+}
+
 // A comma list of words, trimmed and ASCII-lowered, empties dropped.
 std::vector<std::string> ParseWords(std::string const& text)
 {
@@ -364,6 +424,34 @@ bool ActivityConfig::KindEnabled(ActivityKindId kind) const
             return escortEnable;
         case ActivityKindId::RareScout:
             return rareScoutEnable;
+        case ActivityKindId::LeaderEncounter:
+            return leaderEnable;
+        case ActivityKindId::Frontline:
+            return frontlineEnable;
+        case ActivityKindId::TownDefense:
+            return townDefenseEnable;
+        case ActivityKindId::PugRaid:
+            return pugRaidEnable;
+        case ActivityKindId::WorldBoss:
+            return worldBossEnable;
+        case ActivityKindId::PlayerService:
+            return serviceEnable;
+        case ActivityKindId::FestivalVisit:
+            return festivalEnable;
+        case ActivityKindId::GoldRoll:
+            return goldRollEnable;
+        case ActivityKindId::PvpGang:
+            return pvpGangEnable;
+        case ActivityKindId::Bounty:
+            return bountyEnable;
+        case ActivityKindId::RareCamp:
+            return rareCampEnable;
+        case ActivityKindId::HubDefense:
+            return hubDefenseEnable;
+        case ActivityKindId::CapitalRaid:
+            return capitalEnable;
+        case ActivityKindId::LieutenantRaid:
+            return lieutenantEnable;
         default:
             return false;
     }
@@ -393,6 +481,34 @@ uint32 ActivityConfig::KindWeight(ActivityKindId kind) const
             return 0;  // explicit player request only, regardless of config or brain
         case ActivityKindId::RareScout:
             return weightRareScout;
+        case ActivityKindId::LeaderEncounter:
+            return 0;
+        case ActivityKindId::Frontline:
+            return weightFrontline;
+        case ActivityKindId::TownDefense:
+            return weightTownDefense;
+        case ActivityKindId::PugRaid:
+            return weightPugRaid;
+        case ActivityKindId::WorldBoss:
+            return weightWorldBoss;
+        case ActivityKindId::PlayerService:
+            return 0;
+        case ActivityKindId::FestivalVisit:
+            return weightFestival;
+        case ActivityKindId::GoldRoll:
+            return 0;
+        case ActivityKindId::PvpGang:
+            return weightPvpGang;
+        case ActivityKindId::Bounty:
+            return 0;
+        case ActivityKindId::RareCamp:
+            return weightRareCamp;
+        case ActivityKindId::HubDefense:
+            return 0;
+        case ActivityKindId::CapitalRaid:
+            return weightCapital;
+        case ActivityKindId::LieutenantRaid:
+            return weightLieutenant;
         default:
             return 0;
     }
@@ -422,6 +538,34 @@ uint32 ActivityConfig::KindMax(ActivityKindId kind) const
             return escortMax;
         case ActivityKindId::RareScout:
             return rareScoutMax;
+        case ActivityKindId::LeaderEncounter:
+            return leaderMax;
+        case ActivityKindId::Frontline:
+            return frontlineMax;
+        case ActivityKindId::TownDefense:
+            return townDefenseMax;
+        case ActivityKindId::PugRaid:
+            return pugRaidMax;
+        case ActivityKindId::WorldBoss:
+            return worldBossMax;
+        case ActivityKindId::PlayerService:
+            return serviceMax;
+        case ActivityKindId::FestivalVisit:
+            return festivalMax;
+        case ActivityKindId::GoldRoll:
+            return goldRollMax;
+        case ActivityKindId::PvpGang:
+            return pvpGangMax;
+        case ActivityKindId::Bounty:
+            return bountyMax;
+        case ActivityKindId::RareCamp:
+            return rareCampMax;
+        case ActivityKindId::HubDefense:
+            return hubDefenseMax;
+        case ActivityKindId::CapitalRaid:
+            return capitalMax;
+        case ActivityKindId::LieutenantRaid:
+            return lieutenantMax;
         default:
             return 0;
     }
@@ -450,6 +594,34 @@ uint32 ActivityConfig::KindMinBots(ActivityKindId kind) const
         case ActivityKindId::Escort:
         case ActivityKindId::RareScout:
             return 1;
+        case ActivityKindId::LeaderEncounter:
+            return leaderMinBots;
+        case ActivityKindId::Frontline:
+            return frontlineMinBots;
+        case ActivityKindId::TownDefense:
+            return townDefenseMinBots;
+        case ActivityKindId::PugRaid:
+            return pugRaidMinBots;
+        case ActivityKindId::WorldBoss:
+            return worldBossMinBots;
+        case ActivityKindId::PlayerService:
+            return 1;
+        case ActivityKindId::FestivalVisit:
+            return 1;
+        case ActivityKindId::GoldRoll:
+            return 1;
+        case ActivityKindId::PvpGang:
+            return pvpGangMinBots;
+        case ActivityKindId::Bounty:
+            return bountyMinBots;
+        case ActivityKindId::RareCamp:
+            return rareCampMinBots;
+        case ActivityKindId::HubDefense:
+            return frontlineMinBots;
+        case ActivityKindId::CapitalRaid:
+            return capitalMinBots;
+        case ActivityKindId::LieutenantRaid:
+            return lieutenantMinBots;
         default:
             return 0;
     }
@@ -499,6 +671,46 @@ ActivityHuntTarget const* ActivityConfig::FindRareScoutTarget(std::string const&
     return FindNamed(rareScoutTargets, name);
 }
 
+ActivityCampaignTarget const* ActivityConfig::FindLeaderTarget(std::string const& name) const
+{
+    return FindNamed(leaderTargets, name);
+}
+
+ActivityCampaignTarget const* ActivityConfig::FindFrontlineTarget(std::string const& name) const
+{
+    return FindNamed(frontlineTargets, name);
+}
+
+ActivityCampaignTarget const* ActivityConfig::FindTownDefenseTarget(std::string const& name) const
+{
+    return FindNamed(townDefenseTargets, name);
+}
+
+ActivityCampaignTarget const* ActivityConfig::FindPugRaidTarget(std::string const& name) const
+{
+    return FindNamed(pugRaidTargets, name);
+}
+
+ActivityCampaignTarget const* ActivityConfig::FindWorldBossTarget(std::string const& name) const
+{
+    return FindNamed(worldBossTargets, name);
+}
+
+ActivityFestivalTarget const* ActivityConfig::FindFestivalTarget(std::string const& name) const
+{
+    return FindNamed(festivalTargets, name);
+}
+
+ActivitySpot const* ActivityConfig::FindPvpGangSpot(std::string const& name) const
+{
+    return FindNamed(pvpGangSpots, name);
+}
+
+ActivityHuntTarget const* ActivityConfig::FindRareCampTarget(std::string const& name) const
+{
+    return FindNamed(rareCampTargets, name);
+}
+
 std::vector<std::string> ActivityConfig::SelfTest()
 {
     uint32 passed = 0;
@@ -533,6 +745,29 @@ std::vector<std::string> ActivityConfig::SelfTest()
               ActivityKindIsGroup(ActivityKindId::Gang) && !ActivityKindIsGroup(ActivityKindId::Party),
           "group and solo kind dispatch");
     ActivityConfig config;
+    for (uint8 k = uint8(ActivityKindId::LeaderEncounter); k < uint8(ActivityKindId::Count); ++k)
+        check(!config.KindEnabled(ActivityKindId(k)) && config.KindWeight(ActivityKindId(k)) == 0,
+              "advanced activities default off without scheduling weights");
+    check(config.pvpGangHighRiskPercent == 50 && !config.pvpGangGmVerified && !config.leaderSpikeVerified,
+          "mixed per-group rulesets and unverified runtime gates");
+    auto const campaign = ParseCampaignTargets("Frontline.Targets",
+        "mill:alliance:123:0:1:2:3:456,789:0::0", false);
+    check(campaign.size() == 1 && campaign.front().rally.set && campaign.front().guardSpawns.size() == 2 &&
+              campaign.front().strategy.empty(), "campaign exact fields with optional guards/strategy");
+    check(ParseCampaignTargets("Leader.Targets", "x:horde:0:1:0:0:0::0::0", false).empty() &&
+          ParseCampaignTargets("Leader.Targets", "x:horde:1:1:nan:0:0::0::0", false).empty() &&
+          ParseCampaignTargets("Leader.Targets", "x:horde:1:1:0:0:0:2,2:0::0", false).empty() &&
+          ParseCampaignTargets("Leader.Targets", "x:horde:1:1:0:0:0:1:0::0", false).empty() &&
+          ParseCampaignTargets("Leader.Targets", "x:horde:1:1:0:0:0:4294967296:0::0", false).empty(),
+          "campaign zero spawn/nonfinite/duplicate/self/overflow guards rejected");
+    check(ParseCampaignTargets("Leader.Targets", "", false).empty(), "no implicit capital/leader targets");
+    auto const festivals = ParseFestivalTargets("faire:any:faire:123:any;fire:1:bonfire:124:alliance", false);
+    check(festivals.size() == 1 && festivals.front().interaction == "bonfire",
+          "festival event numeric and native bonfire mode");
+    check(ParseFestivalTargets("fishing:15:fishing:125:any;faire:4:faire:126:any;ribbon:1:ribbon:127:horde", false).size() == 3,
+          "fishing/faire/ribbon exact whitelist modes");
+    check(ParseFestivalTargets("x:1:quest_reward:2:alliance", false).empty() &&
+          ParseFestivalTargets("x:0:faire:2:alliance", false).empty(), "unsupported festival mode/event rejected");
     config.escortEnable = true;
     check(config.KindWeight(ActivityKindId::Escort) == 0 && config.KindWeight(ActivityKindId::RareScout) == 0 &&
               config.KindMinBots(ActivityKindId::Escort) == 1 && config.KindMinBots(ActivityKindId::RareScout) == 1,
@@ -808,6 +1043,136 @@ std::shared_ptr<ActivityConfig const> ActivityConfig::Load()
     config->rareScoutLevelSpread = Int("RareScout.LevelSpread", 5, 0, 10);
     config->rareScoutNearbyYards = Int("RareScout.NearbyYards", 500, 20, 2000);
     config->rareScoutTargets = ParseHuntTargets(Option("RareScout.Targets", ""), true, "RareScout.Targets");
+
+    config->leaderSpikeVerified = Bool("Leader.SpikeVerified", false);
+    config->pvpGangGmVerified = Bool("PvpGang.GmVerified", false);
+    config->capitalEnable = Bool("Capital.Enable", false);
+    config->weightCapital = Int("Capital.Weight", 0, 0, 1000);
+    config->capitalMax = Int("Capital.Max", 1, 0, 1);
+    config->capitalMinBots = Int("Capital.MinBots", 20, 20, 40);
+    config->capitalMaxBots = std::max(config->capitalMinBots, Int("Capital.MaxBots", 40, 20, 40));
+    config->capitalTargets = ParseCampaignTargets("Capital.Targets", Option("Capital.Targets", ""), true);
+    config->lieutenantEnable = Bool("Lieutenant.Enable", false);
+    config->weightLieutenant = Int("Lieutenant.Weight", 0, 0, 1000);
+    config->lieutenantMax = Int("Lieutenant.Max", 1, 0, 1);
+    config->lieutenantMinBots = Int("Lieutenant.MinBots", 10, 10, 40);
+    config->lieutenantMaxBots = std::max(config->lieutenantMinBots, Int("Lieutenant.MaxBots", 20, 10, 40));
+    config->lieutenantTargets = ParseCampaignTargets("Lieutenant.Targets", Option("Lieutenant.Targets", ""), true);
+
+    // Advanced activities retain empty whitelists until explicitly configured.
+    config->leaderEnable = Bool("Leader.Enable", false);
+    config->leaderSideEffectsAccepted = Bool("Leader.SideEffectsAccepted", false);
+    config->frontlineEnable = Bool("Frontline.Enable", false);
+    config->townDefenseEnable = Bool("TownDefense.Enable", false);
+    config->pugRaidEnable = Bool("PugRaid.Enable", false);
+    config->worldBossEnable = Bool("WorldBoss.Enable", false);
+    config->frontlineAttackVerified = Bool("Frontline.AttackVerified", false);
+    config->frontlineDefenders = Bool("Frontline.Defenders", false);
+    config->frontlinePvpDefendersEnable = Bool("Frontline.PvpDefendersEnable", false);
+    config->hubDefenseEnable = Bool("HubDefense.Enable", false);
+    config->worldBossGmKillVerified = Bool("WorldBoss.GmKillVerified", false);
+    config->serviceEnable = Bool("Service.Enable", false);
+    config->festivalEnable = Bool("Festival.Enable", false);
+    config->goldRollEnable = Bool("GoldRoll.Enable", false);
+    config->pvpGangEnable = Bool("PvpGang.Enable", false);
+    config->bountyEnable = Bool("Bounty.Enable", false);
+    config->rareCampEnable = Bool("RareCamp.Enable", false);
+    config->leaderMax = Int("Leader.Max", 1, 0, 1);
+    config->leaderMinBots = Int("Leader.MinBots", 20, 1, 40);
+    config->leaderMaxBots = Int("Leader.MaxBots", 40, 1, 40);
+    config->leaderMinLevel = Int("Leader.MinLevel", 60, 1, 60);
+    config->leaderScaleLevel = Int("Leader.ScaleLevel", 60, 1, 60);
+    config->leaderMinutes = Int("Leader.Minutes", 30, 1, 60);
+    config->leaderGatherSeconds = Int("Leader.GatherSeconds", 180, 10, 600);
+    config->leaderNearbyYards = Int("Leader.NearbyYards", 5000, 100, 20000);
+    config->leaderGuardYards = Int("Leader.GuardYards", 120, 20, 500);
+    config->leaderHealth = Int("Leader.Health", 250000, 1, 1000000000);
+    config->leaderGuardHealth = Int("Leader.GuardHealth", 15000, 1, 1000000000);
+    config->leaderDamagePercent = Int("Leader.DamagePercent", 10, 1, 100);
+    config->leaderGuardDamagePercent = Int("Leader.GuardDamagePercent", 20, 1, 100);
+    config->leaderArmorPercent = Int("Leader.ArmorPercent", 25, 1, 100);
+    config->weightFrontline = Int("Frontline.Weight", 0, 0, 1000);
+    config->frontlineMax = Int("Frontline.Max", 1, 0, 4);
+    config->frontlineMinBots = Int("Frontline.MinBots", 6, 1, 40);
+    config->frontlineMaxBots = Int("Frontline.MaxBots", 15, 1, 40);
+    config->frontlineRecruitSeconds = Int("Frontline.RecruitSeconds", 120, 0, 1800);
+    config->frontlineMinutes = Int("Frontline.Minutes", 60, 1, 180);
+    config->frontlineCleanRunsGate = Int("Frontline.CleanRunsGate", 10, 0, 1000);
+    config->weightTownDefense = Int("TownDefense.Weight", 0, 0, 1000);
+    config->townDefenseMax = Int("TownDefense.Max", 1, 0, 4);
+    config->townDefenseMinBots = Int("TownDefense.MinBots", 3, 1, 40);
+    config->townDefenseMaxBots = Int("TownDefense.MaxBots", 5, 1, 40);
+    config->townDefenseRecruitSeconds = Int("TownDefense.RecruitSeconds", 120, 0, 1800);
+    config->townDefenseMinutes = Int("TownDefense.Minutes", 60, 1, 180);
+    config->weightPugRaid = Int("PugRaid.Weight", 0, 0, 1000);
+    config->pugRaidMax = Int("PugRaid.Max", 1, 0, 4);
+    config->pugRaidMinBots = Int("PugRaid.MinBots", 10, 1, 40);
+    config->pugRaidMaxBots = Int("PugRaid.MaxBots", 40, 1, 40);
+    config->pugRaidRecruitSeconds = Int("PugRaid.RecruitSeconds", 120, 0, 1800);
+    config->pugRaidMinutes = Int("PugRaid.Minutes", 60, 1, 180);
+    config->pugRaidCleanRunsGate = Int("PugRaid.CleanRunsGate", 0, 0, 1000);
+    config->weightWorldBoss = Int("WorldBoss.Weight", 0, 0, 1000);
+    config->worldBossMax = Int("WorldBoss.Max", 1, 0, 4);
+    config->worldBossMinBots = Int("WorldBoss.MinBots", 20, 1, 40);
+    config->worldBossMaxBots = Int("WorldBoss.MaxBots", 40, 1, 40);
+    config->worldBossRecruitSeconds = Int("WorldBoss.RecruitSeconds", 120, 0, 1800);
+    config->worldBossMinutes = Int("WorldBoss.Minutes", 60, 1, 180);
+    config->worldBossCleanRunsGate = Int("WorldBoss.CleanRunsGate", 1, 0, 1000);
+    config->frontlineGuardRadius = Int("Frontline.GuardRadius", 150, 20, 500);
+    config->frontlineCooldownMinutes = Int("Frontline.CooldownMinutes", 360, 0, 1440);
+    config->frontlineWarningSeconds = Int("Frontline.WarningSeconds", 300, 0, 1800);
+    config->hubDefenseMax = Int("HubDefense.Max", 1, 0, 4);
+    config->townDefenseWaves = Int("TownDefense.Waves", 3, 1, 20);
+    config->townDefenseWaveSize = Int("TownDefense.WaveSize", 3, 1, 10);
+    config->townDefenseWaveGapSeconds = Int("TownDefense.WaveGapSeconds", 30, 5, 300);
+    config->townDefenseCleanWavesGate = Int("TownDefense.CleanWavesGate", 20, 0, 1000);
+    config->pugRaidReservePerPlayer = Int("PugRaid.ReservePerPlayer", 1, 1, 5);
+    config->serviceMax = Int("Service.Max", 2, 0, 4);
+    config->serviceMinutes = Int("Service.Minutes", 10, 1, 30);
+    config->serviceInviteSeconds = Int("Service.InviteSeconds", 60, 10, 120);
+    config->servicePlayerCooldownMinutes = Int("Service.PlayerCooldownMinutes", 30, 0, 1440);
+    config->serviceNearbyYards = Int("Service.NearbyYards", 200, 20, 1000);
+    config->weightFestival = Int("Festival.Weight", 0, 0, 1000);
+    config->festivalMax = Int("Festival.Max", 1, 0, 4);
+    config->festivalMinutes = Int("Festival.Minutes", 5, 1, 30);
+    config->festivalNearbyYards = Int("Festival.NearbyYards", 500, 20, 2000);
+    config->goldRollMax = Int("GoldRoll.Max", 2, 0, 4);
+    config->goldRollMaxCopper = Int("GoldRoll.MaxCopper", 100000, 1, 1000000);
+    config->goldRollPlayerCooldownMinutes = Int("GoldRoll.PlayerCooldownMinutes", 30, 0, 1440);
+    config->pvpGangHighRiskPercent = Int("PvpGang.HighRiskPercent", 50, 0, 100);
+    config->pvpGangMax = Int("PvpGang.Max", 1, 0, 4);
+    config->pvpGangMinBots = Int("PvpGang.MinBots", 3, 1, 5);
+    config->pvpGangMaxBots = Int("PvpGang.MaxBots", 5, 1, 5);
+    config->pvpGangMinutes = Int("PvpGang.Minutes", 30, 1, 60);
+    config->pvpGangNearbyYards = Int("PvpGang.NearbyYards", 500, 20, 2000);
+    config->weightPvpGang = Int("PvpGang.Weight", 0, 0, 1000);
+    config->bountyMax = Int("Bounty.Max", 1, 0, 4);
+    config->bountyMinBots = Int("Bounty.MinBots", 2, 1, 5);
+    config->bountyMaxBots = Int("Bounty.MaxBots", 5, 1, 5);
+    config->bountyMinutes = Int("Bounty.Minutes", 10, 1, 60);
+    config->bountyNearbyYards = Int("Bounty.NearbyYards", 500, 20, 2000);
+    config->rareCampMax = Int("RareCamp.Max", 1, 0, 4);
+    config->rareCampMinBots = Int("RareCamp.MinBots", 2, 1, 5);
+    config->rareCampMaxBots = Int("RareCamp.MaxBots", 5, 1, 5);
+    config->rareCampMinutes = Int("RareCamp.Minutes", 15, 1, 60);
+    config->rareCampNearbyYards = Int("RareCamp.NearbyYards", 500, 20, 2000);
+    config->weightRareCamp = Int("RareCamp.Weight", 0, 0, 1000);
+    config->leaderTargets = ParseCampaignTargets("Leader.Targets", Option("Leader.Targets", ""), true);
+    config->frontlineTargets = ParseCampaignTargets("Frontline.Targets", Option("Frontline.Targets", ""), true);
+    config->townDefenseTargets = ParseCampaignTargets("TownDefense.Targets", Option("TownDefense.Targets", ""), true);
+    config->pugRaidTargets = ParseCampaignTargets("PugRaid.Targets", Option("PugRaid.Targets", ""), true);
+    config->worldBossTargets = ParseCampaignTargets("WorldBoss.Targets", Option("WorldBoss.Targets", ""), true);
+    config->festivalTargets = ParseFestivalTargets(Option("Festival.Targets", ""), true);
+    config->pvpGangSpots = ParsePlaces("PvpGang.Spots", Option("PvpGang.Spots", ""), true);
+    config->rareCampTargets = ParseHuntTargets(Option("RareCamp.Targets", ""), true, "RareCamp.Targets");
+    config->leaderMaxBots = std::max(config->leaderMinBots, config->leaderMaxBots);
+    config->frontlineMaxBots = std::max(config->frontlineMinBots, config->frontlineMaxBots);
+    config->townDefenseMaxBots = std::max(config->townDefenseMinBots, config->townDefenseMaxBots);
+    config->pugRaidMaxBots = std::max(config->pugRaidMinBots, config->pugRaidMaxBots);
+    config->worldBossMaxBots = std::max(config->worldBossMinBots, config->worldBossMaxBots);
+    config->pvpGangMaxBots = std::max(config->pvpGangMinBots, config->pvpGangMaxBots);
+    config->bountyMaxBots = std::max(config->bountyMinBots, config->bountyMaxBots);
+    config->rareCampMaxBots = std::max(config->rareCampMinBots, config->rareCampMaxBots);
 
     config->useBrainDuel = sConfigMgr->GetOption<bool>("AiPlayerbot.CoaBrain.Use.Duel", false);
     config->useBrainOrganizer = sConfigMgr->GetOption<bool>("AiPlayerbot.CoaBrain.Use.Organizer", false);

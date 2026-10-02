@@ -90,12 +90,19 @@ public:
     std::string Pause();
     std::string Resume();
     std::vector<std::string> Census(uint32 hours) const;
+    uint32 CleanRuns(ActivityKindId kind) const;
+    void RecordCleanWave();
     // SEC_PLAYER. id 0: the nearest joinable activity (group kinds first: same team, band +-5, same map). Returns the
     // player's line (coa_act_join_*, localized; coa_act_off when not running).
     std::string Join(Player* player, uint32 id);
     // M7 SEC_PLAYER: explicit escort request, ordinary invite only; requester GUID owns cancellation.
     // Rejected requests are throttled for 5 s; the player cooldown starts only after a live activity is created.
     std::vector<std::string> RequestEscort(Player* player, std::string target);
+    std::vector<std::string> RequestOwned(Player* player, ActivityKindId kind, std::string target);
+    std::vector<std::string> CancelOwned(Player* player, ActivityKindId kind);
+    std::vector<std::string> ServiceOffers(Player* player, uint32 recipeSpell);
+    std::string AcceptGoldRoll(Player* player, uint32 activityId);
+    std::string ReserveRaid(Player* player, uint32 activityId, uint32 itemId);
     std::vector<std::string> CancelEscort(Player* player);
     // Configured names on the player's map/team only, bounded to 16 names and a 384-byte localized line.
     std::vector<std::string> EscortDestinations(Player* player) const;
@@ -163,7 +170,7 @@ private:
     uint32 ResolvePlan(PendingPlan& pending, uint64 nowMs, uint32 nowUnix);
     std::vector<ActivityKindId> EligibleKinds() const;
     uint32 LiveCount(ActivityKindId kind) const;
-    bool RareTargetBusy(std::string const& target, uint8 team) const;
+    bool RareTargetBusy(std::string const& target, uint8 team, ActivityKindId kind = ActivityKindId::RareScout) const;
     void PruneEscortRequests(uint64 nowMs);
     uint32 MinBots(ActivityKindId kind) const;
     uint32 Participants() const;
@@ -215,6 +222,9 @@ private:
     // activity id -> bots seen in the activity group once: a bot without a group that was never in it is still
     // waiting for AddMember (FormGroup ran out of budget), not gone
     std::unordered_map<uint32, std::unordered_set<uint32>> inGroupSeen;
+    std::map<std::pair<ActivityKindId, uint32>, uint64> ownedRequestAtMs;
+    std::map<std::pair<ActivityKindId, uint32>, uint64> ownedCooldownUntilMs;
+    std::vector<std::pair<uint32, std::string>> linkedDefenses;
     uint32 onlineBots = 0;                              // random bots in world, counted by CollectRealPlayers
     uint32 nextId = 1;
     uint64 nextPlanId = 1;
@@ -234,6 +244,8 @@ private:
     std::vector<ActivityJoinRequest> heldRequests;      // M5: chat join requests waiting for budget (<= 10 s)
     std::set<std::pair<uint32, ObjectGuid>> recruitOffers;  // M5: (activity id, player) offers whispered once
     // Counters for List(): started, ended per outcome, operations refused.
+    std::array<uint32, std::size_t(ActivityKindId::Count)> cleanRuns{};
+    uint32 cleanWaves = 0;
     uint64 startedCount = 0;
     std::array<uint64, 12> endedCount{};
 };

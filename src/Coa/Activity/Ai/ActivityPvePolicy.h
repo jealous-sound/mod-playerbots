@@ -24,7 +24,7 @@ namespace ActivityPvePolicy
 bool Protected(ActivityKindId kind);
 bool TargetAllowed(ActivityKindId kind, bool safe, bool playerControlled, uint32 creatureRank);
 bool SpellAllowed(ActivityKindId kind, bool safe, bool positive, bool area, bool targetAllowed);
-bool SafePlayer(Player* player);
+bool SafePlayer(Player* player, bool allowInstance = false);
 bool RareSafe(Player* player);
 bool AttackAllowed(PlayerbotAI* ai, Unit* target);
 bool CastAllowed(PlayerbotAI* ai, SpellInfo const* spell, Unit* target);

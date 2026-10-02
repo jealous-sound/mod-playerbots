@@ -1,0 +1,14 @@
+--- a/src/server/game/Entities/Player/Player.cpp
++++ b/src/server/game/Entities/Player/Player.cpp
+@@ -13328,5 +13328,11 @@
+ bool Player::isHonorOrXPTarget(Unit* victim) const
+ {
++    // Owned town waves are excluded from XP-gated inventory spell procs.
++    Creature const* const creature = victim->ToCreature();
++    if (creature && creature->IsSummon() && creature->IsLootRewardDisabled() &&
++        creature->CustomData.Get<DataMap::Base>("coa.activity.rewardless_wave"))
++        return false;
++
+     // The level this character is fighting, not the object's own: a scaled creature is above their
+     // gray level, so the abilities and scripts that ask "only to targets that grant experience or
+     // honor" have to see the version they are actually killing.

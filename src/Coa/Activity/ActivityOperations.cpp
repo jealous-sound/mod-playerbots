@@ -7,6 +7,9 @@
 #include "ActivityOperations.h"
 #include "ActivityKind.h"
 #include "Channel.h"
+#include "Creature.h"
+#include "LootMgr.h"
+#include "Opcodes.h"
 #include "ChannelMgr.h"
 #include "CoaChannels.h"
 #include "CoaText.h"
@@ -16,12 +19,17 @@
 #include "GroupMgr.h"
 #include "Log.h"
 #include "MotionMaster.h"
+#include "Map.h"
 #include "ObjectAccessor.h"
+#include "ObjectMgr.h"
+#include "ActivityRegistry.h"
 #include "Player.h"
 #include "PlayerbotAI.h"
 #include "Playerbots.h"
 #include "RandomPlayerbotMgr.h"
 #include "SharedDefines.h"
+#include "SpellInfo.h"
+#include "SpellMgr.h"
 #include "WorldPacket.h"
 #include "WorldSession.h"
 #include <algorithm>
@@ -530,6 +538,91 @@ ActivityOpResult ActivityOperations::HandLeader(ObjectGuid groupGuid, ObjectGuid
     return Report("hand leader", newLeader, ActivityOpResult::Done);
 }
 
+ActivityOpResult ActivityOperations::SetLoot(ObjectGuid groupGuid, ObjectGuid leaderGuid, uint8 lootMethod,
+                                            uint8 threshold, ObjectGuid looterGuid)
+{
+    COA_ASSERT_WORLD_THREAD();
+    if (!Spend())
+        return ActivityOpResult::Deferred;
+    Player* const leader = ObjectAccessor::FindConnectedPlayer(leaderGuid);
+    Group* const group = leader ? leader->GetGroup() : nullptr;
+    if (!IsBot(leader) || !group || group->GetGUID() != groupGuid || group->GetLeaderGUID() != leaderGuid ||
+        lootMethod > NEED_BEFORE_GREED || threshold > ITEM_QUALITY_ARTIFACT ||
+        (!looterGuid.IsEmpty() && !group->IsMember(looterGuid)))
+        return ActivityOpResult::Failed;
+    group->SetLootMethod(LootMethod(lootMethod));
+    group->SetLootThreshold(ItemQualities(threshold));
+    group->SetLooterGuid(looterGuid.IsEmpty() ? leaderGuid : looterGuid);
+    group->SetMasterLooterGuid(lootMethod == MASTER_LOOT ?
+        (looterGuid.IsEmpty() ? leaderGuid : looterGuid) : ObjectGuid::Empty);
+    group->SendUpdate();
+    return ActivityOpResult::Done;
+}
+
+ActivityOpResult ActivityOperations::ConvertToRaid(ObjectGuid groupGuid, ObjectGuid leaderGuid)
+{
+    COA_ASSERT_WORLD_THREAD();
+    if (!Spend())
+        return ActivityOpResult::Deferred;
+    Player* const leader = ObjectAccessor::FindConnectedPlayer(leaderGuid);
+    Group* const group = leader ? leader->GetGroup() : nullptr;
+    if (!IsBot(leader) || !group || group->GetGUID() != groupGuid || group->GetLeaderGUID() != leaderGuid)
+        return ActivityOpResult::Failed;
+    if (!group->isRaidGroup())
+        group->ConvertToRaid();
+    group->SendUpdate();
+    return ActivityOpResult::Done;
+}
+
+ActivityOpResult ActivityOperations::EnterPortal(ObjectGuid botGuid, uint32 triggerId)
+{
+    COA_ASSERT_WORLD_THREAD();
+    if (!Spend())
+        return ActivityOpResult::Deferred;
+    Player* const bot = ObjectAccessor::FindConnectedPlayer(botGuid);
+    auto const row = ActivityRegistry::Find(botGuid.GetCounter());
+    PlayerbotAI* const ai = bot ? GET_PLAYERBOT_AI(bot) : nullptr;
+    AreaTrigger const* const trigger = sObjectMgr->GetAreaTrigger(triggerId);
+    if (!IsBot(bot) || !sRandomPlayerbotMgr.IsRandomBot(bot) || !bot->IsInWorld() || !bot->IsAlive() ||
+        bot->IsInCombat() || bot->IsBeingTeleported() || bot->IsInFlight() || bot->GetVehicle() || bot->duel ||
+        !row || row->kind != ActivityKindId::PugRaid || !ai || row->epoch != ai->GetCoaEpoch() ||
+        !trigger || !sObjectMgr->GetAreaTriggerTeleport(triggerId) || !bot->IsInAreaTriggerRadius(trigger))
+        return ActivityOpResult::Refused;
+    WorldPacket packet(CMSG_AREATRIGGER, 4);
+    packet << triggerId;
+    bot->GetSession()->HandleAreaTriggerOpcode(packet);
+    return bot->IsBeingTeleported() ? ActivityOpResult::Done : ActivityOpResult::Refused;
+}
+
+ActivityOpResult ActivityOperations::GiveMasterLoot(ObjectGuid leaderGuid, ObjectGuid source, uint8 slot,
+                                                   ObjectGuid winnerGuid)
+{
+    COA_ASSERT_WORLD_THREAD();
+    if (!Spend())
+        return ActivityOpResult::Deferred;
+    Player* const leader = ObjectAccessor::FindConnectedPlayer(leaderGuid);
+    Player* const winner = ObjectAccessor::FindConnectedPlayer(winnerGuid);
+    Group* const group = leader ? leader->GetGroup() : nullptr;
+    if (!IsBot(leader) || !leader->IsInWorld() || !winner || !winner->IsInWorld() || !group ||
+        group->GetLootMethod() != MASTER_LOOT || group->GetMasterLooterGuid() != leaderGuid ||
+        group->GetLeaderGUID() != leaderGuid || !group->IsMember(winnerGuid) ||
+        leader->GetMap() != winner->GetMap())
+        return ActivityOpResult::Refused;
+    Creature* const corpse = leader->GetMap()->GetCreature(source);
+    if (!corpse || corpse->IsAlive() || !leader->IsWithinDistInMap(corpse, INTERACTION_DISTANCE) ||
+        slot >= corpse->loot.items.size() || corpse->loot.items[slot].is_looted)
+        return ActivityOpResult::Refused;
+    leader->SendLoot(source, LOOT_CORPSE);
+    if (leader->GetLootGUID() != source)
+        return ActivityOpResult::Refused;
+    WorldPacket packet(CMSG_LOOT_MASTER_GIVE, 17);
+    packet << source << slot << winnerGuid;
+    leader->GetSession()->HandleLootMasterGiveOpcode(packet);
+    bool const given = corpse->loot.items[slot].is_looted;
+    leader->GetSession()->DoLootRelease(source);
+    return given ? ActivityOpResult::Done : ActivityOpResult::Refused;
+}
+
 ActivityOpResult ActivityOperations::Teleport(ObjectGuid botGuid, ActivityPoint const& dest, bool dead)
 {
     COA_ASSERT_WORLD_THREAD();
@@ -560,29 +653,47 @@ ActivityOpResult ActivityOperations::Teleport(ObjectGuid botGuid, ActivityPoint 
 
 ActivityOpResult ActivityOperations::ApplyWarMode(ObjectGuid botGuid, uint32& prevRuleset)
 {
+    return ApplyRuleset(botGuid, ActivityThreshold::SPELL_WAR_MODE, prevRuleset);
+}
+
+ActivityOpResult ActivityOperations::ApplyRuleset(ObjectGuid botGuid, uint32 spellId, uint32& prevRuleset)
+{
     COA_ASSERT_WORLD_THREAD();
     using namespace ActivityThreshold;
     ++used;
     prevRuleset = 0;
-
     Player* const bot = ObjectAccessor::FindConnectedPlayer(botGuid);
     if (!bot || !bot->IsInWorld())
-        return Report("war mode", botGuid, ActivityOpResult::Gone);
-    if (!IsBot(bot) || bot->HasAura(SPELL_HIGH_RISK) || bot->HasAura(SPELL_MERCENARY))
-        return Report("war mode", botGuid, ActivityOpResult::Failed);
-
-    if (bot->HasAura(SPELL_WAR_MODE) && !bot->HasAura(SPELL_PVE))
-        return Report("war mode", botGuid, ActivityOpResult::Done);
-
-    prevRuleset = bot->HasAura(SPELL_PVE) ? SPELL_PVE : RULESET_NONE;
-    bot->RemoveAurasDueToSpell(SPELL_HIGH_RISK);
-    bot->RemoveAurasDueToSpell(SPELL_WAR_MODE);
-    bot->RemoveAurasDueToSpell(SPELL_PVE);
-    bot->RemoveAurasDueToSpell(SPELL_MERCENARY);
-    bot->CastSpell(bot, SPELL_WAR_MODE, true);
+        return ActivityOpResult::Gone;
+    if (!IsBot(bot) || !sRandomPlayerbotMgr.IsRandomBot(bot) || bot->HasAura(SPELL_MERCENARY) ||
+        (spellId != SPELL_WAR_MODE && spellId != SPELL_HIGH_RISK))
+        return ActivityOpResult::Failed;
+    uint32 const other = spellId == SPELL_WAR_MODE ? SPELL_HIGH_RISK : SPELL_WAR_MODE;
+    if (bot->HasAura(spellId) && !bot->HasAura(SPELL_PVE) && !bot->HasAura(other) && bot->IsPvP())
+        return ActivityOpResult::Done;
+    uint32 const previous = bot->HasAura(SPELL_HIGH_RISK) ? SPELL_HIGH_RISK :
+                            bot->HasAura(SPELL_WAR_MODE) ? SPELL_WAR_MODE :
+                            bot->HasAura(SPELL_PVE) ? SPELL_PVE : RULESET_NONE;
+    // High bit records a pre-existing PvP flag without changing legacy stored spell IDs.
+    prevRuleset = previous | (bot->IsPvP() ? 0x80000000u : 0u);
+    for (uint32 aura : {SPELL_HIGH_RISK, SPELL_WAR_MODE, SPELL_PVE, SPELL_MERCENARY})
+        bot->RemoveAurasDueToSpell(aura);
+    SpellCastResult const cast = bot->CastSpell(bot, spellId, true);
     bot->SetPlayerFlag(PLAYER_FLAGS_IN_PVP);
     bot->UpdatePvP(true, true);
-    return Report("war mode", botGuid, ActivityOpResult::Done);
+    bool const applied = bot->HasAura(spellId) && !bot->HasAura(other) && !bot->HasAura(SPELL_PVE) &&
+                         !bot->HasAura(SPELL_MERCENARY) && bot->IsPvP();
+    if (!applied)
+    {
+        SpellInfo const* const info = sSpellMgr->GetSpellInfo(spellId);
+        LOG_WARN(LOGGER, "ruleset application failed for bot {}: desired {}, cast result {}, explicit mask {}, "
+            "first targets {}/{}, desired aura {}, PvE {}, War {}, High-Risk {}, PvP {}",
+            bot->GetGUID().GetCounter(), spellId, uint32(cast), info ? info->GetExplicitTargetMask() : 0,
+            info ? info->Effects[0].TargetA.GetTarget() : 0, info ? info->Effects[0].TargetB.GetTarget() : 0,
+            bot->HasAura(spellId), bot->HasAura(SPELL_PVE), bot->HasAura(SPELL_WAR_MODE),
+            bot->HasAura(SPELL_HIGH_RISK), bot->IsPvP());
+    }
+    return applied ? ActivityOpResult::Done : ActivityOpResult::Failed;
 }
 
 ActivityOpResult ActivityOperations::RestoreRuleset(ObjectGuid botGuid, uint32 prevRuleset)
@@ -592,19 +703,30 @@ ActivityOpResult ActivityOperations::RestoreRuleset(ObjectGuid botGuid, uint32 p
     ++used;
     if (!prevRuleset)
         return ActivityOpResult::Done;
-
     Player* const bot = ObjectAccessor::FindConnectedPlayer(botGuid);
     if (!bot || !bot->IsInWorld())
-        return Report("restore ruleset", botGuid, ActivityOpResult::Gone);
+        return ActivityOpResult::Gone;
     if (!IsBot(bot))
-        return Report("restore ruleset", botGuid, ActivityOpResult::Failed);
-
-    bot->RemovePlayerFlag(PLAYER_FLAGS_IN_PVP);
-    bot->UpdatePvP(false);
-    bot->RemoveAurasDueToSpell(SPELL_WAR_MODE);
-    if (prevRuleset == SPELL_PVE)
-        bot->CastSpell(bot, SPELL_PVE, true);
-    return Report("restore ruleset", botGuid, ActivityOpResult::Done);
+        return ActivityOpResult::Failed;
+    uint32 const spell = prevRuleset & 0x7FFFFFFFu;
+    if (spell != RULESET_NONE && spell != SPELL_PVE && spell != SPELL_WAR_MODE && spell != SPELL_HIGH_RISK)
+        return ActivityOpResult::Failed;
+    for (uint32 aura : {SPELL_HIGH_RISK, SPELL_WAR_MODE, SPELL_PVE, SPELL_MERCENARY})
+        bot->RemoveAurasDueToSpell(aura);
+    if (spell != RULESET_NONE)
+        bot->CastSpell(bot, spell, true);
+    bool const pvp = (prevRuleset & 0x80000000u) || spell == SPELL_WAR_MODE || spell == SPELL_HIGH_RISK;
+    if (pvp)
+        bot->SetPlayerFlag(PLAYER_FLAGS_IN_PVP);
+    else
+        bot->RemovePlayerFlag(PLAYER_FLAGS_IN_PVP);
+    bot->UpdatePvP(pvp, true);
+    bool const restored = (spell == RULESET_NONE || bot->HasAura(spell)) && bot->IsPvP() == pvp &&
+        !bot->HasAura(SPELL_MERCENARY) &&
+        (spell == SPELL_PVE || !bot->HasAura(SPELL_PVE)) &&
+        (spell == SPELL_WAR_MODE || !bot->HasAura(SPELL_WAR_MODE)) &&
+        (spell == SPELL_HIGH_RISK || !bot->HasAura(SPELL_HIGH_RISK));
+    return restored ? ActivityOpResult::Done : ActivityOpResult::Failed;
 }
 
 ActivityOpResult ActivityOperations::Revive(ObjectGuid botGuid, ActivityPoint const* rally)
@@ -647,6 +769,16 @@ ActivityOpResult ActivityOperations::Leave(ObjectGuid groupGuid, ObjectGuid botG
     Player* const player = ObjectAccessor::FindConnectedPlayer(botGuid);
     if (player && !IsBot(player))
         return Report("leave", botGuid, ActivityOpResult::Failed);
+
+    if (group->GetLootMethod() == MASTER_LOOT && group->GetMasterLooterGuid() == botGuid)
+        for (Group::MemberSlot const& slot : group->GetMemberSlots())
+            if (Player* const member = ObjectAccessor::FindConnectedPlayer(slot.guid);
+                member && member->IsInWorld() && member->GetSession() && !member->GetSession()->IsBot())
+            {
+                group->SetMasterLooterGuid(member->GetGUID());
+                group->SendUpdate();
+                break;
+            }
 
     group->RemoveMember(botGuid);
     return Report("leave", botGuid, ActivityOpResult::Done);
@@ -694,6 +826,12 @@ ActivityOpResult ActivityOperations::Disband(ObjectGuid groupGuid)
         (leaderGoes || !ObjectAccessor::FindConnectedPlayer(group->GetLeaderGUID())))
     {
         group->ChangeLeader(firstReal->GetGUID());
+        group->SendUpdate();
+    }
+    if (firstReal && group->GetLootMethod() == MASTER_LOOT &&
+        std::find(bots.begin(), bots.end(), group->GetMasterLooterGuid()) != bots.end())
+    {
+        group->SetMasterLooterGuid(firstReal->GetGUID());
         group->SendUpdate();
     }
     for (ObjectGuid const& bot : bots)

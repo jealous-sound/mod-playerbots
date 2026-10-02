@@ -8,7 +8,12 @@
 #include "ActivityDirector.h"
 #include "ActivityKind.h"
 #include "ActivityPvePolicy.h"
+#include "ActivityCombat.h"
 #include "Escort.h"
+#include "LeaderScaler.h"
+#include "PlayerService.h"
+#include "FestivalVisit.h"
+#include "GoldRoll.h"
 #include "RareScout.h"
 #include "ActivityTypes.h"
 #include "BattleGroundTactics.h"
@@ -116,8 +121,13 @@ public:
             {"census", HandleActivityCensusCommand, SEC_GAMEMASTER, Console::Yes},
             {"join", HandleActivityJoinCommand, SEC_PLAYER, Console::No},
             {"escort", HandleActivityEscortCommand, SEC_PLAYER, Console::No},
+            {"service", HandleActivityServiceCommand, SEC_PLAYER, Console::No},
+            {"gamble", HandleActivityGoldCommand, SEC_PLAYER, Console::No},
+            {"bounty", HandleActivityBountyCommand, SEC_PLAYER, Console::No},
+            {"reserve", HandleActivityReserveCommand, SEC_PLAYER, Console::No},
             {"test", HandleActivityTestCommand, SEC_GAMEMASTER, Console::Yes},
             {"verify", HandleActivityVerifyCommand, SEC_GAMEMASTER, Console::Yes},
+            {"scalecheck", HandleActivityScaleCheckCommand, SEC_GAMEMASTER, Console::Yes},
         };
 
         static ChatCommandTable playerbotsCommandTable = {
@@ -635,6 +645,9 @@ public:
                     return SendActivityUsage(handler);
                 request.team = uint8(word == "alliance" ? TEAM_ALLIANCE : TEAM_HORDE);
             }
+            else if ((*kind == ActivityKindId::PlayerService || *kind == ActivityKindId::GoldRoll) &&
+                     request.target.empty())
+                request.target = word;
             else if (word.find_first_not_of("0123456789") == std::string::npos)
             {
                 // Digits alone are a level or a size, never a spot's name.
@@ -752,6 +765,66 @@ public:
         return SendBrainLines(handler, ActivityDirector::Instance().RequestEscort(player, target));
     }
 
+    static bool HandleActivityServiceCommand(ChatHandler* handler, char const* args)
+    {
+        auto const words = BrainWords(args);
+        Player* const player = handler->GetSession()->GetPlayer();
+        if (words.empty() || words[0] == "list")
+        {
+            uint32 recipe = 0;
+            if (words.size() > 2 || (words.size() == 2 && !ParseActivityNumber(words[1], 1, ACTIVITY_MAX_ID, recipe)))
+                return SendActivityUsage(handler);
+            return SendBrainLines(handler, ActivityDirector::Instance().ServiceOffers(player, recipe));
+        }
+        if (words.size() != 1)
+            return SendActivityUsage(handler);
+        if (words[0] == "stop")
+            return SendBrainLines(handler, ActivityDirector::Instance().CancelOwned(player, ActivityKindId::PlayerService));
+        return SendBrainLines(handler, ActivityDirector::Instance().RequestOwned(player, ActivityKindId::PlayerService,
+                                                                                words[0]));
+    }
+
+    static bool HandleActivityGoldCommand(ChatHandler* handler, char const* args)
+    {
+        auto const words = BrainWords(args);
+        Player* const player = handler->GetSession()->GetPlayer();
+        uint32 id = 0;
+        if (words.size() == 2 && words[0] == "accept" && ParseActivityNumber(words[1], 1, ACTIVITY_MAX_ID, id))
+        {
+            SendBrainLine(handler, ActivityDirector::Instance().AcceptGoldRoll(player, id));
+            return true;
+        }
+        if (words.size() != 1)
+            return SendActivityUsage(handler);
+        if (words[0] == "stop")
+            return SendBrainLines(handler, ActivityDirector::Instance().CancelOwned(player, ActivityKindId::GoldRoll));
+        return SendBrainLines(handler, ActivityDirector::Instance().RequestOwned(player, ActivityKindId::GoldRoll,
+                                                                                words[0]));
+    }
+
+    static bool HandleActivityBountyCommand(ChatHandler* handler, char const* args)
+    {
+        auto const words = BrainWords(args);
+        if (words.size() != 1)
+            return SendActivityUsage(handler);
+        Player* const player = handler->GetSession()->GetPlayer();
+        if (words[0] == "stop")
+            return SendBrainLines(handler, ActivityDirector::Instance().CancelOwned(player, ActivityKindId::Bounty));
+        return SendBrainLines(handler, ActivityDirector::Instance().RequestOwned(player, ActivityKindId::Bounty,
+                                                                                words[0]));
+    }
+
+    static bool HandleActivityReserveCommand(ChatHandler* handler, char const* args)
+    {
+        auto const words = BrainWords(args);
+        uint32 id = 0, item = 0;
+        if (words.size() != 2 || !ParseActivityNumber(words[0], 1, ACTIVITY_MAX_ID, id) ||
+            !ParseActivityNumber(words[1], 0, ACTIVITY_MAX_ID, item))
+            return SendActivityUsage(handler);
+        SendBrainLine(handler, ActivityDirector::Instance().ReserveRaid(handler->GetSession()->GetPlayer(), id, item));
+        return true;
+    }
+
     static bool HandleActivityTestCommand(ChatHandler* handler, char const* args)
     {
         if (!BrainWords(args).empty())
@@ -766,7 +839,21 @@ public:
                                                  : "FAIL M7 escort policy");
         lines.emplace_back(RareScoutRules::SelfTest() ? "PASS M7 rare template, observation and deadline policy"
                                                     : "FAIL M7 rare policy");
+        auto const census = ActivityCensus::SelfTest();
+        lines.insert(lines.end(), census.begin(), census.end());
+        auto const scaler = LeaderScalerRules::SelfTest();
+        lines.insert(lines.end(), scaler.begin(), scaler.end());
+        lines.emplace_back(ActivityCombatRules::SelfTest() ? "PASS current native combat group and patrol policy"
+                                                         : "FAIL combat group/patrol policy");
+        lines.emplace_back(PlayerServiceCatalog::SelfTest() ? "PASS service catalogue/parser policy" : "FAIL service policy");
+        lines.emplace_back(FestivalVisitActions::SelfTest() ? "PASS holiday interaction whitelist" : "FAIL holiday policy");
+        lines.emplace_back(GoldRollRules::SelfTest() ? "PASS exact native gold settlement policy" : "FAIL gold policy");
         return SendBrainLines(handler, lines);
+    }
+
+    static bool HandleActivityScaleCheckCommand(ChatHandler* handler, char const* /*args*/)
+    {
+        return SendBrainLines(handler, LeaderScaler::VerifyRestored());
     }
 
     static bool HandleActivityVerifyCommand(ChatHandler* handler, char const* args)
@@ -808,6 +895,20 @@ public:
             case ActivityKindId::Loiter:
             case ActivityKindId::Escort:
             case ActivityKindId::RareScout:
+            case ActivityKindId::LeaderEncounter:
+            case ActivityKindId::Frontline:
+            case ActivityKindId::TownDefense:
+            case ActivityKindId::PugRaid:
+            case ActivityKindId::WorldBoss:
+            case ActivityKindId::PlayerService:
+            case ActivityKindId::FestivalVisit:
+            case ActivityKindId::GoldRoll:
+            case ActivityKindId::PvpGang:
+            case ActivityKindId::Bounty:
+            case ActivityKindId::RareCamp:
+            case ActivityKindId::CapitalRaid:
+            case ActivityKindId::LieutenantRaid:
+            case ActivityKindId::HubDefense:
                 return true;
             default:
                 return false;
@@ -819,7 +920,10 @@ public:
         SendBrainLine(handler, "Usage: .playerbots activity list|info <id>|start duel [spot] [alliance|horde] [level] "
                                "[size]|start gang|dungeon|gurubashi [alliance|horde] [level] [size]|start "
                                "hunt|raid|party|loiter|rare [target] [alliance|horde] [level] [size]|stop <id>|all|pause|"
-                               "resume|reload|census [hours]|join [id]|escort <destination>|list|stop|test|verify <id>");
+                               "resume|reload|census [hours]|join [id]|escort <destination>|list|stop|service list [recipe]|"
+                               "service <recipe[:bot]>|stop|gamble <bot:stake-copper>|accept <id>|stop|bounty <name>|stop|"
+                               "reserve <raid-id> <item-id-or-0>|test|verify <id>. Advanced kinds: "
+                               "leader|capital|lieutenant|frontline|defense|pug|boss|festival|pvpgang|camp|hubdefense");
         return true;
     }
 

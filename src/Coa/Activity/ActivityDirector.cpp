@@ -40,6 +40,17 @@
 #include "Random.h"
 #include "RandomPlayerbotMgr.h"
 #include "RareScout.h"
+#include "LeaderEncounter.h"
+#include "LeaderScaler.h"
+#include "Frontline.h"
+#include "TownDefense.h"
+#include "PugRaid.h"
+#include "WorldBoss.h"
+#include "PlayerService.h"
+#include "FestivalVisit.h"
+#include "GoldRoll.h"
+#include "ActivityCombat.h"
+#include "ActivityPvpPolicy.h"
 #include "ScriptMgr.h"
 #include "SharedDefines.h"
 #include "Spell.h"
@@ -136,6 +147,34 @@ char const* KindKey(ActivityKindId kind)
             return "Escort";
         case ActivityKindId::RareScout:
             return "RareScout";
+        case ActivityKindId::LeaderEncounter:
+            return "Leader";
+        case ActivityKindId::Frontline:
+            return "Frontline";
+        case ActivityKindId::TownDefense:
+            return "TownDefense";
+        case ActivityKindId::PugRaid:
+            return "PugRaid";
+        case ActivityKindId::WorldBoss:
+            return "WorldBoss";
+        case ActivityKindId::PlayerService:
+            return "Service";
+        case ActivityKindId::FestivalVisit:
+            return "Festival";
+        case ActivityKindId::GoldRoll:
+            return "GoldRoll";
+        case ActivityKindId::PvpGang:
+            return "PvpGang";
+        case ActivityKindId::Bounty:
+            return "Bounty";
+        case ActivityKindId::RareCamp:
+            return "RareCamp";
+        case ActivityKindId::HubDefense:
+            return "HubDefense";
+        case ActivityKindId::CapitalRaid:
+            return "Capital";
+        case ActivityKindId::LieutenantRaid:
+            return "Lieutenant";
         default:
             return "None";
     }
@@ -237,8 +276,12 @@ ActivityKind* ActivityDirector::KindOf(ActivityKindId kind) const
 
 ActivityServices ActivityDirector::Services(uint64 nowMs, uint32 nowUnix)
 {
-    return ActivityServices{*config,     ops,     candidates, ActivityDuelCooldowns::Instance(), realPlayers,
-                            nowMs,       nowUnix, organizer,  census};
+    auto const alliance = census.P10ExactLevel60(0, nowUnix, 168);
+    auto const horde = census.P10ExactLevel60(1, nowUnix, 168);
+    return ActivityServices{*config, ops, candidates, ActivityDuelCooldowns::Instance(), realPlayers,
+                            nowMs, nowUnix, organizer, census,
+                            config->leaderSpikeVerified && CleanRuns(ActivityKindId::LeaderEncounter) > 0,
+                            alliance && horde ? std::min(*alliance, *horde) : 0};
 }
 
 // --- Lifecycle ---
@@ -249,6 +292,7 @@ void ActivityDirector::OnStartup()
     if (stopped)
         return;
     config = ActivityConfig::Current();
+    LeaderScaler::RestoreAll();
     if (!config->enable)
     {
         // Activities off: only the War Mode an earlier run could not take back (a crash, a stop while bots were
@@ -265,6 +309,13 @@ void ActivityDirector::OnConfigReload()
     if (stopped)
         return;
     config = ActivityConfig::Current();
+    LeaderScaler::RestoreAll();
+    auto const reloadOwnedTarget = [](ActivityKindId kind)
+    {
+        return kind == ActivityKindId::LeaderEncounter || kind == ActivityKindId::CapitalRaid ||
+               kind == ActivityKindId::LieutenantRaid || kind == ActivityKindId::RareScout ||
+               kind == ActivityKindId::RareCamp;
+    };
     if (!config->enable)
     {
         if (Running())
@@ -282,10 +333,10 @@ void ActivityDirector::OnConfigReload()
     census.SetRaidMinLevel(uint8(config->raidMinLevel));
     std::vector<uint32> disabledM7;
     for (auto& [id, activity] : activities)
-        if (!config->KindEnabled(activity->kind))
+        if (!config->KindEnabled(activity->kind) || reloadOwnedTarget(activity->kind))
         {
             activity->Finish(ActivityOutcome::Disabled, std::string(ActivityKindName(activity->kind)) + " disabled");
-            if (activity->kind == ActivityKindId::Escort || activity->kind == ActivityKindId::RareScout)
+            if (uint8(activity->kind) >= uint8(ActivityKindId::Escort))
                 disabledM7.push_back(id);
         }
     if (!disabledM7.empty())
@@ -299,7 +350,7 @@ void ActivityDirector::OnConfigReload()
     for (auto it = plans.begin(); it != plans.end();)
     {
         ActivityKindId const kind = it->plan.kind;
-        if ((kind == ActivityKindId::Escort || kind == ActivityKindId::RareScout) && !config->KindEnabled(kind))
+        if (!config->KindEnabled(kind) || reloadOwnedTarget(kind))
         {
             if (it->jobId && !it->answered)
                 BrainService::Current()->Cancel(it->jobId);
@@ -370,6 +421,35 @@ void ActivityDirector::StartRunning(bool fromReload)
         kinds[std::size_t(ActivityKindId::Escort)] = CreateEscortKind();
     if (!kinds[std::size_t(ActivityKindId::RareScout)])
         kinds[std::size_t(ActivityKindId::RareScout)] = CreateRareScoutKind();
+    if (!kinds[std::size_t(ActivityKindId::LeaderEncounter)])
+        kinds[std::size_t(ActivityKindId::LeaderEncounter)] = CreateLeaderEncounterKind();
+    if (!kinds[std::size_t(ActivityKindId::Frontline)])
+        kinds[std::size_t(ActivityKindId::Frontline)] = CreateFrontlineKind();
+    if (!kinds[std::size_t(ActivityKindId::TownDefense)])
+        kinds[std::size_t(ActivityKindId::TownDefense)] = CreateTownDefenseKind();
+    if (!kinds[std::size_t(ActivityKindId::PugRaid)])
+        kinds[std::size_t(ActivityKindId::PugRaid)] = CreatePugRaidKind();
+    if (!kinds[std::size_t(ActivityKindId::WorldBoss)])
+        kinds[std::size_t(ActivityKindId::WorldBoss)] = CreateWorldBossKind();
+    if (!kinds[std::size_t(ActivityKindId::PlayerService)])
+        kinds[std::size_t(ActivityKindId::PlayerService)] = CreatePlayerServiceKind();
+    if (!kinds[std::size_t(ActivityKindId::FestivalVisit)])
+        kinds[std::size_t(ActivityKindId::FestivalVisit)] = CreateFestivalVisitKind();
+    if (!kinds[std::size_t(ActivityKindId::GoldRoll)])
+        kinds[std::size_t(ActivityKindId::GoldRoll)] = CreateGoldRollKind();
+    if (!kinds[std::size_t(ActivityKindId::PvpGang)])
+        kinds[std::size_t(ActivityKindId::PvpGang)] = CreatePvpGangKind();
+    if (!kinds[std::size_t(ActivityKindId::Bounty)])
+        kinds[std::size_t(ActivityKindId::Bounty)] = CreateBountyKind();
+    if (!kinds[std::size_t(ActivityKindId::RareCamp)])
+        kinds[std::size_t(ActivityKindId::RareCamp)] = CreateRareCampKind();
+    if (!kinds[std::size_t(ActivityKindId::HubDefense)])
+        kinds[std::size_t(ActivityKindId::HubDefense)] = CreateHubDefenseKind();
+    if (!kinds[std::size_t(ActivityKindId::CapitalRaid)])
+        kinds[std::size_t(ActivityKindId::CapitalRaid)] = CreateCapitalRaidKind();
+    if (!kinds[std::size_t(ActivityKindId::LieutenantRaid)])
+        kinds[std::size_t(ActivityKindId::LieutenantRaid)] = CreateLieutenantRaidKind();
+
     census.SetRaidMinLevel(uint8(config->raidMinLevel));
     if (!organizerSink)
         organizerSink = std::make_shared<BrainSink>(ORGANIZER_SINK_CAPACITY);
@@ -462,6 +542,7 @@ void ActivityDirector::StopRunning(ActivityOutcome outcome)
 
 void ActivityDirector::Shutdown()
 {
+    LeaderScaler::RestoreAll();
     COA_ASSERT_WORLD_THREAD();
     if (stopped)
         return;
@@ -604,6 +685,20 @@ void ActivityDirector::Tick(uint64 nowMs, uint32 nowUnix)
         store.Retention(nowUnix, config->logKeepDays, nextId);
         nextRetentionMs = nowMs + ActivityThreshold::RETENTION_INTERVAL_MS;
     }
+    auto defenses = std::move(linkedDefenses);
+    linkedDefenses.clear();
+    for (auto const& [frontlineId, target] : defenses)
+        if (activities.count(frontlineId) && config->hubDefenseEnable)
+        {
+            ActivityStartRequest defense;
+            defense.kind = ActivityKindId::HubDefense;
+            defense.target = target;
+            defense.gm = activities.at(frontlineId)->gm;
+            defense.team = uint8(1 - activities.at(frontlineId)->team);
+            defense.capacity = Capacity();
+            std::string why;
+            BeginPlan(defense, false, why);
+        }
     if (nowMs >= nextPruneMs)
     {
         ActivityDuelCooldowns::Instance().Prune(nowMs, BrainClock::UtcDayNow());
@@ -923,9 +1018,12 @@ void ActivityDirector::MemberPass(Activity& activity, uint64 nowMs, uint32 nowUn
         // Revive rule (the manager's own revival skips participants).
         if (!player->IsAlive())
         {
-            if (activity.kind == ActivityKindId::Escort || activity.kind == ActivityKindId::RareScout)
+            if (uint8(activity.kind) >= uint8(ActivityKindId::Escort))
             {
-                activity.Finish(ActivityOutcome::TooFew, "a protected activity bot died");
+                if (activity.kind == ActivityKindId::Escort || activity.kind == ActivityKindId::RareScout ||
+                    activity.kind == ActivityKindId::PlayerService || activity.kind == ActivityKindId::FestivalVisit ||
+                    activity.kind == ActivityKindId::GoldRoll)
+                    activity.Finish(ActivityOutcome::TooFew, "a protected activity bot died");
                 continue;  // M7 bots never receive the director's resurrection or recovery teleport
             }
             if (!member.deadSinceMs)
@@ -968,7 +1066,7 @@ void ActivityDirector::MemberPass(Activity& activity, uint64 nowMs, uint32 nowUn
 
 void ActivityDirector::Travel(Activity& activity, ActivityMember& member, Player* bot, Player* leader, uint64 nowMs)
 {
-    if (activity.kind == ActivityKindId::Escort || activity.kind == ActivityKindId::RareScout)
+    if (uint8(activity.kind) >= uint8(ActivityKindId::Escort))
     {
         member.stragglerSinceMs = 0;
         return;  // M7 movement belongs to its map-thread actions; no recovery teleport under any phase
@@ -1044,7 +1142,7 @@ void ActivityDirector::Travel(Activity& activity, ActivityMember& member, Player
 
 void ActivityDirector::GroupPass(Activity& activity, Player* leader, uint64 nowMs)
 {
-    if (activity.phase != ActivityPhase::Marching || activity.kind == ActivityKindId::Escort)
+    if (activity.phase != ActivityPhase::Marching || uint8(activity.kind) >= uint8(ActivityKindId::Escort))
     {
         // Outside Marching the kind owns HOLD; the progress watch starts over at the next march.
         activity.leaderBestMs = 0;
@@ -1158,7 +1256,9 @@ void ActivityDirector::Invitations(Activity& activity, Player* leader, uint64 no
 
 void ActivityDirector::WarMode(Activity& activity, uint32 nowUnix)
 {
-    if (!activity.warMode || activity.phase < ActivityPhase::Gathering)
+    uint32 const desired = activity.pvpRuleset ? activity.pvpRuleset :
+                           activity.warMode ? ActivityThreshold::SPELL_WAR_MODE : 0;
+    if (!desired || activity.phase < ActivityPhase::Gathering)
         return;
     for (std::size_t i = 0; i < activity.members.size(); ++i)
     {
@@ -1166,7 +1266,7 @@ void ActivityDirector::WarMode(Activity& activity, uint32 nowUnix)
         if (!member.isBot || !member.In() || member.rulesetApplied)
             continue;
         uint32 prev = 0;
-        ActivityOpResult const result = ops.ApplyWarMode(member.guid, prev);
+        ActivityOpResult const result = ops.ApplyRuleset(member.guid, desired, prev);
         if (result == ActivityOpResult::Done)
         {
             member.rulesetApplied = true;
@@ -1175,8 +1275,16 @@ void ActivityDirector::WarMode(Activity& activity, uint32 nowUnix)
                 ActivityStore::Instance().SetPrevRuleset(activity.id, member.guid.GetCounter(), prev);
         }
         else if (result == ActivityOpResult::Failed)
-            // Never a High-Risk or Mercenary bot in a War Mode activity.
+        {
+            if (prev)
+            {
+                member.rulesetApplied = true;
+                member.prevRuleset = prev;
+                ActivityStore::Instance().SetPrevRuleset(activity.id, member.guid.GetCounter(), prev);
+            }
             activity.MarkLeft(member.guid, ActivityLeaveReason::Kicked, nowUnix);
+            dirty = true;
+        }
     }
 }
 
@@ -1187,7 +1295,7 @@ void ActivityDirector::RestoreRuleset(ActivityMember& member)
     ActivityOpResult const result = ops.RestoreRuleset(member.guid, member.prevRuleset);
     if (result == ActivityOpResult::Done)
         ActivityStore::Instance().MarkRestored(member.guid.GetCounter());
-    else if (result == ActivityOpResult::Gone)
+    else
     {
         pendingRestore[member.guid.GetCounter()] = member.prevRuleset;
         SyncRestoring();
@@ -1213,10 +1321,10 @@ void ActivityDirector::HandleLeaves(Activity& activity, uint32 nowUnix)
 
         if (member.isBot)
         {
+            dirty = true;
+            Publish();  // Remove both PvE and PvP ownership before restoring the previous ruleset.
             if (ActivityPvePolicy::Protected(activity.kind))
             {
-                dirty = true;
-                Publish();  // the dropped member is no longer protected before restoring its owned creatures
                 ReleaseProtectedMember(activity.kind, member);
             }
             RestoreRuleset(member);
@@ -1310,6 +1418,8 @@ void ActivityDirector::EndActivity(Activity& activityRef, ActivityOutcome outcom
         ops.Disband(activity.groupGuid);
 
     std::string const summary = activity.summary.empty() ? ActivityOutcomeName(outcome) : activity.summary;
+    if (outcome == ActivityOutcome::Success && cleanRuns[std::size_t(activity.kind)] < 1000000)
+        ++cleanRuns[std::size_t(activity.kind)];
     store.EndActivity(activity.id, outcome, nowUnix, bots, players, summary);
     std::size_t const index = std::size_t(outcome);
     if (index < endedCount.size())
@@ -1351,6 +1461,7 @@ void ActivityDirector::Publish()
             view.radius = activity->radius;
             view.objective = activity->objective;
             view.ringDuelEndMs = activity->ringDuelEndMs;
+            view.pvpRuleset = activity->pvpRuleset;
             view.flags = activity->viewFlags;
             view.style = activity->viewStyle;
             view.emote = activity->closingEmote;
@@ -1450,20 +1561,24 @@ void ActivityDirector::PruneEscortRequests(uint64 nowMs)
     }
 }
 
-bool ActivityDirector::RareTargetBusy(std::string const& target, uint8 team) const
+bool ActivityDirector::RareTargetBusy(std::string const& target, uint8 team, ActivityKindId kind) const
 {
-    ActivityHuntTarget const* const chosen = config->FindRareScoutTarget(target);
-    auto const same = [&](std::string const& otherName, uint8 otherTeam)
+    ActivityHuntTarget const* const chosen = kind == ActivityKindId::RareCamp ? config->FindRareCampTarget(target) :
+                                           config->FindRareScoutTarget(target);
+    auto const same = [&](std::string const& otherName, uint8 otherTeam, ActivityKindId otherKind)
     {
-        ActivityHuntTarget const* const other = config->FindRareScoutTarget(otherName);
+        ActivityHuntTarget const* const other = otherKind == ActivityKindId::RareCamp ? config->FindRareCampTarget(otherName) :
+                                          config->FindRareScoutTarget(otherName);
         return ActivityRequestRules::SameRareTarget(target, team, otherName, otherTeam,
                                                     chosen ? chosen->spawnId : 0, other ? other->spawnId : 0);
     };
     for (auto const& [id, activity] : activities)
-        if (activity->kind == ActivityKindId::RareScout && same(activity->target, activity->team))
+        if ((activity->kind == ActivityKindId::RareScout || activity->kind == ActivityKindId::RareCamp) &&
+            same(activity->target, activity->team, activity->kind))
             return true;
     for (PendingPlan const& pending : plans)
-        if (pending.plan.kind == ActivityKindId::RareScout && same(pending.plan.target, pending.plan.team))
+        if ((pending.plan.kind == ActivityKindId::RareScout || pending.plan.kind == ActivityKindId::RareCamp) &&
+            same(pending.plan.target, pending.plan.team, pending.plan.kind))
             return true;
     return false;
 }
@@ -1710,6 +1825,15 @@ bool ActivityDirector::BeginPlan(ActivityStartRequest const& request, bool askBr
         why = "unknown kind";
         return false;
     }
+    uint32 pendingCount = 0;
+    for (PendingPlan const& plan : plans)
+        pendingCount += plan.plan.kind == request.kind ? 1 : 0;
+    if (!config->KindEnabled(request.kind) || LiveCount(request.kind) + pendingCount >= config->KindMax(request.kind) ||
+        activities.size() + plans.size() >= config->maxConcurrent)
+    {
+        why = "activity disabled or concurrency limit reached";
+        return false;
+    }
 
     uint64 const nowMs = CoaTime::NowMs();
     uint32 const nowUnix = uint32(time(nullptr));
@@ -1727,7 +1851,8 @@ bool ActivityDirector::BeginPlan(ActivityStartRequest const& request, bool askBr
     ActivityPlan& plan = pending.plan;
     plan.kind = request.kind;
     plan.gm = request.gm;
-    if (plan.kind == ActivityKindId::RareScout && RareTargetBusy(plan.target, plan.team))
+    if ((plan.kind == ActivityKindId::RareScout || plan.kind == ActivityKindId::RareCamp) &&
+        RareTargetBusy(plan.target, plan.team, plan.kind))
     {
         why = "that rare already has a scout or a pending scout plan";
         return false;
@@ -1825,9 +1950,10 @@ uint32 ActivityDirector::ResolvePlan(PendingPlan& pending, uint64 nowMs, uint32 
     ActivityKind* const kind = KindOf(plan.kind);
     if (!kind || !config->KindEnabled(plan.kind))
         return 0;
-    if (!plan.gm && (LiveCount(plan.kind) >= config->KindMax(plan.kind) || activities.size() >= config->maxConcurrent))
+    if (LiveCount(plan.kind) >= config->KindMax(plan.kind) || activities.size() >= config->maxConcurrent)
         return 0;
-    if (plan.kind == ActivityKindId::RareScout && RareTargetBusy(plan.target, plan.team))
+    if ((plan.kind == ActivityKindId::RareScout || plan.kind == ActivityKindId::RareCamp) &&
+        RareTargetBusy(plan.target, plan.team, plan.kind))
         return 0;
 
     // The dice for everyone the brain did not answer for.
@@ -1870,6 +1996,8 @@ uint32 ActivityDirector::ResolvePlan(PendingPlan& pending, uint64 nowMs, uint32 
     for (int8 const decision : plan.decisions)
         accepted += decision == 1 ? 1 : 0;
     uint32 const capacity = Capacity();
+    if (capacity < plan.needed)
+        return 0;
     for (std::size_t i = plan.decisions.size(); i-- > 0 && accepted > capacity;)
     {
         if (plan.decisions[i] != 1 || (plan.leaderFixed && i == 0))
@@ -1898,7 +2026,7 @@ uint32 ActivityDirector::ResolvePlan(PendingPlan& pending, uint64 nowMs, uint32 
         }
     }
 
-    if (ActivityPvePolicy::Protected(activity->kind))
+    if (ActivityPvePolicy::Protected(activity->kind) && !activity->pvpRuleset)
         for (ActivityMember const& member : activity->members)
             if (member.isBot && member.In())
             {
@@ -1920,6 +2048,12 @@ uint32 ActivityDirector::ResolvePlan(PendingPlan& pending, uint64 nowMs, uint32 
              TeamName(activity->team), uint32(activity->minLevel), uint32(activity->maxLevel), activity->BotsIn(),
              activity->target);
     activities.emplace(id, std::move(activity));
+    if ((plan.kind == ActivityKindId::PlayerService || plan.kind == ActivityKindId::GoldRoll) && !plan.requester.IsEmpty())
+        ownedCooldownUntilMs[{plan.kind, plan.requester.GetCounter()}] = nowMs + uint64(
+            plan.kind == ActivityKindId::PlayerService ? config->servicePlayerCooldownMinutes :
+                                                       config->goldRollPlayerCooldownMinutes) * 60000;
+    if (plan.kind == ActivityKindId::Frontline && config->frontlineDefenders && config->hubDefenseEnable)
+        linkedDefenses.emplace_back(id, plan.target);
     if (plan.kind == ActivityKindId::Escort && !plan.requester.IsEmpty())
         escortCooldownUntilMs[plan.requester.GetCounter()] =
             nowMs + uint64(config->escortPlayerCooldownMinutes) * MINUTE * IN_MILLISECONDS;
@@ -2159,6 +2293,8 @@ std::vector<std::string> ActivityDirector::Start(ActivityStartRequest request, P
     COA_ASSERT_WORLD_THREAD();
     // An escort always belongs to its requesting player. A GM uses the same caps, cooldown and duplicate checks;
     // the console cannot invent an owner or start a GM-exempt escort by forcing team/level/size.
+    if (request.kind == ActivityKindId::PlayerService || request.kind == ActivityKindId::GoldRoll)
+        return RequestOwned(gmPlayer, request.kind, std::move(request.target));
     if (request.kind == ActivityKindId::Escort)
         return RequestEscort(gmPlayer, std::move(request.target));
     if (!Running())
@@ -2623,4 +2759,184 @@ bool ActivityDirector::JoinFromChat(ActivityJoinRequest const& request, uint64 n
         LOG_DEBUG(LOGGER, "activity chat join: answer to player {} not whispered ({})", request.player.GetCounter(),
                   ActivityOpResultName(result));
     return true;
+}
+
+uint32 ActivityDirector::CleanRuns(ActivityKindId kind) const
+{
+    COA_ASSERT_WORLD_THREAD();
+    if (kind == ActivityKindId::TownDefense)
+        return cleanWaves;
+    return std::size_t(kind) < cleanRuns.size() ? cleanRuns[std::size_t(kind)] : 0;
+}
+
+void ActivityDirector::RecordCleanWave()
+{
+    COA_ASSERT_WORLD_THREAD();
+    if (cleanWaves < 1000000)
+        ++cleanWaves;
+}
+
+std::vector<std::string> ActivityDirector::RequestOwned(Player* player, ActivityKindId kind, std::string target)
+{
+    COA_ASSERT_WORLD_THREAD();
+    if (kind != ActivityKindId::PlayerService && kind != ActivityKindId::GoldRoll && kind != ActivityKindId::Bounty)
+        return {"Unsupported player request."};
+    config = ActivityConfig::Current();
+    if (!Running() || !config->enable || !config->KindEnabled(kind))
+        return {ActivityWorld::Line("coa_act_request_off", "This activity is currently unavailable.")};
+    if (!player || !player->GetSession() || player->GetSession()->IsBot() || !player->IsInWorld() ||
+        player->IsDuringRemoveFromWorld())
+        return {ActivityWorld::Line("coa_act_request_player", "An online player must make this request.")};
+    uint64 const nowMs = CoaTime::NowMs();
+    uint32 const nowUnix = uint32(time(nullptr));
+    auto const owner = std::make_pair(kind, player->GetGUID().GetCounter());
+    for (auto it = ownedRequestAtMs.begin(); it != ownedRequestAtMs.end();)
+        if (nowMs >= it->second + 60000)
+            it = ownedRequestAtMs.erase(it);
+        else
+            ++it;
+    for (auto it = ownedCooldownUntilMs.begin(); it != ownedCooldownUntilMs.end();)
+        if (nowMs >= it->second)
+            it = ownedCooldownUntilMs.erase(it);
+        else
+            ++it;
+    auto const last = ownedRequestAtMs.find(owner);
+    if (last != ownedRequestAtMs.end() && ActivityRequestRules::RequestThrottled(last->second, nowMs))
+        return {ActivityWorld::Line("coa_act_request_gap", "Please wait five seconds before requesting again.")};
+    if (last == ownedRequestAtMs.end() && ownedRequestAtMs.size() >= 256)
+        return {ActivityWorld::Line("coa_act_request_busy", "All activity places are currently occupied.")};
+    ownedRequestAtMs[owner] = nowMs;
+    auto const cooldown = ownedCooldownUntilMs.find(owner);
+    if (cooldown != ownedCooldownUntilMs.end() && nowMs < cooldown->second)
+        return {ActivityWorld::Line("coa_act_request_cooldown", "You must wait before requesting this activity again.")};
+    uint32 pending = 0;
+    for (auto const& [id, activity] : activities)
+        if (activity->kind == kind)
+        {
+            if (activity->requester == player->GetGUID())
+                return {ActivityWorld::Line("coa_act_request_owned", "You already have this activity; cancel it first.")};
+        }
+    for (auto const& plan : plans)
+        if (plan.plan.kind == kind)
+        {
+            ++pending;
+            if (plan.plan.requester == player->GetGUID())
+                return {ActivityWorld::Line("coa_act_request_owned", "You already have this activity; cancel it first.")};
+        }
+    if (LiveCount(kind) + pending >= config->KindMax(kind) || activities.size() + plans.size() >= config->maxConcurrent ||
+        ownedCooldownUntilMs.size() >= 4096)
+        return {ActivityWorld::Line("coa_act_request_busy", "All activity places are currently occupied.")};
+    CollectRealPlayers();
+    ops.BeginTick(config->maxOpsPerTick, &realPlayers);
+    organizer.BeginTick(config.get(), organizerSink, nowMs);
+    RebuildHeld();
+    candidates.BeginTick(nowMs, &held, &botCooldownUntilMs);
+    LoadGuard(nowMs);
+    if (suspended || Capacity() < MinBots(kind))
+        return {ActivityWorld::Line("coa_act_request_busy", "All activity places are currently occupied.")};
+    ActivityStartRequest request;
+    request.kind = kind;
+    request.nearPlayer = player;
+    request.target = std::move(target);
+    request.team = uint8(player->GetTeamId());
+    request.capacity = Capacity();
+    std::string why;
+    if (!BeginPlan(request, false, why))
+    {
+        RebuildHeld();
+        return {ActivityWorld::Line("coa_act_request_no", "No suitable bot can start this request here.")};
+    }
+    PendingPlan plan = std::move(plans.back());
+    plans.pop_back();
+    dirty = true;
+    uint32 const id = ResolvePlan(plan, nowMs, nowUnix);
+    RebuildHeld();
+    Publish();
+    if (!id)
+        return {ActivityWorld::Line("coa_act_request_no", "No suitable bot can start this request here.")};
+    return {ActivityWorld::Line("coa_act_request_started", "Your activity has started: #%id.",
+                                {{"%id", std::to_string(id)}})};
+}
+
+std::vector<std::string> ActivityDirector::CancelOwned(Player* player, ActivityKindId kind)
+{
+    COA_ASSERT_WORLD_THREAD();
+    if (!player || !player->GetSession() || player->GetSession()->IsBot())
+        return {ActivityWorld::Line("coa_act_request_none", "You have no such activity to cancel.")};
+    config = ActivityConfig::Current();
+    CollectRealPlayers();
+    ops.BeginTick(config->maxOpsPerTick, &realPlayers);
+    organizer.BeginTick(config.get(), organizerSink, CoaTime::NowMs());
+    bool found = false;
+    for (auto it = plans.begin(); it != plans.end();)
+        if (it->plan.kind == kind && it->plan.requester == player->GetGUID())
+        {
+            if (it->jobId && !it->answered)
+                BrainService::Current()->Cancel(it->jobId);
+            it = plans.erase(it);
+            found = true;
+        }
+        else
+            ++it;
+    std::vector<uint32> owned;
+    for (auto const& [id, activity] : activities)
+        if (activity->kind == kind && activity->requester == player->GetGUID())
+            owned.push_back(id);
+    for (uint32 id : owned)
+    {
+        EndActivity(*activities.at(id), ActivityOutcome::Stopped, uint32(time(nullptr)));
+        found = true;
+    }
+    if (found)
+    {
+        dirty = true;
+        RebuildHeld();
+        Publish();
+    }
+    return {found ? ActivityWorld::Line("coa_act_request_cancelled", "Your activity has ended.") :
+                    ActivityWorld::Line("coa_act_request_none", "You have no such activity to cancel.")};
+}
+
+std::vector<std::string> ActivityDirector::ServiceOffers(Player* player, uint32 recipeSpell)
+{
+    COA_ASSERT_WORLD_THREAD();
+    config = ActivityConfig::Current();
+    if (!Running() || !config->serviceEnable || !player || !player->GetSession() || player->GetSession()->IsBot())
+        return {ActivityWorld::Line("coa_act_service_off", "Player services are currently unavailable.")};
+    uint64 const nowMs = CoaTime::NowMs();
+    RebuildHeld();
+    candidates.BeginTick(nowMs, &held, &botCooldownUntilMs);
+    ActivityServices services = Services(nowMs, uint32(time(nullptr)));
+    return PlayerServiceCatalog::Lines(services, player, recipeSpell, 20);
+}
+
+std::string ActivityDirector::AcceptGoldRoll(Player* player, uint32 activityId)
+{
+    COA_ASSERT_WORLD_THREAD();
+    auto const found = activities.find(activityId);
+    if (!Running() || !player || !player->GetSession() || player->GetSession()->IsBot() ||
+        found == activities.end() || found->second->kind != ActivityKindId::GoldRoll ||
+        found->second->requester != player->GetGUID())
+        return ActivityWorld::Line("coa_act_gold_no", "No pending gold-roll proposal belongs to you.");
+    config = ActivityConfig::Current();
+    CollectRealPlayers();
+    ops.BeginTick(config->maxOpsPerTick, &realPlayers);
+    ActivityServices services = Services(CoaTime::NowMs(), uint32(time(nullptr)));
+    auto* const kind = dynamic_cast<GoldRollKind*>(KindOf(ActivityKindId::GoldRoll));
+    std::string why;
+    return kind && kind->Accept(services, *found->second, player, why) ?
+        ActivityWorld::Line("coa_act_gold_accept", "Proposal accepted. The frozen roll result will arrive shortly.") : why;
+}
+
+std::string ActivityDirector::ReserveRaid(Player* player, uint32 activityId, uint32 itemId)
+{
+    COA_ASSERT_WORLD_THREAD();
+    auto const found = activities.find(activityId);
+    if (!Running() || !player || !player->GetSession() || player->GetSession()->IsBot() ||
+        found == activities.end() || found->second->kind != ActivityKindId::PugRaid)
+        return ActivityWorld::Line("coa_act_pug_no", "Choose a live pickup raid you have joined.");
+    config = ActivityConfig::Current();
+    ActivityServices services = Services(CoaTime::NowMs(), uint32(time(nullptr)));
+    auto* const kind = dynamic_cast<PugRaidKind*>(KindOf(ActivityKindId::PugRaid));
+    return kind ? kind->Reserve(services, *found->second, player, itemId) : "Raid unavailable.";
 }

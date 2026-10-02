@@ -25,6 +25,7 @@
 #include "World.h"
 #include "WorldPacket.h"
 #include "WorldSession.h"
+#include "WorldBoss.h"
 #include <array>
 #include <memory>
 #include <string>
@@ -87,10 +88,14 @@ bool CoaActivityTravelAction::isUseful()
 
 bool CoaActivityTravelAction::Execute(Event /*event*/)
 {
+    if (!WorldBossTactics::MovementAllowed(botAI))
+        return false;
     ActivityMemberView const* r = CoaActivityBot::Refresh(botAI).row;
     if (!r)
         return false;
 
+    if (r->phase == ActivityPhase::Gathering && r->kind == ActivityKindId::FestivalVisit)
+        return ActivityMoveFarTo(r->center);
     if (r->phase == ActivityPhase::Gathering)
         return ActivityMoveFarTo(StableJitter(r->center, ActivityThreshold::RALLY_ARRIVE_RADIUS, r->phase));
 
@@ -109,6 +114,8 @@ bool CoaActivityHoldAction::Execute(Event /*event*/)
 
 bool CoaActivityReturnAction::Execute(Event /*event*/)
 {
+    if (!WorldBossTactics::MovementAllowed(botAI))
+        return false;
     ActivityMemberView const* r = CoaActivityBot::Refresh(botAI).row;
     if (!r)
         return false;
@@ -118,6 +125,8 @@ bool CoaActivityReturnAction::Execute(Event /*event*/)
 
 bool CoaActivityCatchUpAction::Execute(Event /*event*/)
 {
+    if (!WorldBossTactics::MovementAllowed(botAI))
+        return false;
     ActivityMemberView const* r = CoaActivityBot::Refresh(botAI).row;
     Player* leader = r ? CoaActivityBot::LeaderOnMap(bot, *r) : nullptr;
     if (!leader)
@@ -306,6 +315,7 @@ bool CoaActivityAttackObjectiveAction::Execute(Event /*event*/)
 {
     ActivityMemberView const* r = CoaActivityBot::Refresh(botAI).row;
     Unit* objective = r ? CoaActivityBot::ObjectiveInReach(botAI, *r) : nullptr;
+    objective = WorldBossTactics::ObjectiveTarget(botAI, objective);
     if (!objective)
         return false;
 
@@ -322,8 +332,18 @@ void CoaActivityAttackObjectiveAction::DropStale(PlayerbotAI* botAI, ActivityMem
                 : nullptr;
     if (!self || self->written.IsEmpty())
         return;
-    if (row && row->objective == self->written && !row->Has(ACTIVITY_VIEW_RETREAT))
-        return;
+    if (row && !row->Has(ACTIVITY_VIEW_RETREAT))
+    {
+        if (row->objective == self->written)
+            return;
+        if (row->kind == ActivityKindId::WorldBoss)
+        {
+            Unit* const objective = WorldBossTactics::ObjectiveTarget(botAI,
+                CoaActivityBot::ObjectiveInReach(botAI, *row));
+            if (objective && objective->GetGUID() == self->written)
+                return;
+        }
+    }
     self->BreakOff();
 }
 

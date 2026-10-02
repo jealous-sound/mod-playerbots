@@ -23,6 +23,7 @@
 #include "SharedDefines.h"
 #include "SocialMgr.h"
 #include "WorldSession.h"
+#include "WorldBoss.h"
 #include <algorithm>
 #include <array>
 #include <cfloat>
@@ -54,6 +55,8 @@ bool AreaAllowsDuels(uint32 areaId)
 
 bool CoaActivityTravelTrigger::IsActive()
 {
+    if (!WorldBossTactics::MovementAllowed(botAI))
+        return false;
     ActivityMemberView const* r = CoaActivityBot::Refresh(botAI).row;
     if (!r || r->Has(ACTIVITY_VIEW_QUIET) || bot->IsInCombat() || bot->IsInFlight())
         return false;
@@ -81,6 +84,8 @@ bool CoaActivityHoldTrigger::IsActive()
 
 bool CoaActivityAwayTrigger::IsActive()
 {
+    if (!WorldBossTactics::MovementAllowed(botAI))
+        return false;
     ActivityMemberView const* r = CoaActivityBot::Refresh(botAI).row;
     if (!r || r->phase != ActivityPhase::Active || r->Has(ACTIVITY_VIEW_QUIET) || CoaActivityBot::IsFollowing(*r) ||
         bot->IsInCombat() || bot->duel)
@@ -92,6 +97,8 @@ bool CoaActivityAwayTrigger::IsActive()
 
 bool CoaActivityCatchUpTrigger::IsActive()
 {
+    if (!WorldBossTactics::MovementAllowed(botAI))
+        return false;
     ActivityMemberView const* r = CoaActivityBot::Refresh(botAI).row;
     if (!r || r->Has(ACTIVITY_VIEW_QUIET) || !CoaActivityBot::IsFollowing(*r) || r->phase <= ActivityPhase::Gathering ||
         bot->IsInCombat())
@@ -128,7 +135,7 @@ bool CoaActivityEngageTrigger::IsActive()
         !bot->IsAlive() || bot->IsInCombat())
         return false;
 
-    return CoaActivityBot::ObjectiveInReach(botAI, *r) != nullptr;
+    return WorldBossTactics::ObjectiveTarget(botAI, CoaActivityBot::ObjectiveInReach(botAI, *r)) != nullptr;
 }
 
 // --- "coa duel" ---
@@ -345,6 +352,7 @@ bool CoaActivityObjectiveTrigger::IsActive()
         return false;
 
     Unit* objective = CoaActivityBot::ObjectiveInReach(botAI, *r);
+    objective = WorldBossTactics::ObjectiveTarget(botAI, objective);
     return objective && AI_VALUE(Unit*, "current target") != objective;
 }
 

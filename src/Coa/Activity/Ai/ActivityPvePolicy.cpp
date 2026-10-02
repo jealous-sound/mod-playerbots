@@ -6,6 +6,11 @@
 
 #include "ActivityPvePolicy.h"
 #include "ActivityRegistry.h"
+#include "ActivityPvpPolicy.h"
+#include "FestivalVisit.h"
+#include "GoldRoll.h"
+#include "PlayerService.h"
+#include "LeaderScaler.h"
 #include "AiObjectContext.h"
 #include "CoaActivityValues.h"
 #include "Creature.h"
@@ -19,25 +24,44 @@
 #include "SpellInfo.h"
 #include "Spell.h"
 #include "TemporarySummon.h"
+#include "WorldBoss.h"
+#include "WorldSession.h"
 #include <algorithm>
 
 namespace
 {
 ActivityKindId Kind(PlayerbotAI* ai)
 {
-    if (!ai || !ai->GetBot() || !ai->HasM7ControlledGuard() || !ActivityRegistry::AnyHeld())
+    if (!ai || !ai->GetBot() || !ActivityRegistry::AnyHeld())
         return ActivityKindId::None;
     auto const row = ActivityRegistry::Find(ai->GetBot()->GetGUID().GetCounter());
-    return row && row->epoch == ai->GetCoaEpoch() ? row->kind : ActivityKindId::None;
+    return row && row->epoch == ai->GetCoaEpoch() && !row->pvpRuleset ? row->kind : ActivityKindId::None;
 }
 
 bool Safe(PlayerbotAI* ai)
 {
     Player* const bot = ai->GetBot();
-    if (!ActivityPvePolicy::SafePlayer(bot))
+    bool const instance = Kind(ai) == ActivityKindId::PugRaid;
+    bool const capital = Kind(ai) == ActivityKindId::LeaderEncounter || Kind(ai) == ActivityKindId::CapitalRaid ||
+                         Kind(ai) == ActivityKindId::LieutenantRaid || Kind(ai) == ActivityKindId::Frontline;
+    bool const ordinaryCapitalFlag = capital && bot->IsInWorld() && bot->GetMap() && !bot->GetMap()->Instanceable() &&
+        bot->IsAlive() && !bot->GetVehicle() && !bot->IsInFlight() && !bot->duel && !bot->IsBeingTeleported() &&
+        !bot->IsFFAPvP() && !bot->HasAura(ActivityThreshold::SPELL_HIGH_RISK) &&
+        !bot->HasAura(ActivityThreshold::SPELL_MERCENARY) && !bot->HasAura(ActivityThreshold::SPELL_WAR_MODE) &&
+        !bot->InBattleground() && !bot->InArena() && bot->HasAura(ActivityThreshold::SPELL_PVE);
+    if (!ActivityPvePolicy::SafePlayer(bot, instance) && !ordinaryCapitalFlag)
         return false;
     Player* const master = ai->GetMaster();
-    return !master || (master->GetMap() == bot->GetMap() && ActivityPvePolicy::SafePlayer(master));
+    if (!master)
+        return true;
+    bool const capitalMaster = capital && master->GetSession() && master->GetSession()->IsBot() &&
+                              master->HasAura(ActivityThreshold::SPELL_PVE) && !master->IsFFAPvP() &&
+                              !master->HasAura(ActivityThreshold::SPELL_WAR_MODE) &&
+                              !master->HasAura(ActivityThreshold::SPELL_HIGH_RISK) &&
+                              !master->HasAura(ActivityThreshold::SPELL_MERCENARY) && !master->duel &&
+                              !master->IsInFlight() && !master->GetVehicle();
+    return master->GetMap() == bot->GetMap() && master->IsAlive() &&
+           (ActivityPvePolicy::SafePlayer(master, instance) || capitalMaster);
 }
 
 Player* Owner(Creature* creature)
@@ -80,7 +104,13 @@ bool Reflection(SpellInfo const* spell)
 
 bool ActivityPvePolicy::Protected(ActivityKindId kind)
 {
-    return kind == ActivityKindId::Escort || kind == ActivityKindId::RareScout;
+    return kind == ActivityKindId::Escort || kind == ActivityKindId::RareScout ||
+           kind == ActivityKindId::LeaderEncounter || kind == ActivityKindId::CapitalRaid ||
+           kind == ActivityKindId::LieutenantRaid || kind == ActivityKindId::Frontline ||
+           kind == ActivityKindId::TownDefense || kind == ActivityKindId::PugRaid ||
+           kind == ActivityKindId::WorldBoss || kind == ActivityKindId::PlayerService ||
+           kind == ActivityKindId::FestivalVisit || kind == ActivityKindId::GoldRoll ||
+           kind == ActivityKindId::RareCamp || kind == ActivityKindId::HubDefense;
 }
 
 bool ActivityPvePolicy::TargetAllowed(ActivityKindId kind, bool safe, bool playerControlled, uint32 creatureRank)
@@ -96,9 +126,9 @@ bool ActivityPvePolicy::SpellAllowed(ActivityKindId kind, bool safe, bool positi
     return !Protected(kind) || (safe && (positive || (!area && targetAllowed)));
 }
 
-bool ActivityPvePolicy::SafePlayer(Player* player)
+bool ActivityPvePolicy::SafePlayer(Player* player, bool allowInstance)
 {
-    return player && player->IsInWorld() && player->GetMap() && !player->GetMap()->Instanceable() &&
+    return player && player->IsInWorld() && player->GetMap() && (allowInstance || !player->GetMap()->Instanceable()) &&
         player->IsAlive() && !player->GetVehicle() && !player->IsInFlight() && !player->duel &&
         !player->IsBeingTeleported() && !player->IsPvP() &&
         !player->IsFFAPvP() && !player->HasAura(ActivityThreshold::SPELL_HIGH_RISK) &&
@@ -114,23 +144,60 @@ bool ActivityPvePolicy::RareSafe(Player* player)
 
 bool ActivityPvePolicy::AttackAllowed(PlayerbotAI* ai, Unit* target)
 {
+    if (!ActivityPvpPolicy::AttackAllowed(ai, target) || !LeaderScaler::AttackAllowed(ai, target))
+        return false;
     ActivityKindId const kind = Kind(ai);
     if (!Protected(kind))
         return true;
+    if (kind == ActivityKindId::WorldBoss && !WorldBossTactics::AttackAllowed(ai, target))
+        return false;
     if (!target || target->GetMap() != ai->GetBot()->GetMap())
         return false;
+    if (kind == ActivityKindId::FestivalVisit || kind == ActivityKindId::GoldRoll)
+        return false;
+    if (kind == ActivityKindId::LeaderEncounter || kind == ActivityKindId::CapitalRaid ||
+        kind == ActivityKindId::LieutenantRaid)
+    {
+        auto const row = ActivityRegistry::Find(ai->GetBot()->GetGUID().GetCounter());
+        if (row && row->Has(ACTIVITY_VIEW_RETREAT))
+            return false;
+    }
+    if (kind == ActivityKindId::RareCamp)
+    {
+        auto const row = ActivityRegistry::Find(ai->GetBot()->GetGUID().GetCounter());
+        if (row && row->Has(ACTIVITY_VIEW_RETREAT))
+            return false;
+        Creature* const rare = row ? ai->GetBot()->GetMap()->GetCreature(row->objective) : nullptr;
+        if (rare)
+            for (auto const& reference : rare->GetMap()->GetPlayers())
+            {
+                Player* const player = reference.GetSource();
+                if (player && player->GetSession() && !player->GetSession()->IsBot() &&
+                    player->IsWithinDistInMap(rare, 200))
+                    return false;
+            }
+    }
     Creature const* const creature = target->ToCreature();
     uint32 const rank = creature ? creature->GetCreatureTemplate()->rank : 0;
-    return TargetAllowed(kind, Safe(ai), target->GetCharmerOrOwnerPlayerOrPlayerItself() != nullptr, rank);
+    Player* const targetOwner = target->GetCharmerOrOwnerPlayerOrPlayerItself() ?
+                                target->GetCharmerOrOwnerPlayerOrPlayerItself() :
+                                target->ToCreature() ? Owner(target->ToCreature()) : nullptr;
+    return TargetAllowed(kind, Safe(ai), targetOwner != nullptr, rank);
 }
 
 bool ActivityPvePolicy::CastAllowed(PlayerbotAI* ai, SpellInfo const* spell, Unit* target)
 {
+    if (!ActivityPvpPolicy::CastAllowed(ai, spell, target))
+        return false;
     ActivityKindId const kind = Kind(ai);
     if (!Protected(kind))
         return true;
     if (!spell)
         return false;
+    if (kind == ActivityKindId::WorldBoss && !WorldBossTactics::CastAllowed(ai->GetBot(), spell, target))
+        return false;
+    if (kind == ActivityKindId::FestivalVisit && Safe(ai) && FestivalVisitActions::AllowsCast(ai, spell, target))
+        return true;
     if (kind == ActivityKindId::RareScout && (Reflection(spell) || !RareSafe(ai->GetBot())))
         return false;
     for (SpellEffectInfo const& effect : spell->Effects)
@@ -140,11 +207,28 @@ bool ActivityPvePolicy::CastAllowed(PlayerbotAI* ai, SpellInfo const* spell, Uni
             effect.Effect == SPELL_EFFECT_SUMMON_RAF_FRIEND)
             return false;
     bool const positive = spell->IsPositive();
+    if (!positive && (kind == ActivityKindId::LeaderEncounter || kind == ActivityKindId::CapitalRaid ||
+        kind == ActivityKindId::LieutenantRaid))
+    {
+        auto const row = ActivityRegistry::Find(ai->GetBot()->GetGUID().GetCounter());
+        if (row && row->Has(ACTIVITY_VIEW_RETREAT))
+            return false;
+    }
     bool safe = Safe(ai);
     if (positive && target)
     {
-        Player* const player = target->GetCharmerOrOwnerPlayerOrPlayerItself();
-        safe = safe && target->GetMap() == ai->GetBot()->GetMap() && (!player || SafePlayer(player));
+        Player* const player = target->GetCharmerOrOwnerPlayerOrPlayerItself() ?
+                               target->GetCharmerOrOwnerPlayerOrPlayerItself() :
+                               target->ToCreature() ? Owner(target->ToCreature()) : nullptr;
+        PlayerbotAI* const friendlyAI = player ? GET_PLAYERBOT_AI(player) : nullptr;
+        auto const mine = ActivityRegistry::Find(ai->GetBot()->GetGUID().GetCounter());
+        auto const friendly = player ? ActivityRegistry::Find(player->GetGUID().GetCounter()) : std::nullopt;
+        bool const sameCapital = friendlyAI && mine && friendly && mine->activityId == friendly->activityId &&
+            friendly->epoch == friendlyAI->GetCoaEpoch() &&
+            (kind == ActivityKindId::LeaderEncounter || kind == ActivityKindId::CapitalRaid ||
+             kind == ActivityKindId::LieutenantRaid || kind == ActivityKindId::Frontline) && Safe(friendlyAI);
+        safe = safe && target->GetMap() == ai->GetBot()->GetMap() &&
+               (!player || SafePlayer(player, kind == ActivityKindId::PugRaid) || sameCapital);
     }
     return SpellAllowed(kind, safe, positive, spell->IsAffectingArea(), target && AttackAllowed(ai, target));
 }
@@ -207,6 +291,9 @@ void ActivityPvePolicy::Release(PlayerbotAI* ai)
         creature->IsAIEnabled = entry.aiEnabled;
         creature->SetReactState(ReactStates(entry.react));
     }
+    FestivalVisitActions::Release(ai);
+    GoldRollActions::Release(ai);
+    PlayerServiceCatalog::Release(ai);
     state.m7ControlledReact.clear();
     ai->SetM7ControlledGuard(false);
 }
@@ -285,13 +372,14 @@ void ActivityPvePolicy::GuardReflection(Spell* spell, TargetInfo& target)
         !ActivityRegistry::AnyHeld())
         return;
     Unit* const caster = spell->GetCaster();
-    Creature* const creature = caster ? caster->ToCreature() : nullptr;
-    if (!creature || (creature->GetCreatureTemplate()->rank != CREATURE_ELITE_RARE &&
-        creature->GetCreatureTemplate()->rank != CREATURE_ELITE_RAREELITE))
+    if (!caster)
         return;
     Unit* const reflector = ObjectAccessor::GetUnit(*caster, target.targetGUID);
-    PlayerbotAI* const ai = reflector && reflector->IsPlayer() ? GET_PLAYERBOT_AI(reflector->ToPlayer()) : nullptr;
-    if (ai && Kind(ai) == ActivityKindId::RareScout)
+    Player* owner = reflector ? reflector->GetCharmerOrOwnerPlayerOrPlayerItself() : nullptr;
+    if (!owner && reflector && reflector->ToCreature())
+        owner = Owner(reflector->ToCreature());
+    PlayerbotAI* const ai = owner ? GET_PLAYERBOT_AI(owner) : nullptr;
+    if (ai && !AttackAllowed(ai, caster))
     {
         target.reflectResult = SPELL_MISS_IMMUNE;
         target.damage = 0;
@@ -301,7 +389,10 @@ void ActivityPvePolicy::GuardReflection(Spell* spell, TargetInfo& target)
 
 bool ActivityPvePolicy::LootAllowed(PlayerbotAI* ai)
 {
-    return Kind(ai) != ActivityKindId::RareScout;
+    ActivityKindId const kind = Kind(ai);
+    return kind != ActivityKindId::RareScout && kind != ActivityKindId::RareCamp &&
+           kind != ActivityKindId::FestivalVisit && kind != ActivityKindId::GoldRoll &&
+           kind != ActivityKindId::PlayerService && kind != ActivityKindId::PugRaid;
 }
 
 std::vector<std::string> ActivityPvePolicy::SelfTest()

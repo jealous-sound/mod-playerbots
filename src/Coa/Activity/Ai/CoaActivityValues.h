@@ -59,6 +59,8 @@ struct ActivityBotState
     // Activity life.
     uint32 celebratedActivity = 0;  // the activity id the bot already celebrated (Resolving)
     std::vector<ControlledGuard> m7ControlledReact;
+    uint64 worldBossTacticMs = 0;
+    uint64 pugPortalMoveMs = 0;
     uint64 nextRoamMs = 0;          // "coa activity roam": at most every 20 s
     uint64 nextIdleMs = 0;          // "coa ring idle": every 10-20 s
 

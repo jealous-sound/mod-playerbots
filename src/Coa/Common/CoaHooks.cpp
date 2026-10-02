@@ -91,6 +91,10 @@
 
 #include "CoaHooks.h"
 #include "ActivityPvePolicy.h"
+#include "ActivityPvpPolicy.h"
+#include "LeaderScaler.h"
+#include "TownDefense.h"
+#include "WorldBoss.h"
 #include "ActivityDirector.h"
 #include "ActivityDuelCooldowns.h"
 #include "Channel.h"
@@ -500,10 +504,14 @@ public:
     void OnDamage(Unit* attacker, Unit* victim, uint32& damage) override
     {
         ActivityPvePolicy::OnDamage(attacker, victim, damage);
+        ActivityPvpPolicy::OnDamage(attacker, victim, damage);
+        LeaderScaler::OnDamage(attacker, victim, damage);
     }
 
     void OnUnitDeath(Unit* victim, Unit* killer) override
     {
+        LeaderScaler::OnUnitDeath(victim, killer);
+        ActivityPvpPolicy::OnDeath(victim, killer);
         if (!MemoryRunning() || !victim)
             return;
 
@@ -609,6 +617,11 @@ class CoaActivityCreatureScript : public AllCreatureScript
 public:
     CoaActivityCreatureScript() : AllCreatureScript("CoaActivityCreatureScript") {}
 
+    void OnCreatureRemoveWorld(Creature* creature) override
+    {
+        LeaderScaler::OnCreatureRemoveWorld(creature);
+    }
+
     void OnCreatureAddWorld(Creature* creature) override
     {
         ActivityPvePolicy::OnCreatureAddWorld(creature);
@@ -623,12 +636,15 @@ public:
 
     bool CanPrepare(Spell* spell, SpellCastTargets const* /*targets*/, AuraEffect const* /*triggeredByAura*/) override
     {
-        return ActivityPvePolicy::CanPrepare(spell);
+        return ActivityPvePolicy::CanPrepare(spell) && ActivityPvpPolicy::CanPrepare(spell) &&
+               LeaderScaler::CanPrepare(spell) && TownDefenseWave::CanPrepare(spell) && (!spell ||
+               WorldBossTactics::CastAllowed(spell->GetCaster(), spell->GetSpellInfo(), spell->m_targets.GetUnitTarget()));
     }
 
     void OnSpellCalculatedTarget(Spell* spell, Unit* /*target*/, TargetInfo& targetInfo) override
     {
         ActivityPvePolicy::GuardReflection(spell, targetInfo);
+        LeaderScaler::OnSpellCalculatedTarget(spell, targetInfo);
     }
 };
 }  // namespace

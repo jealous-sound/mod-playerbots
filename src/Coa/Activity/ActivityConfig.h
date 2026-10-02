@@ -62,6 +62,27 @@ struct ActivitySpot
     float z = 0.0f;
 };
 
+struct ActivityCampaignTarget
+{
+    std::string name;
+    uint8 team = 0;
+    uint32 spawnId = 0;
+    ActivityPoint rally;
+    std::vector<uint32> guardSpawns;
+    uint32 waveEntry = 0;
+    std::string strategy;
+    uint32 raidMap = 0;
+};
+
+struct ActivityFestivalTarget
+{
+    std::string name;
+    uint32 eventId = 0;
+    std::string interaction;
+    uint32 spawnId = 0;
+    uint8 team = 0;
+};
+
 // AiPlayerbot.CoaActivity.* (plus the four AiPlayerbot.CoaBrain keys the activity reads) as one immutable snapshot.
 // Load runs on every config load (startup, .reload config, .playerbots activity reload) and CoaWorldScript publishes
 // it. With Enable = 0 only that key is read. Load runs before PlayerbotAIConfig::Initialize at startup, and before
@@ -226,6 +247,138 @@ struct ActivityConfig
     uint32 rareScoutNearbyYards = 500;  // [20, 2000]
     std::vector<ActivityHuntTarget> rareScoutTargets;  // name:spawn:team; no implicit rare spawns
 
+    // M5b / M7: advanced kinds are opt-in and have no implicit targets.
+    bool leaderSpikeVerified = false;
+    bool capitalEnable = false;
+    uint32 weightCapital = 0;
+    uint32 capitalMax = 1;
+    uint32 capitalMinBots = 20;
+    uint32 capitalMaxBots = 40;
+    std::vector<ActivityCampaignTarget> capitalTargets;
+    bool lieutenantEnable = false;
+    uint32 weightLieutenant = 0;
+    uint32 lieutenantMax = 1;
+    uint32 lieutenantMinBots = 10;
+    uint32 lieutenantMaxBots = 20;
+    std::vector<ActivityCampaignTarget> lieutenantTargets;
+    bool pvpGangGmVerified = false;
+    bool leaderEnable = false;
+    uint32 leaderMax = 1;
+    uint32 leaderMinBots = 20;
+    uint32 leaderMaxBots = 40;
+    uint32 leaderMinLevel = 60;
+    uint32 leaderScaleLevel = 60;
+    uint32 leaderMinutes = 30;
+    uint32 leaderGatherSeconds = 180;
+    uint32 leaderNearbyYards = 5000;
+    uint32 leaderGuardYards = 120;
+    uint32 leaderHealth = 250000;
+    uint32 leaderGuardHealth = 15000;
+    uint32 leaderDamagePercent = 10;
+    uint32 leaderGuardDamagePercent = 20;
+    uint32 leaderArmorPercent = 25;
+    bool leaderSideEffectsAccepted = false;
+    std::vector<ActivityCampaignTarget> leaderTargets;
+
+    bool frontlineEnable = false;
+    uint32 weightFrontline = 0;
+    uint32 frontlineMax = 1;
+    uint32 frontlineMinBots = 6;
+    uint32 frontlineMaxBots = 15;
+    uint32 frontlineRecruitSeconds = 120;
+    uint32 frontlineMinutes = 60;
+    uint32 frontlineCleanRunsGate = 10;
+    std::vector<ActivityCampaignTarget> frontlineTargets;
+
+    bool townDefenseEnable = false;
+    uint32 weightTownDefense = 0;
+    uint32 townDefenseMax = 1;
+    uint32 townDefenseMinBots = 3;
+    uint32 townDefenseMaxBots = 5;
+    uint32 townDefenseRecruitSeconds = 120;
+    uint32 townDefenseMinutes = 60;
+    std::vector<ActivityCampaignTarget> townDefenseTargets;
+
+    bool pugRaidEnable = false;
+    uint32 weightPugRaid = 0;
+    uint32 pugRaidMax = 1;
+    uint32 pugRaidMinBots = 10;
+    uint32 pugRaidMaxBots = 40;
+    uint32 pugRaidRecruitSeconds = 120;
+    uint32 pugRaidMinutes = 60;
+    uint32 pugRaidCleanRunsGate = 0;
+    std::vector<ActivityCampaignTarget> pugRaidTargets;
+
+    bool worldBossEnable = false;
+    uint32 weightWorldBoss = 0;
+    uint32 worldBossMax = 1;
+    uint32 worldBossMinBots = 20;
+    uint32 worldBossMaxBots = 40;
+    uint32 worldBossRecruitSeconds = 120;
+    uint32 worldBossMinutes = 60;
+    uint32 worldBossCleanRunsGate = 1;
+    std::vector<ActivityCampaignTarget> worldBossTargets;
+
+    uint32 frontlineGuardRadius = 150;
+    uint32 frontlineCooldownMinutes = 360;
+    uint32 frontlineWarningSeconds = 300;
+    bool frontlineAttackVerified = false;
+    bool frontlineDefenders = false;
+    bool frontlinePvpDefendersEnable = false;
+    bool hubDefenseEnable = false;
+    uint32 hubDefenseMax = 1;
+    uint32 townDefenseWaves = 3;
+    uint32 townDefenseWaveSize = 3;
+    uint32 townDefenseWaveGapSeconds = 30;
+    uint32 townDefenseCleanWavesGate = 20;
+    uint32 pugRaidReservePerPlayer = 1;
+    bool worldBossGmKillVerified = false;
+
+    bool serviceEnable = false;
+    uint32 serviceMax = 2;
+    uint32 serviceMinutes = 10;
+    uint32 serviceInviteSeconds = 60;
+    uint32 servicePlayerCooldownMinutes = 30;
+    uint32 serviceNearbyYards = 200;
+
+    bool festivalEnable = false;
+    uint32 weightFestival = 0;
+    uint32 festivalMax = 1;
+    uint32 festivalMinutes = 5;
+    uint32 festivalNearbyYards = 500;
+    std::vector<ActivityFestivalTarget> festivalTargets;
+
+    bool goldRollEnable = false;
+    uint32 goldRollMax = 2;
+    uint32 goldRollMaxCopper = 100000;
+    uint32 goldRollPlayerCooldownMinutes = 30;
+
+    bool pvpGangEnable = false;
+    uint32 weightPvpGang = 0;
+    uint32 pvpGangMax = 1;
+    uint32 pvpGangMinBots = 3;
+    uint32 pvpGangMaxBots = 5;
+    uint32 pvpGangMinutes = 30;
+    uint32 pvpGangHighRiskPercent = 50;
+    uint32 pvpGangNearbyYards = 500;
+    std::vector<ActivitySpot> pvpGangSpots;
+
+    bool bountyEnable = false;
+    uint32 bountyMax = 1;
+    uint32 bountyMinBots = 2;
+    uint32 bountyMaxBots = 5;
+    uint32 bountyMinutes = 10;
+    uint32 bountyNearbyYards = 500;
+
+    bool rareCampEnable = false;
+    uint32 weightRareCamp = 0;
+    uint32 rareCampMax = 1;
+    uint32 rareCampMinBots = 2;
+    uint32 rareCampMaxBots = 5;
+    uint32 rareCampMinutes = 15;
+    uint32 rareCampNearbyYards = 500;
+    std::vector<ActivityHuntTarget> rareCampTargets;
+
     // AiPlayerbot.CoaBrain.Use.Duel, Use.Organizer, Duel.DeadlineMs, Duel.AcceptThreshold (read here, not by
     // BrainConfig: the brain only transports).
     bool useBrainDuel = false;
@@ -247,6 +400,14 @@ struct ActivityConfig
     ActivitySpot const* FindLoiterSpot(std::string const& name) const;
     ActivitySpot const* FindEscortSpot(std::string const& name) const;
     ActivityHuntTarget const* FindRareScoutTarget(std::string const& name) const;
+    ActivityCampaignTarget const* FindLeaderTarget(std::string const& name) const;
+    ActivityCampaignTarget const* FindFrontlineTarget(std::string const& name) const;
+    ActivityCampaignTarget const* FindTownDefenseTarget(std::string const& name) const;
+    ActivityCampaignTarget const* FindPugRaidTarget(std::string const& name) const;
+    ActivityCampaignTarget const* FindWorldBossTarget(std::string const& name) const;
+    ActivityFestivalTarget const* FindFestivalTarget(std::string const& name) const;
+    ActivitySpot const* FindPvpGangSpot(std::string const& name) const;
+    ActivityHuntTarget const* FindRareCampTarget(std::string const& name) const;
     // Pure offline checks of parser rejection, legacy enums and request ownership/throttling; no config reads.
     static std::vector<std::string> SelfTest();
 

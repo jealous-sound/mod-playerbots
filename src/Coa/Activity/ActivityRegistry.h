@@ -31,6 +31,7 @@ struct ActivityMemberView
     ActivityPoint center;              // Gathering: the rally; Marching: the next stop; Active: the ring or hunt center
     float radius = 0.0f;               // Gathering/Marching: arrival radius; Active: leash radius
     ObjectGuid objective;              // M5: the target held in combat ("coa activity combat"); empty in M4
+    uint32 pvpRuleset = 0;
     uint64 ringDuelEndMs = 0;          // duel rings: when the last duel between ring members ended (spectators cheer)
     uint8 flags = 0;                   // ActivityViewFlag bits
     uint8 style = 0;                   // M5: ActivityViewStyle of solo kinds ("coa party"); 0 for every other kind

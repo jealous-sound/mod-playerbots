@@ -114,7 +114,7 @@ void CoaActivityStrategies::AddNonCombat(Player* player, PlayerbotAI* facade, En
     engine->removeStrategy("lfg", false);
     engine->removeStrategy("bg", false);
 
-    if (row->kind == ActivityKindId::Escort || row->kind == ActivityKindId::RareScout)
+    if (uint8(row->kind) >= uint8(ActivityKindId::Escort))
     {
         engine->removeStrategy("grind", false);
         engine->removeStrategy("new rpg", false);
@@ -122,7 +122,9 @@ void CoaActivityStrategies::AddNonCombat(Player* player, PlayerbotAI* facade, En
         engine->removeStrategy("move random", false);
         engine->removeStrategy("travel", false);
         engine->removeStrategy("gather", false);
-        if (row->kind == ActivityKindId::RareScout)
+        if (row->kind == ActivityKindId::RareScout || row->kind == ActivityKindId::RareCamp ||
+            row->kind == ActivityKindId::FestivalVisit || row->kind == ActivityKindId::PugRaid ||
+            row->kind == ActivityKindId::GoldRoll || row->kind == ActivityKindId::PlayerService)
             engine->removeStrategy("loot", false);
     }
 

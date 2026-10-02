@@ -94,6 +94,7 @@ struct Activity
     bool warMode = false;             // PvpRuleset = warmode for this activity: the director gives its bots War Mode
                                       // (ApplyWarMode) once they are members, and restores it when they leave
     // M5.
+    uint32 pvpRuleset = 0;
     ObjectGuid follow;                // group kinds: a real player member every bot member (the leader included)
                                       // takes as master; the director keeps it so. Empty: the M4 rule (the leader
                                       // has no master, the others follow the leader)
@@ -197,6 +198,8 @@ struct ActivityServices
     uint32 nowUnix;                           // time(nullptr)
     ActivityOrganizer& organizer;             // M5: the kinds' own Organizer questions (line key, retreat, emote)
     ActivityCensus const& census;             // M5: the raid gate (RaidPoolP10)
+    bool leaderPrerequisitesMet = false;
+    uint32 measuredLevel60Floor = 0;
 };
 
 // A kind of activity. One instance per kind lives in the director (created by CreateDuelGatheringKind and

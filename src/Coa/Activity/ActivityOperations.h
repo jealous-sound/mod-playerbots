@@ -100,6 +100,13 @@ public:
     // Group::ChangeLeader to `newLeader`, a member of `groupGuid`; SendUpdate.
     ActivityOpResult HandLeader(ObjectGuid groupGuid, ObjectGuid newLeader);
 
+    ActivityOpResult SetLoot(ObjectGuid groupGuid, ObjectGuid leader, uint8 lootMethod, uint8 threshold,
+                             ObjectGuid looterGuid = ObjectGuid::Empty);
+    ActivityOpResult ConvertToRaid(ObjectGuid groupGuid, ObjectGuid leader);
+    ActivityOpResult EnterPortal(ObjectGuid bot, uint32 triggerId);
+    ActivityOpResult GiveMasterLoot(ObjectGuid leader, ObjectGuid source, uint8 slot, ObjectGuid winner);
+    ActivityOpResult ApplyRuleset(ObjectGuid bot, uint32 spellId, uint32& prevRuleset);
+
     // Teleports a bot to `dest` (TeleportTo, motion cleared, teleport auras removed; the AI is not reset). The rule:
     // a bot session, alive (unless `dead` is true, for Revive), not in combat, not being teleported, not in flight, no
     // real player within TELEPORT_UNSEEN_YARDS of the bot (same map and instance) nor of `dest` (same map): otherwise

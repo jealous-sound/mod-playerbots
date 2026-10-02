@@ -30,6 +30,20 @@ enum class ActivityKindId : uint8
     Gurubashi,  // M5: bots gather at the Gurubashi Arena for the booty run (BootyRun); solo participants
     Escort,     // M7: a player-requested overworld escort; one registered group, never ambient scheduled
     RareScout,  // M7: one bot watches a whitelisted rare spawn without attacking or looting it
+    LeaderEncounter,
+    Frontline,
+    TownDefense,
+    PugRaid,
+    WorldBoss,
+    PlayerService,
+    FestivalVisit,
+    GoldRoll,
+    PvpGang,
+    Bounty,
+    RareCamp,
+    HubDefense,
+    CapitalRaid,
+    LieutenantRaid,
     Count
 };
 
@@ -64,7 +78,18 @@ inline bool SameRareTarget(std::string_view target, uint8 team, std::string_view
 constexpr bool ActivityKindIsGroup(ActivityKindId kind)
 {
     return kind == ActivityKindId::Gang || kind == ActivityKindId::Dungeon || kind == ActivityKindId::Hunt ||
-           kind == ActivityKindId::Raid || kind == ActivityKindId::Escort;
+           kind == ActivityKindId::Raid || kind == ActivityKindId::Escort ||
+           kind == ActivityKindId::LeaderEncounter ||
+           kind == ActivityKindId::Frontline ||
+           kind == ActivityKindId::TownDefense ||
+           kind == ActivityKindId::PugRaid ||
+           kind == ActivityKindId::WorldBoss ||
+           kind == ActivityKindId::PlayerService ||
+           kind == ActivityKindId::PvpGang ||
+           kind == ActivityKindId::Bounty ||
+           kind == ActivityKindId::RareCamp ||
+           kind == ActivityKindId::HubDefense || kind == ActivityKindId::CapitalRaid ||
+           kind == ActivityKindId::LieutenantRaid;
 }
 
 // Phases. The value is the `state` column of playerbots_coa_activity while the activity lives (0-7); an ended one is

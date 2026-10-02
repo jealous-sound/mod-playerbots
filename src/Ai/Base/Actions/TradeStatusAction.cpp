@@ -9,6 +9,7 @@
 #include "CraftValue.h"
 #include "Event.h"
 #include "GuildTaskMgr.h"
+#include "GoldRoll.h"
 #include "ItemUsageValue.h"
 #include "ItemVisitors.h"
 #include "PlayerbotMgr.h"
@@ -20,6 +21,13 @@
 
 bool TradeStatusAction::Execute(Event event)
 {
+    // Exact consented money-only wagers use their own map-thread native trade checks and never item pricing,
+    // discount accumulation, auto-crafted reagents, or the general unrelated-player security exception.
+    if (GoldRollActions::Active(botAI))
+    {
+        GoldRollActions::Tick(botAI);
+        return true;
+    }
     if (IsSelfBot(bot))
         return false;
 

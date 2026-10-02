@@ -31,6 +31,34 @@ char const* ActivityKindName(ActivityKindId kind)
             return "escort";
         case ActivityKindId::RareScout:
             return "rare";
+        case ActivityKindId::LeaderEncounter:
+            return "leader";
+        case ActivityKindId::Frontline:
+            return "frontline";
+        case ActivityKindId::TownDefense:
+            return "defense";
+        case ActivityKindId::PugRaid:
+            return "pug";
+        case ActivityKindId::WorldBoss:
+            return "boss";
+        case ActivityKindId::PlayerService:
+            return "service";
+        case ActivityKindId::FestivalVisit:
+            return "festival";
+        case ActivityKindId::GoldRoll:
+            return "gamble";
+        case ActivityKindId::PvpGang:
+            return "pvpgang";
+        case ActivityKindId::Bounty:
+            return "bounty";
+        case ActivityKindId::RareCamp:
+            return "camp";
+        case ActivityKindId::HubDefense:
+            return "hubdefense";
+        case ActivityKindId::CapitalRaid:
+            return "capital";
+        case ActivityKindId::LieutenantRaid:
+            return "lieutenant";
         default:
             return "none";
     }

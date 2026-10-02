@@ -9,6 +9,12 @@
 #include "ActivityDuelRules.h"
 #include "ActivityRegistry.h"
 #include "ActivityPvePolicy.h"
+#include "ActivityPvpPolicy.h"
+#include "FestivalVisit.h"
+#include "GoldRoll.h"
+#include "WorldBoss.h"
+#include "PugRaid.h"
+#include "CoaTime.h"
 #include "AiFactory.h"
 #include "BudgetValues.h"
 #include "ChannelMgr.h"
@@ -271,6 +277,8 @@ PlayerbotAI::PlayerbotAI(Player* bot)
 
 PlayerbotAI::~PlayerbotAI()
 {
+    FestivalVisitActions::Release(this);
+    GoldRollActions::Release(this);
     ActivityPvePolicy::Release(this);
 
     // Map or world thread: only a BotLogout is posted; the manager closes this life's memory on the world thread.
@@ -303,6 +311,11 @@ void PlayerbotAI::UpdateAI(uint32 elapsed, bool minimal)
         return;
 
     ActivityPvePolicy::Update(this);
+    ActivityPvpPolicy::Update(this);
+    FestivalVisitActions::Tick(this);
+    GoldRollActions::Tick(this);
+    WorldBossTactics::Update(this, CoaTime::NowMs());
+    PugRaidTactics::Update(this, CoaTime::NowMs());
 
     // Handle cheat options (set bot health and power if cheats are enabled)
     if (bot->IsAlive() &&
@@ -6344,6 +6357,8 @@ int32 PlayerbotAI::GetNearGroupMemberCount(float dis)
 
 bool PlayerbotAI::CanMove()
 {
+    if (!WorldBossTactics::MovementAllowed(this))
+        return false;
     // Most common checks: confused, stunned, fleeing, jumping, charging. All these
     // states are set when handling certain aura effects. We don't check against
     // UNIT_STATE_ROOT here, because this state is used by vehicles.
