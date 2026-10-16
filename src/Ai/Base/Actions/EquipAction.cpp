@@ -11,7 +11,9 @@
 #include "ItemUsageValue.h"
 #include "ItemVisitors.h"
 #include "Playerbots.h"
+#include "PlayerbotTextMgr.h"
 #include "StatsWeightCalculator.h"
+#include <map>
 #include <utility>
 
 bool EquipAction::Execute(Event event)
@@ -330,6 +332,62 @@ void EquipAction::EquipItem(Item* item)
     botAI->TellMaster(out);
 }
 
+void EquipAction::EquipBagUpgrades()
+{
+    CollectItemsVisitor visitor;
+    IterateItems(&visitor, ITERATE_ITEMS_IN_BAGS);
+    std::map<ItemTemplate const*, uint32> equippedBags;
+
+    for (Item* item : visitor.items)
+    {
+        ItemTemplate const* itemTemplate = item->GetTemplate();
+        if (!item->IsBag() || item->IsInTrade() || itemTemplate->Class != ITEM_CLASS_CONTAINER ||
+            itemTemplate->SubClass != ITEM_SUBCLASS_CONTAINER)
+            continue;
+
+        uint8 const bagSlot = GetSmallestBagSlot();
+        Item const* equippedBag = bot->GetItemByPos(INVENTORY_SLOT_BAG_0, bagSlot);
+        if (equippedBag && equippedBag->GetTemplate()->ContainerSlots >= itemTemplate->ContainerSlots)
+            continue;
+
+        uint16 destination;
+        if (bot->CanEquipItem(bagSlot, destination, item, true) != EQUIP_ERR_OK)
+            continue;
+
+        if (item->GetBagSlot() == bagSlot)
+        {
+            for (uint8 slot = INVENTORY_SLOT_ITEM_START; slot < INVENTORY_SLOT_ITEM_END; ++slot)
+            {
+                if (!bot->GetItemByPos(INVENTORY_SLOT_BAG_0, slot))
+                {
+                    bot->SwapItem(item->GetPos(), (INVENTORY_SLOT_BAG_0 << 8) | slot);
+                    break;
+                }
+            }
+
+            if (item->GetBagSlot() == bagSlot)
+                continue;
+        }
+
+        bot->SwapItem(item->GetPos(), destination);
+        if (bot->GetItemByPos(INVENTORY_SLOT_BAG_0, bagSlot) == item)
+            ++equippedBags[itemTemplate];
+    }
+
+    if (!equippedBags.empty())
+    {
+        std::string items;
+        for (auto const& [itemTemplate, count] : equippedBags)
+        {
+            if (!items.empty())
+                items += ", ";
+            items += chat->FormatItem(itemTemplate, count);
+        }
+        botAI->TellMaster(PlayerbotTextMgr::instance().GetBotTextOrDefault(
+            "equip_command", "Equipping %item", {{"%item", items}}));
+    }
+}
+
 ItemIds EquipAction::SelectInventoryItemsToEquip()
 {
     CollectItemsVisitor visitor;
@@ -348,7 +406,7 @@ ItemIds EquipAction::SelectInventoryItemsToEquip()
 
         //TODO Expand to Glyphs and Gems, that can be placed in equipment
         //Pre-filter non-equipable items
-        if (itemTemplate->InventoryType == INVTYPE_NON_EQUIP)
+        if (itemTemplate->InventoryType == INVTYPE_NON_EQUIP || itemTemplate->Class == ITEM_CLASS_CONTAINER)
             continue;
 
         int32 randomProperty = item->GetItemRandomPropertyId();
@@ -378,7 +436,7 @@ bool EquipUpgradesPacketAction::Execute(Event event)
         uint32 status;
         p >> status;
 
-        if (status != TRADE_STATUS_TRADE_ACCEPT)
+        if (status != TRADE_STATUS_TRADE_COMPLETE)
             return false;
     }
 
@@ -403,6 +461,7 @@ bool EquipUpgradesPacketAction::Execute(Event event)
             return false;
     }
 
+    EquipBagUpgrades();
     ItemIds items = SelectInventoryItemsToEquip();
     EquipItems(items);
     return true;
@@ -410,6 +469,7 @@ bool EquipUpgradesPacketAction::Execute(Event event)
 
 bool EquipUpgradeAction::Execute(Event /*event*/)
 {
+    EquipBagUpgrades();
     ItemIds items = SelectInventoryItemsToEquip();
     EquipItems(items);
     return true;
