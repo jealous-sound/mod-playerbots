@@ -128,6 +128,14 @@ trailing `?` shows instead of changes: `co ?` lists, `co +name` adds, `co -name`
 | `/w <bot> follow\|stay\|flee\|attack\|formation\|rti` | movement and group position |
 | `/w <bot> help` | the full list |
 
+Ordinary bags already in a bot's inventory are included when equipment upgrades
+run after an item receipt or completed trade (`AiPlayerbot.AutoEquipUpgradeLoot`).
+Use `/w <bot> equip upgrade` to check existing bags immediately; logging in alone
+does not trigger this check. The bot fills empty bag slots or replaces smaller
+bags and reports successful upgrades. Specialized bags are not auto-equipped.
+If the new bag is inside the bag being replaced, one free backpack slot is needed
+to stage the swap safely.
+
 Things that surprise people:
 
 - `co` alone answers nothing, it needs `co ?`.
